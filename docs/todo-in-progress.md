@@ -5,5 +5,4 @@
 - _None_
 
 ## In Progress
-
 - _None_

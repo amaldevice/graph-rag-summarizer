@@ -2,6 +2,7 @@ boto3==1.39.3
 bert-score==0.3.13
 bertopic==0.16.4
 docling==2.31.0
+einops==0.8.2
 groq==0.9.0
 leidenalg==0.10.2
 matplotlib==3.9.0
@@ -14,6 +15,6 @@ python-igraph==0.11.6
 qdrant-client==1.9.1
 rouge-score==0.1.2
 scikit-learn==1.5.1
-sentence-transformers==3.0.1
+sentence-transformers==5.1.2
 spacy==3.7.5
 tqdm==4.66.4
