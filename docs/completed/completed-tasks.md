@@ -81,3 +81,11 @@
     - `uv run python scripts/run_targeted_pytest.py -v` (39 passed)
     - `EMBEDDING_BACKEND=sentence-transformers EMBEDDING_DEVICE=auto EMBEDDING_TRUST_REMOTE_CODE=True uv run python - <<'PY' ... TextEmbedder().embed_text(...) ... PY` (live macOS MPS smoke with the default Nomic model)
     - `EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 EMBEDDING_ONNX_ALLOWED_MODELS=sentence-transformers/all-MiniLM-L6-v2 EMBEDDING_BACKEND=onnx EMBEDDING_DEVICE=auto EMBEDDING_TRUST_REMOTE_CODE=False uv run python - <<'PY' ... TextEmbedder().embed_text(...) ... PY` (live ONNX CPU smoke with a supported model)
+
+- **Merged the cross-platform embedding runtime PR into `main`**
+  - Re-checked PR `#11` before merge and confirmed it was open, non-draft, `MERGEABLE`, `CLEAN`, and backed by the already-pushed lore-format feature commit.
+  - Rebase-merged `feat/cross-platform-embedding-runtime` into `main`, which preserved the existing implementation commit instead of creating a new merge commit.
+  - Confirmed PR `#11` is now merged and issues `#6`, `#7`, `#8`, `#9`, and `#10` are closed.
+  - Pruned the stale local remote-tracking ref after GitHub deleted the feature branch.
+  - Left `The Let Them Theory.pdf` untracked and untouched.
+  - Verification: `gh pr view 11 --json number,state,mergedAt,mergeCommit,url`; `gh issue view 6 --json number,state`; `gh issue view 7 --json number,state`; `gh issue view 8 --json number,state`; `gh issue view 9 --json number,state`; `gh issue view 10 --json number,state`; `git fetch --prune origin`; `git status --short --branch`.
