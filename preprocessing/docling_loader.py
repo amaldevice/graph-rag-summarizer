@@ -11,13 +11,13 @@ from docling.document_converter import DocumentConverter
 
 from config import settings
 from preprocessing.image_exporter import DoclingImageExporter
-from storage.r2_handler import R2Handler
+from storage.factory import get_storage_handler
 
 
 class DoclingLoader:
     def __init__(self):
         self.converter = DocumentConverter()
-        self.r2_handler = R2Handler()
+        self.storage_handler = get_storage_handler()
         self.image_exporter = DoclingImageExporter()
 
     def load_pdf(self, pdf_path: str):
@@ -104,8 +104,8 @@ class DoclingLoader:
         uploaded = []
         for item in exported:
             object_name = f"images/{doc_filename}/{Path(item['path']).name}"
-            self.r2_handler.upload_local_path(item["path"], object_name=object_name)
-            image_url = self.r2_handler.build_image_url(object_name)
+            self.storage_handler.upload_local_path(item["path"], object_name=object_name)
+            image_url = self.storage_handler.build_image_url(object_name)
             uploaded.append({
                 "type": item["type"],
                 "page": item["page"],

@@ -23,6 +23,19 @@ services:
     command: server /data --console-address ":9001"
     restart: unless-stopped
 
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio_init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin123; do sleep 1; done;
+      mc mb -p local/summarizer-images || true;
+      mc anonymous set download local/summarizer-images || true;
+      "
+    restart: "no"
+
 volumes:
   qdrant_storage:
   minio_storage:

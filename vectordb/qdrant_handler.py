@@ -10,6 +10,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 from config.settings import (
     EMBEDDING_DIM,
     QDRANT_API_KEY,
+    QDRANT_BACKEND,
     QDRANT_COLLECTION,
     QDRANT_HOST,
     QDRANT_PORT,
@@ -22,6 +23,7 @@ class QdrantHandler:
         self,
         client: QdrantClient | None = None,
         collection_name: str = QDRANT_COLLECTION,
+        qdrant_backend: str = QDRANT_BACKEND,
         qdrant_url: str = QDRANT_URL,
         qdrant_api_key: str = QDRANT_API_KEY,
         qdrant_host: str = QDRANT_HOST,
@@ -29,14 +31,23 @@ class QdrantHandler:
     ):
         if client is not None:
             self.client = client
-        elif qdrant_url:
-            self.client = QdrantClient(
-                url=qdrant_url,
-                api_key=qdrant_api_key or None,
-                timeout=60,
-            )
         else:
-            self.client = QdrantClient(host=qdrant_host, port=qdrant_port)
+            backend = qdrant_backend.lower()
+            if backend == "auto":
+                backend = "cloud" if qdrant_url else "local"
+
+            if backend == "cloud":
+                if not qdrant_url:
+                    raise ValueError("QDRANT_URL is required when QDRANT_BACKEND=cloud")
+                self.client = QdrantClient(
+                    url=qdrant_url,
+                    api_key=qdrant_api_key or None,
+                    timeout=60,
+                )
+            elif backend == "local":
+                self.client = QdrantClient(host=qdrant_host, port=qdrant_port)
+            else:
+                raise ValueError(f"Unsupported Qdrant backend: {qdrant_backend}")
 
         self.collection_name = collection_name
 

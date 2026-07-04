@@ -19,3 +19,10 @@
   - Initialized local git on `main`, ignored `.omx/` runtime state, and pushed the current project baseline.
   - Recorded the next-pass infra default: local mode keeps persisted Docker volumes; cloud mode uses the existing R2 + Qdrant Cloud resources.
   - Verification: `gh repo view amaldevice/graph-rag-summarizer`, `git push -u origin main`.
+
+- **Implemented the dual local/cloud ingest pass on a PR branch**
+  - Published the PRD issue `#1` and slice issues `#2`, `#3`, and `#4`.
+  - Added explicit `STORAGE_BACKEND` and `QDRANT_BACKEND` selectors plus MinIO settings.
+  - Added MinIO support, storage selection, backend-neutral `DoclingLoader` usage, and explicit Qdrant backend mode handling.
+  - Updated the local compose stack with MinIO bucket bootstrap and refreshed backend-neutral docs/smoke wording.
+  - Verification: bundled Colab run passed `tests/test_r2_handler.py`, `tests/test_qdrant_handler_cloud.py`, `tests/test_storage_factory.py`, `tests/test_minio_handler.py`, `tests/test_docling_loader_storage_contract.py`, and `tests/test_qdrant_handler_backends.py` (16 passed); `docker compose config` could not run in this environment because `docker` is not installed.
