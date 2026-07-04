@@ -1,5 +1,5 @@
 # ============================================================
-# TEST QDRANT + R2
+# TEST QDRANT + OBJECT STORAGE BACKEND
 # Cek apakah query mengembalikan text + image_url + page_no
 # ============================================================
 
@@ -27,7 +27,7 @@ TOP_K    = 5
 
 def main():
     print("=" * 55)
-    print("  TEST QDRANT + R2")
+    print("  TEST QDRANT + OBJECT STORAGE BACKEND")
     print("=" * 55)
 
     # 1. Load & proses PDF
@@ -80,7 +80,7 @@ def main():
         })
 
     # 6. Simpan ke CSV
-    out_path = Path("output/qdrant_r2_test_results.csv")
+    out_path = Path("output/qdrant_backend_test_results.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(out_path, index=False)
     print(f"\n✅ Hasil disimpan ke: {out_path}")
@@ -94,7 +94,7 @@ def main():
         print("       pip install pymupdf")
     else:
         print("   ✅ Image URL berhasil disimpan di Qdrant payload!")
-        print("   Buka URL di browser untuk verifikasi gambar dari R2.")
+        print("   Buka URL di browser untuk verifikasi object storage aktif.")
 
 if __name__ == "__main__":
     main()

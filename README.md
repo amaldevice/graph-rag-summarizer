@@ -1,6 +1,6 @@
 # Summarizer Project
 
-Prototype pipeline untuk **long-document summarization** berbasis **Docling + Qdrant Cloud + R2 + Graph Analysis + LLM**. Project ini sekarang dipisah menjadi dua alur utama agar lebih jelas: satu script khusus untuk **upload/indexing dokumen ke Qdrant**, dan satu script khusus untuk **retrieval + summarization** dari data yang sudah ada di Qdrant.
+Prototype pipeline untuk **long-document summarization** berbasis **Docling + selectable object storage + selectable Qdrant backend + Graph Analysis + LLM**. Project ini sekarang dipisah menjadi dua alur utama agar lebih jelas: satu script khusus untuk **upload/indexing dokumen ke Qdrant**, dan satu script khusus untuk **retrieval + summarization** dari data yang sudah ada di Qdrant.
 
 ## Gambaran alur
 
@@ -11,7 +11,7 @@ Project ini mendukung dua proses utama:
 Arsitektur ini lebih aman untuk handoff karena pengguna project tidak perlu bingung kapan harus upload ulang dokumen dan kapan cukup melakukan query ke database vector.
 
 Batas implementasi aktif saat ini:
-- **Sebelum / sampai Vector DB**: flow ingest mengikuti arah `graph_rag-pipeline` (Docling -> R2 -> Qdrant).
+- **Sebelum / sampai Vector DB**: flow ingest mengikuti arah `graph_rag-pipeline` (Docling -> object storage backend -> Qdrant backend).
 - **Setelah Vector DB / semantic retrieval**: flow besar tetap memakai pipeline `summarizer_project` yang sudah ada, dengan penyesuaian pada format payload retrieval (`page` dinormalisasi ke `page_no`, `image_urls` ke `image_url`).
 
 ---
@@ -79,7 +79,7 @@ summarizer_project/
 Folder konfigurasi global project.
 
 Isi utama:
-- `settings.py` → menyimpan konfigurasi Qdrant, R2, embedding model, spaCy model, dan flag pipeline lain.
+- `settings.py` → menyimpan selector backend, konfigurasi Qdrant, R2, MinIO, embedding model, spaCy model, dan flag pipeline lain.
 
 Tahap diagram yang diwakili:
 - configuration layer / runtime setup.
@@ -127,6 +127,8 @@ Tahap diagram yang diwakili:
 Folder object storage.
 
 Isi utama:
+- `factory.py` → memilih backend storage aktif dari environment.
+- `minio_handler.py` → koneksi ke MinIO lokal, upload file image, dan generate public URL object.
 - `r2_handler.py` → koneksi ke Cloudflare R2, upload file image, dan generate public URL object.
 
 Tahap diagram yang diwakili:
@@ -208,7 +210,7 @@ Tahap diagram yang diwakili:
 Folder pengujian koneksi database lokal.
 
 Isi utama:
-- `qdrant_r2_test.py` → test koneksi Qdrant dan R2 payload contract.
+- `qdrant_r2_test.py` → smoke test ingest/retrieval backend-neutral untuk payload Qdrant + image URL contract.
 
 Tahap diagram yang diwakili:
 - local integration testing.
@@ -264,7 +266,7 @@ Fungsi:
 Script ini dipakai setelah data dokumen sudah tersedia di Qdrant.
 
 ### `docker-compose.yml`
-Legacy local stack. Active ingest path sekarang prefer Qdrant Cloud + R2.
+Bootstrap local mode untuk Qdrant + MinIO. Volume lokal tetap dipakai, dan `minio-init` otomatis membuat bucket `summarizer-images` sekaligus membuka akses download lokal.
 
 ### `requirements.txt`
 Daftar dependency Python untuk menjalankan project.
@@ -355,7 +357,7 @@ Catatan:
 
 ## Konfigurasi database dan storage
 
-Project ini memakai konfigurasi environment-driven. Active ingest path sekarang mengandalkan **Qdrant Cloud-style config** dan **R2 credentials** dari `.env`, jadi penerima project perlu mengganti credential/endpoint sesuai environment miliknya sendiri.
+Project ini memakai konfigurasi environment-driven. Ingest path sekarang satu flow yang bisa diarahkan ke **cloud mode** (`R2 + Qdrant Cloud`) atau **local mode** (`MinIO + local Qdrant`) dari `.env`.
 
 File yang perlu diperhatikan:
 - `.env`
@@ -363,22 +365,33 @@ File yang perlu diperhatikan:
 - `vectordb/qdrant_handler.py`
 
 Variabel yang biasanya perlu diganti:
+- `STORAGE_BACKEND`
+- `QDRANT_BACKEND`
 - `QDRANT_COLLECTION`
 - `QDRANT_URL`
 - `QDRANT_API_KEY`
+- `QDRANT_HOST`
+- `QDRANT_PORT`
 - `R2_ACCOUNT_ID`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 - `R2_BUCKET`
 - `R2_PUBLIC_BASE_URL`
+- `MINIO_ENDPOINT_URL`
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+- `MINIO_BUCKET`
+- `MINIO_PUBLIC_BASE_URL`
 - `GROQ_API_KEY`
 - `PDF_PATH`
 - `QUERY_TEXT`
 - `RETRIEVAL_LIMIT`
 
-Contoh template `.env`:
+Contoh **cloud mode** `.env`:
 
 ```env
+STORAGE_BACKEND=r2
+QDRANT_BACKEND=cloud
 QDRANT_COLLECTION=summarizer_docs
 QDRANT_URL=https://your-cluster.qdrant.io
 QDRANT_API_KEY=replace_me
@@ -396,7 +409,29 @@ QUERY_TEXT=What is the main idea of the paper?
 RETRIEVAL_LIMIT=10
 ```
 
-Penerima project bisa mengganti konfigurasi tersebut sesuai server, bucket, collection, dan credential miliknya sendiri.
+Contoh **local mode** `.env`:
+
+```env
+STORAGE_BACKEND=minio
+QDRANT_BACKEND=local
+QDRANT_COLLECTION=summarizer_docs_local
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+
+MINIO_ENDPOINT_URL=http://localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin123
+MINIO_BUCKET=summarizer-images
+MINIO_PUBLIC_BASE_URL=http://localhost:9000/summarizer-images
+
+GROQ_API_KEY=your_api_key_here
+
+PDF_PATH=sample.pdf
+QUERY_TEXT=What is the main idea of the paper?
+RETRIEVAL_LIMIT=10
+```
+
+Penerima project bisa mengganti konfigurasi tersebut sesuai server, bucket, collection, volume lokal, dan credential miliknya sendiri.
 
 ---
 
@@ -454,7 +489,15 @@ python -m spacy download en_core_web_sm
 cp env.example .env
 ```
 
-Pastikan `QDRANT_URL`, `QDRANT_API_KEY`, `R2_*`, API key, dan path file sudah sesuai environment yang dipakai.
+Pastikan selector backend, credential storage, koneksi Qdrant, API key, dan path file sudah sesuai environment yang dipakai.
+
+Untuk **local mode**, jalankan:
+
+```bash
+docker compose up -d
+```
+
+Lalu set `.env` ke `STORAGE_BACKEND=minio` dan `QDRANT_BACKEND=local`.
 
 ### 4. Upload dokumen ke Qdrant
 
@@ -482,7 +525,7 @@ Semua hasil pipeline akan muncul di folder `output/`.
 
 - `upload_to_qdrant.py` hanya fokus pada indexing/upload dokumen ke Qdrant.
 - `main.py` hanya fokus pada retrieval dan summarization dari data yang sudah ada di Qdrant.
-- Active ingest path memakai R2 untuk image/object storage dan Qdrant Cloud-style connection.
+- Active ingest path memakai satu flow dengan backend yang dipilih dari environment.
 - Setelah retrieval dari Qdrant, pipeline besar tetap memakai modul lama `summarizer_project` (`graph/*`, `summarizer/*`, `evaluation/*`, `pipeline/feedback_loop.py`).
 - Jika `PDF_PATH` tersedia saat retrieval mode, sistem dapat melakukan on-demand page render untuk halaman yang terambil.
 - Jika `PDF_PATH` tidak tersedia, retrieval tetap berjalan karena teks utama diambil dari payload Qdrant.

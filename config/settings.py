@@ -8,6 +8,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- BACKEND SELECTORS ---
+STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "r2").lower()
+QDRANT_BACKEND = os.getenv("QDRANT_BACKEND", "auto").lower()
+
 # --- QDRANT ---
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
@@ -15,11 +19,22 @@ QDRANT_URL = os.getenv("QDRANT_URL", "")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "summarizer_docs")
 
+# --- R2 ---
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
 R2_BUCKET = os.getenv("R2_BUCKET", "")
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "")
+
+# --- MINIO ---
+MINIO_ENDPOINT_URL = os.getenv("MINIO_ENDPOINT_URL", "http://localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "summarizer-images")
+MINIO_PUBLIC_BASE_URL = os.getenv(
+    "MINIO_PUBLIC_BASE_URL",
+    "http://localhost:9000/summarizer-images",
+)
 
 # --- EMBEDDING ---
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
