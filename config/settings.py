@@ -39,6 +39,28 @@ MINIO_PUBLIC_BASE_URL = os.getenv(
 # --- EMBEDDING ---
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", 768))
+EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence-transformers").strip().lower()
+EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "auto").strip().lower()
+EMBEDDING_LOCAL_FILES_ONLY = os.getenv("EMBEDDING_LOCAL_FILES_ONLY", "False").lower() == "true"
+EMBEDDING_TRUST_REMOTE_CODE = os.getenv("EMBEDDING_TRUST_REMOTE_CODE", "True").lower() == "true"
+DEFAULT_EMBEDDING_TRUST_REMOTE_CODE_ALLOWED_MODELS = "nomic-ai/nomic-embed-text-v1.5"
+EMBEDDING_TRUST_REMOTE_CODE_ALLOWED_MODELS = [
+    item.strip()
+    for item in os.getenv(
+        "EMBEDDING_TRUST_REMOTE_CODE_ALLOWED_MODELS",
+        DEFAULT_EMBEDDING_TRUST_REMOTE_CODE_ALLOWED_MODELS,
+    ).split(",")
+    if item.strip()
+]
+DEFAULT_EMBEDDING_ONNX_ALLOWED_MODELS = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_ONNX_ALLOWED_MODELS = [
+    item.strip()
+    for item in os.getenv(
+        "EMBEDDING_ONNX_ALLOWED_MODELS",
+        DEFAULT_EMBEDDING_ONNX_ALLOWED_MODELS,
+    ).split(",")
+    if item.strip()
+]
 
 # --- SPACY ---
 SPACY_MODEL = os.getenv("SPACY_MODEL", "en_core_web_sm")

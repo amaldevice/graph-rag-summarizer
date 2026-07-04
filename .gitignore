@@ -29,3 +29,6 @@ Thumbs.db
 
 # Agent/runtime state
 .omx/
+
+# Local embedding caches
+.cache/embedding/

@@ -1,0 +1,37 @@
+[project]
+name = "graph-rag-summarizer"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "bert-score==0.3.13",
+    "bertopic==0.16.4",
+    "boto3==1.39.3",
+    "docling==2.31.0",
+    "einops==0.8.2",
+    "groq==0.9.0",
+    "leidenalg==0.10.2",
+    "matplotlib==3.9.0",
+    "networkx==3.3",
+    "numpy==1.26.4",
+    "pandas==2.2.2",
+    "pillow==10.4.0",
+    "python-dotenv==1.0.1",
+    "python-igraph==0.11.6",
+    "qdrant-client==1.9.1",
+    "rouge-score==0.1.2",
+    "scikit-learn==1.5.1",
+    "sentence-transformers==5.1.2",
+    "spacy==3.7.5",
+    "tqdm==4.66.4",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
+onnx = [
+    "sentence-transformers[onnx]==5.1.2",
+]
