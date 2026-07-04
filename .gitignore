@@ -1,0 +1,31 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual / conda / env
+venv/
+.venv/
+env/
+
+# Environment secrets
+.env
+
+# Output files
+output/
+*.csv
+*.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Notebook / logs
+*.log
+.ipynb_checkpoints/
+
+# Agent/runtime state
+.omx/
