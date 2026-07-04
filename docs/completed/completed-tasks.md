@@ -26,3 +26,14 @@
   - Added MinIO support, storage selection, backend-neutral `DoclingLoader` usage, and explicit Qdrant backend mode handling.
   - Updated the local compose stack with MinIO bucket bootstrap and refreshed backend-neutral docs/smoke wording.
   - Verification: bundled Colab run passed `tests/test_r2_handler.py`, `tests/test_qdrant_handler_cloud.py`, `tests/test_storage_factory.py`, `tests/test_minio_handler.py`, `tests/test_docling_loader_storage_contract.py`, and `tests/test_qdrant_handler_backends.py` (16 passed); `docker compose config` could not run in this environment because `docker` is not installed.
+
+- **Validated the local Docker bootstrap after installing Docker/Compose/Colima**
+  - Started Colima, resolved the local Docker context, and confirmed `docker compose config` renders the MinIO + Qdrant stack cleanly.
+  - Brought the stack up, verified `http://localhost:9000/minio/health/live` and `http://localhost:6333/collections` both returned `200`, and confirmed the `summarizer-images` bucket exists.
+  - Brought the stack back down while preserving the named Docker volumes for the next local run.
+  - Verification: `colima start`, `docker compose config`, `docker compose up -d`, `docker compose ps -a`, `docker compose logs minio-init --no-color`, `curl` health checks, `docker compose run --rm ... mc ls local/summarizer-images`, `docker compose down`, `docker volume ls`.
+
+- **Refreshed the README into a compact formal-English guide**
+  - Replaced the long Indonesian project overview with a shorter English README focused on workflow, backend modes, setup, quick start, outputs, tests, and current scope.
+  - Kept the content aligned with the current dual local/cloud backend implementation and the actual entrypoints in the repository.
+  - Verification: reviewed `README.md` after the rewrite, checked the Git diff, and confirmed the document no longer contains the earlier Indonesian sections.

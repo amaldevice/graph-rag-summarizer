@@ -2,7 +2,7 @@
 
 ## Planned / Backlog
 
-- Validate `docker compose` local-mode bootstrap on a machine with Docker installed.
+- _None_
 
 ## In Progress
 
