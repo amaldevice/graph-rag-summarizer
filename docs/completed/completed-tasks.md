@@ -13,3 +13,9 @@
   - Re-checked the live code to confirm the repo is still cloud-first and not yet dual-mode.
   - Wrote `.omx/plans/2026-07-04-dual-backend-next-plan.md` as the execution-ready plan artifact.
   - Verification: confirmed the cited files still match the handoff assumptions before drafting the plan.
+
+- **Created the private GitHub repository baseline**
+  - Created the private remote `amaldevice/graph-rag-summarizer`.
+  - Initialized local git on `main`, ignored `.omx/` runtime state, and pushed the current project baseline.
+  - Recorded the next-pass infra default: local mode keeps persisted Docker volumes; cloud mode uses the existing R2 + Qdrant Cloud resources.
+  - Verification: `gh repo view amaldevice/graph-rag-summarizer`, `git push -u origin main`.
