@@ -102,6 +102,7 @@ def test_query_only_produces_json_artifact(tmp_path, monkeypatch):
         "query": "test query",
         "retrieval_limit": 10,
         "json_output": json_path,
+        "verbose": True,
     }
 
     run_query_only(config)
@@ -147,6 +148,50 @@ def test_query_only_handles_empty_results(monkeypatch):
         "query": "nothing here",
         "retrieval_limit": 5,
         "json_output": "",
+        "verbose": False,
     }
 
     run_query_only(config)
+
+
+def test_query_only_prints_stage_progress(monkeypatch, capsys):
+    embedder_module = types.ModuleType("embedding.embedder")
+    qdrant_module = types.ModuleType("vectordb.qdrant_handler")
+
+    class FakeEmbedder:
+        def embed_text(self, text):
+            return [0.1, 0.2]
+
+    class FakeQdrantHandler:
+        def __init__(self, collection_name="test"):
+            pass
+
+        def search_as_chunks(self, query_vector, limit):
+            return [
+                {"chunk_id": 1, "text": "hello world", "page_no": 1, "score": 0.95, "rank": 1},
+            ]
+
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module.QdrantHandler = FakeQdrantHandler
+
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+
+    from launcher.runners import run_query_only
+
+    run_query_only(
+        {
+            "mode": "query-only",
+            "profile": "local",
+            "collection": "test_col",
+            "query": "test query",
+            "retrieval_limit": 10,
+            "json_output": "",
+            "verbose": False,
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "Stage 1/3" in output
+    assert "Stage 2/3" in output
+    assert "Stage 3/3" in output

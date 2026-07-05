@@ -1,5 +1,16 @@
 # Completed Tasks
 
+## 2026-07-06
+
+- **Shipped artifact-directory Full-Pipeline Runs plus stage-aware launcher logging (PRD #22, issue #23)**
+  - Replaced the misleading Full-Pipeline `json_output` flow with an explicit `artifact_dir` contract in `launcher/contract.py` and preserved that value through the launcher edit loop in `main.py`.
+  - Added a collision-resistant per-run default artifact directory and mode-aware summary rendering so Query-Only Run still shows one JSON artifact while Full-Pipeline Run shows its artifact directory.
+  - Added stage/state progress output plus one shared `verbose` toggle across Query-Only Run, Ingest Run, and Full-Pipeline Run in `launcher/runners.py`.
+  - Routed every Full-Pipeline artifact writer into the selected artifact directory without changing the existing artifact basenames.
+  - Expanded regression coverage for launcher contract defaults/prompts, stage markers, main-loop config preservation, and artifact-directory forwarding across the full-pipeline seam.
+  - Archived the local planning docs to `docs/completed/prd/` and `docs/completed/issues/` after implementation.
+  - Verification: `uv run pytest -q tests/test_launcher_contract.py tests/test_query_only_runner.py tests/test_ingest_runner.py tests/test_full_pipeline_shared_session_wiring.py tests/test_launcher_main.py`; `uv run python -m py_compile main.py launcher/contract.py launcher/runners.py tests/test_launcher_contract.py tests/test_query_only_runner.py tests/test_ingest_runner.py tests/test_full_pipeline_shared_session_wiring.py tests/test_launcher_main.py`; `uv run pytest -q` (`133 passed`).
+
 ## 2026-07-05
 
 - **Fixed the Groq full-pipeline crash without dropping Groq from the provider contract**

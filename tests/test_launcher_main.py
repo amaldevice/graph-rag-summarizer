@@ -26,6 +26,8 @@ def test_main_reopens_wizard_when_summary_requests_edit(monkeypatch):
                 pdf = None
                 no_interactive = False
                 json_output = None
+                artifact_dir = None
+                verbose = False
                 confirm_existing_collection = False
 
             return Args()
@@ -44,6 +46,8 @@ def test_main_reopens_wizard_when_summary_requests_edit(monkeypatch):
             "query": "",
             "retrieval_limit": 10,
             "json_output": "",
+            "artifact_dir": "",
+            "verbose": False,
             "confirm_existing_collection": False,
         },
         {
@@ -54,6 +58,8 @@ def test_main_reopens_wizard_when_summary_requests_edit(monkeypatch):
             "query": "",
             "retrieval_limit": 10,
             "json_output": "",
+            "artifact_dir": "",
+            "verbose": False,
             "confirm_existing_collection": False,
         },
     ])

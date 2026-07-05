@@ -7,6 +7,7 @@
 import sys
 from types import SimpleNamespace
 from pathlib import Path
+import re
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -206,6 +207,8 @@ def test_build_cli_parser_has_all_flags():
         "--pdf", "test.pdf",
         "--no-interactive",
         "--json-output", "out.json",
+        "--artifact-dir", "artifacts/run-1",
+        "--verbose",
     ])
     assert args.mode == "query-only"
     assert args.profile == "local"
@@ -215,6 +218,8 @@ def test_build_cli_parser_has_all_flags():
     assert args.pdf == "test.pdf"
     assert args.no_interactive is True
     assert args.json_output == "out.json"
+    assert args.artifact_dir == "artifacts/run-1"
+    assert args.verbose is True
 
 
 def test_build_cli_parser_defaults():
@@ -228,6 +233,8 @@ def test_build_cli_parser_defaults():
     assert args.pdf is None
     assert args.no_interactive is False
     assert args.json_output is None
+    assert args.artifact_dir is None
+    assert args.verbose is False
 
 
 # ------------------------------------------------------------------
@@ -244,6 +251,8 @@ def _make_args(**kwargs):
         "pdf": None,
         "no_interactive": True,
         "json_output": None,
+        "artifact_dir": None,
+        "verbose": False,
         "confirm_existing_collection": False,
     }
     defaults.update(kwargs)
@@ -328,13 +337,22 @@ def test_fail_fast_json_output_defaults():
     assert result["json_output"] == "output/query_only_results.json"
 
 
+def test_fail_fast_full_pipeline_artifact_dir_defaults():
+    args = _make_args(mode="full-pipeline", collection="col", query="q", artifact_dir=None)
+    result = _fail_fast_missing(args, "local")
+    assert re.match(
+        r"^output/full_pipeline_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{6}Z$",
+        result["artifact_dir"],
+    )
+
+
 def test_run_interactive_wizard_uses_discovered_pdf_then_default_collection(monkeypatch, tmp_path):
     (tmp_path / "paper one.pdf").write_text("x")
     (tmp_path / "notes.txt").write_text("nope")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: [])
 
-    answers = iter(["1", ""])
+    answers = iter(["1", "", "n"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     args = SimpleNamespace(
@@ -346,6 +364,8 @@ def test_run_interactive_wizard_uses_discovered_pdf_then_default_collection(monk
         pdf=None,
         no_interactive=False,
         json_output=None,
+        artifact_dir=None,
+        verbose=False,
         confirm_existing_collection=False,
     )
 
@@ -364,6 +384,7 @@ def test_run_interactive_wizard_reprompts_on_existing_ingest_collection(monkeypa
         "existing_collection",
         "n",
         "new_collection",
+        "n",
     ])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
@@ -376,6 +397,8 @@ def test_run_interactive_wizard_reprompts_on_existing_ingest_collection(monkeypa
         pdf=None,
         no_interactive=False,
         json_output=None,
+        artifact_dir=None,
+        verbose=False,
         confirm_existing_collection=False,
     )
 
@@ -400,12 +423,75 @@ def test_run_interactive_wizard_prompts_for_profile_when_not_locked(monkeypatch)
         pdf=None,
         no_interactive=False,
         json_output="out.json",
+        artifact_dir=None,
+        verbose=True,
         confirm_existing_collection=False,
     )
 
     result = run_interactive_wizard(args, "local", is_tty=True)
 
     assert result["profile"] == "cloud"
+
+
+def test_run_interactive_wizard_uses_json_output_label_for_query_only(monkeypatch):
+    prompts = []
+    answers = iter(["output/query.json", "n"])
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    args = SimpleNamespace(
+        mode="query-only",
+        profile="local",
+        collection="col",
+        query="q",
+        retrieval_limit=1,
+        pdf=None,
+        no_interactive=False,
+        json_output=None,
+        artifact_dir=None,
+        verbose=False,
+        confirm_existing_collection=False,
+    )
+
+    result = run_interactive_wizard(args, "local", is_tty=True)
+
+    assert result["json_output"] == "output/query.json"
+    assert any("JSON output path" in prompt for prompt in prompts)
+
+
+def test_run_interactive_wizard_uses_artifact_dir_label_for_full_pipeline(monkeypatch):
+    prompts = []
+    answers = iter(["output/run-1", "", "n"])
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    args = SimpleNamespace(
+        mode="full-pipeline",
+        profile="local",
+        collection="col",
+        query="q",
+        retrieval_limit=1,
+        pdf=None,
+        no_interactive=False,
+        json_output=None,
+        artifact_dir=None,
+        verbose=False,
+        confirm_existing_collection=False,
+    )
+
+    result = run_interactive_wizard(args, "local", is_tty=True)
+
+    assert result["artifact_dir"] == "output/run-1"
+    assert any("Artifact output directory" in prompt for prompt in prompts)
+    assert not any("JSON output path" in prompt for prompt in prompts)
 
 
 def test_show_summary_and_confirm_uses_no_as_edit(monkeypatch):
@@ -422,3 +508,25 @@ def test_show_summary_and_confirm_uses_no_as_edit(monkeypatch):
     )
 
     assert result is False
+
+
+def test_show_summary_and_confirm_displays_artifact_dir_for_full_pipeline(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    result = show_summary_and_confirm(
+        {
+            "mode": "full-pipeline",
+            "profile": "cloud",
+            "collection": "paper",
+            "query": "q",
+            "retrieval_limit": 5,
+            "artifact_dir": "output/run-1",
+            "verbose": True,
+        },
+        is_tty=True,
+    )
+
+    assert result is True
+    output = capsys.readouterr().out
+    assert "Artifact Dir" in output
+    assert "output/run-1" in output
