@@ -42,6 +42,8 @@ def _config_to_args(config: dict, profile_locked: bool) -> SimpleNamespace:
         pdf=config.get("pdf_path") or None,
         no_interactive=False,
         json_output=config.get("json_output") or None,
+        artifact_dir=config.get("artifact_dir") or None,
+        verbose=config.get("verbose", False),
         confirm_existing_collection=config.get("confirm_existing_collection", False),
     )
 

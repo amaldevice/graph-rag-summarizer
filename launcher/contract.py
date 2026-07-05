@@ -6,6 +6,7 @@
 
 import argparse
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -212,6 +213,11 @@ def discover_local_pdfs(search_root: str | Path = ".") -> list[str]:
     return sorted(found)
 
 
+def default_full_pipeline_artifact_dir() -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
+    return f"output/full_pipeline_{timestamp}"
+
+
 # ------------------------------------------------------------------
 # CLI argument parsing
 # ------------------------------------------------------------------
@@ -257,7 +263,17 @@ def build_cli_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--json-output",
-        help="Path to write JSON artifact (query-only and full-pipeline)",
+        help="Path to write the Query-Only Run JSON artifact",
+    )
+    parser.add_argument(
+        "--artifact-dir",
+        help="Directory to write Full-Pipeline Run artifacts",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Enable clearer stage-level diagnostic logging",
     )
     parser.add_argument(
         "--confirm-existing-collection",
@@ -311,7 +327,7 @@ def _prompt_text(prompt_text: str, default: str | None = None, required: bool = 
 def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: bool) -> dict:
     """Interactive wizard that fills in missing runtime inputs.
 
-    Returns a dict with: mode, profile, collection, query, retrieval_limit, pdf_path, json_output.
+    Returns a dict with: mode, profile, collection, query, retrieval_limit, pdf_path, json_output, artifact_dir, verbose.
     """
     if not is_tty:
         return _fail_fast_missing(cli_args, profile)
@@ -334,6 +350,8 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
     retrieval_limit = cli_args.retrieval_limit
     pdf_path = cli_args.pdf
     json_output = cli_args.json_output
+    artifact_dir = getattr(cli_args, "artifact_dir", None)
+    verbose = bool(getattr(cli_args, "verbose", False))
     confirm_existing_collection = bool(getattr(cli_args, "confirm_existing_collection", False))
 
     if mode in ("query-only", "full-pipeline"):
@@ -401,14 +419,23 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
                 continue
             break
 
-    if mode in ("query-only", "full-pipeline") and not json_output:
+    if mode == "query-only" and not json_output:
         json_output = _prompt_text(
             "JSON output path",
-            default=f"output/{mode.replace('-', '_')}_results.json",
+            default="output/query_only_results.json",
+        )
+
+    if mode == "full-pipeline" and not artifact_dir:
+        artifact_dir = _prompt_text(
+            "Artifact output directory",
+            default=default_full_pipeline_artifact_dir(),
         )
 
     if mode == "full-pipeline" and not pdf_path:
         pdf_path = _prompt_text("Optional PDF path for page-image enrichment (leave empty to skip)")
+
+    if not verbose:
+        verbose = input("Enable verbose logging? [y/N]: ").strip().lower() in ("y", "yes")
 
     return {
         "mode": mode,
@@ -418,6 +445,8 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
         "retrieval_limit": retrieval_limit or DEFAULT_RETRIEVAL_LIMIT,
         "pdf_path": pdf_path or "",
         "json_output": json_output or "",
+        "artifact_dir": artifact_dir or "",
+        "verbose": verbose,
         "confirm_existing_collection": confirm_existing_collection,
     }
 
@@ -433,6 +462,8 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
     retrieval_limit = cli_args.retrieval_limit or DEFAULT_RETRIEVAL_LIMIT
     pdf_path = cli_args.pdf or ""
     json_output = cli_args.json_output or ""
+    artifact_dir = getattr(cli_args, "artifact_dir", None) or ""
+    verbose = bool(getattr(cli_args, "verbose", False))
     confirm_existing_collection = bool(getattr(cli_args, "confirm_existing_collection", False))
 
     if mode in ("query-only", "full-pipeline"):
@@ -452,8 +483,10 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
                 "Re-run interactively to confirm, or pass --confirm-existing-collection."
             )
 
-    if mode in ("query-only", "full-pipeline") and not json_output:
+    if mode == "query-only" and not json_output:
         json_output = f"output/{mode.replace('-', '_')}_results.json"
+    if mode == "full-pipeline" and not artifact_dir:
+        artifact_dir = default_full_pipeline_artifact_dir()
 
     return {
         "mode": mode,
@@ -463,6 +496,8 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
         "retrieval_limit": retrieval_limit,
         "pdf_path": pdf_path,
         "json_output": json_output,
+        "artifact_dir": artifact_dir,
+        "verbose": verbose,
         "confirm_existing_collection": confirm_existing_collection,
     }
 
@@ -483,8 +518,11 @@ def show_summary_and_confirm(config: dict, is_tty: bool) -> bool:
         print(f"  Limit     : {config['retrieval_limit']}")
     if config.get("pdf_path"):
         print(f"  PDF       : {config['pdf_path']}")
-    if config.get("json_output"):
+    if config["mode"] == "query-only" and config.get("json_output"):
         print(f"  Output    : {config['json_output']}")
+    if config["mode"] == "full-pipeline" and config.get("artifact_dir"):
+        print(f"  Artifact Dir: {config['artifact_dir']}")
+    print(f"  Verbose   : {'on' if config.get('verbose') else 'off'}")
     if config.get("confirm_existing_collection"):
         print("  Risk      : existing collection confirmed")
     print("--------------------")

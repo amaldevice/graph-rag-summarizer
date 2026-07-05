@@ -145,17 +145,17 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             del graph
             return FakeRanked()
 
-        def save_ranked_csv(self, ranked):
+        def save_ranked_csv(self, ranked, output_path="output/graph_ranked_nodes.csv"):
             del ranked
-            return "ranked.csv"
+            return output_path
 
-        def save_ranked_json(self, ranked):
+        def save_ranked_json(self, ranked, output_path="output/graph_ranked_nodes.json"):
             del ranked
-            return "ranked.json"
+            return output_path
 
-        def save_summary_json(self, ranked, communities, modularity):
+        def save_summary_json(self, ranked, communities, modularity, output_path="output/graph_summary.json"):
             del ranked, communities, modularity
-            return "summary.json"
+            return output_path
 
     class FakeSummaryPruner:
         def __init__(self, top_k_per_community: int, top_k_global: int):
@@ -165,13 +165,13 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             del ranked, retrieved_chunks
             return {"communities": []}
 
-        def save_pruned_json(self, pruned_result):
+        def save_pruned_json(self, pruned_result, output_path="output/pruned_summary_context.json"):
             del pruned_result
-            return "pruned.json"
+            return output_path
 
-        def save_pruned_csv(self, pruned_result):
+        def save_pruned_csv(self, pruned_result, output_path="output/pruned_summary_context.csv"):
             del pruned_result
-            return "pruned.csv"
+            return output_path
 
     class FakePromptBuilder:
         def __init__(self, max_chars_per_chunk: int):
@@ -189,13 +189,13 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             del community_prompts
             return []
 
-        def save_map_summaries_json(self, community_summaries):
+        def save_map_summaries_json(self, community_summaries, output_path="output/community_map_summaries.json"):
             del community_summaries
-            return "map.json"
+            return output_path
 
-        def save_map_summaries_txt(self, community_summaries):
+        def save_map_summaries_txt(self, community_summaries, output_path="output/community_map_summaries.txt"):
             del community_summaries
-            return "map.txt"
+            return output_path
 
     class FakeReducer:
         def __init__(self, session=None):
@@ -205,22 +205,22 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             del community_summaries, query, style
             return {"final_summary": "done"}
 
-        def save_final_summary_json(self, final_result):
+        def save_final_summary_json(self, final_result, output_path="output/final_summary.json"):
             del final_result
-            return "final.json"
+            return output_path
 
-        def save_final_summary_txt(self, final_result):
+        def save_final_summary_txt(self, final_result, output_path="output/final_summary.txt"):
             del final_result
-            return "final.txt"
+            return output_path
 
     class FakeEvaluator:
         def evaluate_without_reference(self, generated_summary: str, source_chunks):
             del generated_summary, source_chunks
             return {"quality": "ok"}
 
-        def save_evaluation_json(self, eval_result):
+        def save_evaluation_json(self, eval_result, output_path="output/evaluation_result.json"):
             del eval_result
-            return "eval.json"
+            return output_path
 
     class FakeQualityChecker:
         def check(self, eval_result):
@@ -231,9 +231,9 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             del quality_result
             return {"action": "none"}
 
-        def save_quality_report(self, quality_result, action_result):
+        def save_quality_report(self, quality_result, action_result, output_path="output/quality_gate_report.json"):
             del quality_result, action_result
-            return "quality.json"
+            return output_path
 
     class FakeFeedbackLoopController:
         def __init__(self, max_retries: int):
@@ -251,9 +251,9 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
                 "message": "done",
             }
 
-        def save_decision(self, decision):
+        def save_decision(self, decision, output_path="output/feedback_loop_decision.json"):
             del decision
-            return "decision.json"
+            return output_path
 
     embedder_module.TextEmbedder = FakeEmbedder
     qdrant_module.QdrantHandler = FakeQdrantHandler
@@ -303,6 +303,8 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
         "retrieval_limit": 5,
         "pdf_path": "",
         "json_output": "",
+        "artifact_dir": "output/run-embedding-test",
+        "verbose": False,
     })
 
     assert used_models == ["shared-model"]

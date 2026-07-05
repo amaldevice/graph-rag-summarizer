@@ -12,6 +12,7 @@ from config import settings
 def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monkeypatch):
     shared_session = object()
     received_sessions = []
+    saved_paths = {}
 
     embedder_module = types.ModuleType("embedding.embedder")
     qdrant_module = types.ModuleType("vectordb.qdrant_handler")
@@ -74,17 +75,20 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             del graph
             return FakeRanked()
 
-        def save_ranked_csv(self, ranked):
+        def save_ranked_csv(self, ranked, output_path="output/graph_ranked_nodes.csv"):
             del ranked
-            return "ranked.csv"
+            saved_paths["graph_ranked_csv"] = output_path
+            return output_path
 
-        def save_ranked_json(self, ranked):
+        def save_ranked_json(self, ranked, output_path="output/graph_ranked_nodes.json"):
             del ranked
-            return "ranked.json"
+            saved_paths["graph_ranked_json"] = output_path
+            return output_path
 
-        def save_summary_json(self, ranked, communities, modularity):
+        def save_summary_json(self, ranked, communities, modularity, output_path="output/graph_summary.json"):
             del ranked, communities, modularity
-            return "summary.json"
+            saved_paths["graph_summary_json"] = output_path
+            return output_path
 
     class FakeSummaryPruner:
         def __init__(self, top_k_per_community: int, top_k_global: int):
@@ -94,13 +98,15 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             del ranked, retrieved_chunks
             return {"communities": [{"community_id": 0, "chunk_ids": ["c1"], "num_chunks": 1}]}
 
-        def save_pruned_json(self, pruned_result):
+        def save_pruned_json(self, pruned_result, output_path="output/pruned_summary_context.json"):
             del pruned_result
-            return "pruned.json"
+            saved_paths["pruned_json"] = output_path
+            return output_path
 
-        def save_pruned_csv(self, pruned_result):
+        def save_pruned_csv(self, pruned_result, output_path="output/pruned_summary_context.csv"):
             del pruned_result
-            return "pruned.csv"
+            saved_paths["pruned_csv"] = output_path
+            return output_path
 
     class FakePromptBuilder:
         def __init__(self, max_chars_per_chunk: int):
@@ -121,13 +127,15 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             del community_prompts
             return [{"community_id": 0, "summary": "community summary", "chunk_ids": ["c1"]}]
 
-        def save_map_summaries_json(self, community_summaries):
+        def save_map_summaries_json(self, community_summaries, output_path="output/community_map_summaries.json"):
             del community_summaries
-            return "map.json"
+            saved_paths["map_json"] = output_path
+            return output_path
 
-        def save_map_summaries_txt(self, community_summaries):
+        def save_map_summaries_txt(self, community_summaries, output_path="output/community_map_summaries.txt"):
             del community_summaries
-            return "map.txt"
+            saved_paths["map_txt"] = output_path
+            return output_path
 
     class FakeReducer:
         def __init__(self, session=None):
@@ -137,22 +145,25 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             del community_summaries, query, style
             return {"final_summary": "done"}
 
-        def save_final_summary_json(self, final_result):
+        def save_final_summary_json(self, final_result, output_path="output/final_summary.json"):
             del final_result
-            return "final.json"
+            saved_paths["final_json"] = output_path
+            return output_path
 
-        def save_final_summary_txt(self, final_result):
+        def save_final_summary_txt(self, final_result, output_path="output/final_summary.txt"):
             del final_result
-            return "final.txt"
+            saved_paths["final_txt"] = output_path
+            return output_path
 
     class FakeEvaluator:
         def evaluate_without_reference(self, generated_summary: str, source_chunks):
             del generated_summary, source_chunks
             return {"quality": "ok"}
 
-        def save_evaluation_json(self, eval_result):
+        def save_evaluation_json(self, eval_result, output_path="output/evaluation_result.json"):
             del eval_result
-            return "eval.json"
+            saved_paths["evaluation_json"] = output_path
+            return output_path
 
     class FakeQualityChecker:
         def check(self, eval_result):
@@ -163,9 +174,10 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             del quality_result
             return {"action": "none"}
 
-        def save_quality_report(self, quality_result, action_result):
+        def save_quality_report(self, quality_result, action_result, output_path="output/quality_gate_report.json"):
             del quality_result, action_result
-            return "quality.json"
+            saved_paths["quality_json"] = output_path
+            return output_path
 
     class FakeFeedbackLoopController:
         def __init__(self, max_retries: int):
@@ -175,9 +187,10 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             del quality_result, action_result, retry_state
             return {"final_decision": "stop"}
 
-        def save_decision(self, decision):
+        def save_decision(self, decision, output_path="output/feedback_loop_decision.json"):
             del decision
-            return "decision.json"
+            saved_paths["decision_json"] = output_path
+            return output_path
 
     embedder_module.TextEmbedder = FakeEmbedder
     qdrant_module.QdrantHandler = FakeQdrantHandler
@@ -227,9 +240,23 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         "retrieval_limit": 5,
         "pdf_path": "",
         "json_output": "",
+        "artifact_dir": "output/run-1",
+        "verbose": True,
     })
 
     assert received_sessions == [
         ("summarizer", shared_session),
         ("reducer", shared_session),
     ]
+    assert saved_paths["graph_ranked_csv"] == "output/run-1/graph_ranked_nodes.csv"
+    assert saved_paths["graph_ranked_json"] == "output/run-1/graph_ranked_nodes.json"
+    assert saved_paths["graph_summary_json"] == "output/run-1/graph_summary.json"
+    assert saved_paths["pruned_json"] == "output/run-1/pruned_summary_context.json"
+    assert saved_paths["pruned_csv"] == "output/run-1/pruned_summary_context.csv"
+    assert saved_paths["map_json"] == "output/run-1/community_map_summaries.json"
+    assert saved_paths["map_txt"] == "output/run-1/community_map_summaries.txt"
+    assert saved_paths["final_json"] == "output/run-1/final_summary.json"
+    assert saved_paths["final_txt"] == "output/run-1/final_summary.txt"
+    assert saved_paths["evaluation_json"] == "output/run-1/evaluation_result.json"
+    assert saved_paths["quality_json"] == "output/run-1/quality_gate_report.json"
+    assert saved_paths["decision_json"] == "output/run-1/feedback_loop_decision.json"
