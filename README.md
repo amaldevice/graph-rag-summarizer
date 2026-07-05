@@ -171,6 +171,56 @@ EMBEDDING_TRUST_REMOTE_CODE=False \
 EMBEDDING_ONNX_ALLOWED_MODELS=sentence-transformers/all-MiniLM-L6-v2
 ```
 
+## Multi-Provider LLM Fallback
+
+Summarization uses a provider router that tries the Preferred Provider first and falls back through a configured chain on hard failure.
+
+**Supported providers:** Groq, Gemini, NVIDIA NIM, OpenRouter
+
+**Default fallback chain:** `groq → gemini → nvidia → openrouter`
+
+### How it works
+
+- The router starts with `LLM_PROVIDER` (default: `groq`).
+- If a provider fails (timeout, rate limit, server error, auth error, empty output), it moves to the next provider in `LLM_FALLBACK_CHAIN`.
+- Once failover happens, it stays on the recovered provider for the rest of that run (sticky failover).
+- Providers missing API keys are skipped automatically.
+- Retry: transient failures get up to 2 retries with exponential backoff before failover. Auth errors skip retry.
+- Map summarization and final reduction share one Shared LLM Session per run.
+
+### Provider settings
+
+```bash
+# Preferred provider
+LLM_PROVIDER=groq
+
+# Fallback chain (comma-separated)
+LLM_FALLBACK_CHAIN=groq,gemini,nvidia,openrouter
+
+# Enable/disable fallback
+LLM_ENABLE_FALLBACK=True
+
+# Request timeout
+LLM_REQUEST_TIMEOUT_SECONDS=30
+
+# Provider credentials and models
+GROQ_API_KEY=your_key
+GROQ_MODEL=openai/gpt-oss-120b
+
+GEMINI_API_KEY=your_key
+GEMINI_MODEL=gemini-2.0-flash
+
+NVIDIA_NIM_API_KEY=your_key
+NVIDIA_NIM_MODEL=meta/llama-3.1-70b-instruct
+
+OPENROUTER_API_KEY=your_key
+OPENROUTER_MODEL=meta-llama/llama-3.1-70b-instruct
+```
+
+### Scope
+
+The multi-provider router covers **map summarization and final reduction only**. Relation extraction stays on its current path.
+
 ## Minimum Configuration
 
 Set these before running the pipeline:

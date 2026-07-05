@@ -2,6 +2,42 @@
 
 ## 2026-07-05
 
+- **Implemented multi-provider LLM fallback for summarization (issues #18, #19)**
+  - Created `summarizer/provider_router.py` with ProviderRouter class supporting Groq, Gemini, NVIDIA NIM, and OpenRouter.
+  - Rewrote `summarizer/llm_summarizer.py` and `summarizer/hierarchical_reducer.py` to use the shared provider router session.
+  - Added LLM provider config to `config/settings.py`: LLM_PROVIDER, LLM_FALLBACK_CHAIN, LLM_ENABLE_FALLBACK, LLM_REQUEST_TIMEOUT_SECONDS, per-provider credentials and models.
+  - Default fallback chain: groq -> gemini -> nvidia -> openrouter.
+  - Missing API keys = skip provider with warning; invalid provider names = warn and ignore.
+  - Empty/whitespace output treated as hard failure.
+  - Auth errors skip retry; transient errors get 2 retries with exponential backoff.
+  - Sticky failover: once failover happens, stays on recovered provider for the run.
+  - Shared LLM Session reused across map summarization and final reduction.
+  - Added `google-genai==2.10.0` and `openai==2.44.0` to dependencies.
+  - Updated `env.example` with all provider settings.
+  - Updated `README.md` with Multi-Provider LLM Fallback section.
+  - Added 27 new tests: `test_provider_router.py` (21) and `test_shared_session.py` (6).
+  - Full test suite passes: 117 tests, 0 failures.
+  - Commented on and closed GitHub issues #18 and #19.
+  - Verification: `uv run python -m pytest tests/ -v` (117 passed).
+
+- **Prepared a fresh implementation handoff for the multi-provider LLM fallback work**
+  - Added `docs/handoff-2026-07-05-multi-provider-llm-fallback-implementation.md` for the next implementation agent.
+  - Tailored the handoff around parent issue `#17` and execution slices `#18` and `#19`, including current repo state, locked constraints, desired output, verification expectations, and suggested skills.
+  - Kept the handoff implementation-focused and referenced the published PRD/issues instead of duplicating them.
+  - Verification: reviewed the published issue bodies for `#17`, `#18`, and `#19`; checked the current working tree; saved a temp-dir copy per the handoff skill contract.
+
+- **Published the multi-provider LLM fallback planning set**
+  - Added glossary terms for Preferred Provider, Fallback Chain, Shared LLM Session, Sticky Failover, and Hard Failure in `CONTEXT.md`.
+  - Wrote `docs/prd-2026-07-05-multi-provider-llm-fallback.md` and published it as GitHub issue `#17`.
+  - Broke the PRD into two ready-for-agent execution slices in `docs/slice-2026-07-05-multi-provider-llm-fallback.md` and published them as GitHub issues `#18` and `#19`.
+  - Locked the first-pass scope to summarization and final reduction only; relation extraction stays out of scope for this provider router pass.
+  - Verification: `gh issue create --title "PRD: multi-provider LLM fallback for summarization runs" ...`; `gh issue create --title "Ship provider-routed map summarization with Groq, Gemini, NVIDIA NIM, and OpenRouter fallback" ...`; `gh issue create --title "Reuse the shared provider session for final reduction" ...`; `gh issue list --state open --limit 50 --json number,title,labels,url`.
+
+- **Ignored local-only workspace clutter in git**
+  - Added `.commandcode/` plus the currently untracked personal PDF/image files to `.gitignore`.
+  - Confirmed `.venv/` and `.vscode/` were already covered, so no broader ignore changes were needed.
+  - Verification: `git check-ignore -v .commandcode 'The Let Them Theory.pdf' 'WhatsApp Image 2026-06-25 at 20.20.50.jpeg' .venv .vscode`; `git status --short --ignored`.
+
 - **Closed the remaining single-launcher PRD gaps**
   - Added repo-local PDF discovery / scan for interactive ingest and kept manual PDF-path entry as the fallback path.
   - Added existing-collection risk messaging plus an explicit confirmation step for ingest; non-interactive ingest now requires `--confirm-existing-collection` to target an existing collection intentionally.

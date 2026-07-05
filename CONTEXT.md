@@ -35,3 +35,23 @@ _Avoid_: basic RAG, search mode
 **Full-Pipeline Run**:
 A launcher mode that continues from retrieval into graph construction, summarization, evaluation, and quality decisions.
 _Avoid_: normal mode, default run
+
+**Preferred Provider**:
+The first LLM provider a summarization run tries before any fallback logic is applied.
+_Avoid_: main vendor, chosen API
+
+**Fallback Chain**:
+A run-scoped ordered list of LLM providers that can be tried when the Preferred Provider is unavailable or fails with a hard error.
+_Avoid_: backup list, retry pool
+
+**Shared LLM Session**:
+A single run-scoped provider session reused across map summarization and final reduction so provider choice and failover state stay consistent for that run.
+_Avoid_: global client, permanent provider state
+
+**Sticky Failover**:
+The rule that once a run fails over to a later provider, the rest of that run stays on the recovered provider instead of retrying higher-priority providers on every later request.
+_Avoid_: permanent fallback, saved preference
+
+**Hard Failure**:
+A provider error state that should trigger retry or failover, such as timeout, rate limiting, server errors, invalid auth, malformed output, or empty output.
+_Avoid_: weak answer, subjective quality issue

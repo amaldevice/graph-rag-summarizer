@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Create PRs instead of committing directly to main; add descriptive comments to issues/PRs about what was implemented.
+
 ## Docs
 
 - `docs/todo-in-progress.md` — live onboarding patokan / what's pending
