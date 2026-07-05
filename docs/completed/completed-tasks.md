@@ -2,23 +2,22 @@
 
 ## 2026-07-05
 
-- **Implemented multi-provider LLM fallback for summarization (issues #18, #19)**
-  - Created `summarizer/provider_router.py` with ProviderRouter class supporting Groq, Gemini, NVIDIA NIM, and OpenRouter.
-  - Rewrote `summarizer/llm_summarizer.py` and `summarizer/hierarchical_reducer.py` to use the shared provider router session.
-  - Added LLM provider config to `config/settings.py`: LLM_PROVIDER, LLM_FALLBACK_CHAIN, LLM_ENABLE_FALLBACK, LLM_REQUEST_TIMEOUT_SECONDS, per-provider credentials and models.
-  - Default fallback chain: groq -> gemini -> nvidia -> openrouter.
-  - Missing API keys = skip provider with warning; invalid provider names = warn and ignore.
-  - Empty/whitespace output treated as hard failure.
-  - Auth errors skip retry; transient errors get 2 retries with exponential backoff.
-  - Sticky failover: once failover happens, stays on recovered provider for the run.
-  - Shared LLM Session reused across map summarization and final reduction.
+- **Implemented and review-aligned multi-provider LLM fallback for summarization (issues #18, #19; draft PR #20)**
+  - Created `summarizer/provider_router.py` with ProviderRouter support for Groq, Gemini, NVIDIA NIM, and OpenRouter.
+  - Rewrote `summarizer/llm_summarizer.py` and `summarizer/hierarchical_reducer.py` to use a shared provider router session.
+  - Wired the real full-pipeline path in `launcher/runners.py` to create one run-scoped provider session and inject that same session into both map summarization and final reduction.
+  - Enforced the approved no-fallback contract: when `LLM_ENABLE_FALLBACK=false`, the router now tries only `LLM_PROVIDER` and fails clearly if that provider is unknown or unavailable.
+  - Expanded provider availability checks so missing required configuration is not limited to API keys; model/base URL requirements are now respected where applicable.
+  - Passed the global timeout through the Gemini `google-genai` client via `http_options`.
+  - Aligned launcher availability gating with the provider-router contract so full-pipeline runs accept any correctly configured provider instead of hard-requiring Groq.
+  - Added LLM provider config to `config/settings.py`: `LLM_PROVIDER`, `LLM_FALLBACK_CHAIN`, `LLM_ENABLE_FALLBACK`, `LLM_REQUEST_TIMEOUT_SECONDS`, plus per-provider credentials/models/base URLs.
+  - Default fallback chain remains `groq -> gemini -> nvidia -> openrouter`.
+  - Empty/whitespace output is treated as a hard failure; auth errors skip retry; transient errors get 2 retries with exponential backoff; sticky failover remains run-scoped.
   - Added `google-genai==2.10.0` and `openai==2.44.0` to dependencies.
-  - Updated `env.example` with all provider settings.
-  - Updated `README.md` with Multi-Provider LLM Fallback section.
-  - Added 27 new tests: `test_provider_router.py` (21) and `test_shared_session.py` (6).
-  - Full test suite passes: 117 tests, 0 failures.
-  - Commented on and closed GitHub issues #18 and #19.
-  - Verification: `uv run python -m pytest tests/ -v` (117 passed).
+  - Updated `env.example` and `README.md` for the multi-provider contract.
+  - Added 34 total regression tests for this feature across `tests/test_provider_router.py`, `tests/test_shared_session.py`, `tests/test_full_pipeline_shared_session_wiring.py`, `tests/test_full_pipeline_dispatch.py`, `tests/test_launcher_contract.py`, and `tests/test_embedding_entrypoints.py`.
+  - Reopened issues #18 and #19 after review found spec gaps, added corrective issue comments, and opened draft PR #20 to carry the fix branch.
+  - Verification: `uv run python -m py_compile launcher/contract.py launcher/runners.py summarizer/provider_router.py summarizer/llm_summarizer.py summarizer/hierarchical_reducer.py tests/test_provider_router.py tests/test_shared_session.py tests/test_full_pipeline_shared_session_wiring.py tests/test_full_pipeline_dispatch.py tests/test_launcher_contract.py tests/test_embedding_entrypoints.py`; `uv run pytest -q` (124 passed).
 
 - **Prepared a fresh implementation handoff for the multi-provider LLM fallback work**
   - Added `docs/handoff-2026-07-05-multi-provider-llm-fallback-implementation.md` for the next implementation agent.

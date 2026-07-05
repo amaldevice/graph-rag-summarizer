@@ -112,6 +112,7 @@ def run_full_pipeline(config: dict) -> None:
     from summarizer.prompt_builder import PromptBuilder
     from summarizer.llm_summarizer import LLMSummarizer
     from summarizer.hierarchical_reducer import HierarchicalReducer
+    from summarizer.provider_router import create_session
     from evaluation.evaluator import SummaryEvaluator
     from evaluation.quality_checker import QualityChecker
     from pipeline.feedback_loop import FeedbackLoopController
@@ -180,12 +181,13 @@ def run_full_pipeline(config: dict) -> None:
     prompt_builder = PromptBuilder(max_chars_per_chunk=1200)
     community_prompts = prompt_builder.build_all_community_prompts(pruned_result, query=query, style="concise")
 
-    summarizer = LLMSummarizer()
+    session = create_session()
+    summarizer = LLMSummarizer(session=session)
     community_summaries = summarizer.summarize_communities(community_prompts)
     map_json = summarizer.save_map_summaries_json(community_summaries)
     map_txt = summarizer.save_map_summaries_txt(community_summaries)
 
-    reducer = HierarchicalReducer()
+    reducer = HierarchicalReducer(session=session)
     final_result = reducer.reduce_summaries(community_summaries, query=query, style="concise")
     final_json = reducer.save_final_summary_json(final_result)
     final_txt = reducer.save_final_summary_txt(final_result)

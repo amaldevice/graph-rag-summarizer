@@ -1,128 +1,160 @@
-# Handoff — multi-provider LLM fallback implementation (COMPLETED)
+# Handoff — multi-provider LLM fallback implementation (review-aligned branch state)
 
 Date: 2026-07-05
-Status: Implementation complete. Issues #18 and #19 closed.
+Status: Implementation plus review follow-up is complete on branch `fix/multi-provider-review-findings`. Draft PR #20 is open. Issues #18 and #19 were reopened for the review fix and should stay tied to the PR until merge.
 
 ## Session summary
 
-This session implemented the full multi-provider LLM fallback for summarization end-to-end.
+This work first implemented the multi-provider LLM fallback for summarization, then applied a review-driven fix pass to align the branch with the approved PRD.
 
-Both child issues (#18, #19) are implemented and closed. The provider router supports Groq, Gemini, NVIDIA NIM, and OpenRouter with fallback, retry, sticky failover, and a Shared LLM Session reused across map summarization and final reduction.
+The current branch now satisfies the important spec seams:
+
+- provider router supports Groq, Gemini, NVIDIA NIM, and OpenRouter,
+- fallback-disabled mode is strict to `LLM_PROVIDER`,
+- the live full-pipeline path reuses one Shared LLM Session across map summarization and final reduction,
+- Gemini receives the configured global timeout,
+- and launcher availability checks now match the provider-router contract instead of hard-requiring Groq.
 
 ## What was built
 
 ### Provider router
 
-- `summarizer/provider_router.py` — the core module:
-  - `ProviderRouter` class — run-scoped Shared LLM Session
-  - `resolve_chain()` — builds ordered provider list from config, skips unavailable providers, warns on unknown names
-  - `call_llm(system_prompt, user_prompt)` — tries providers in order with fallback
-  - `_call_with_retry(provider, ...)` — retry logic for transient failures (max 2 retries, exponential backoff)
-  - `_call_provider(provider, ...)` — dispatches to provider-specific client (OpenAI-compatible for Groq/NVIDIA/OpenRouter, native google-genai for Gemini)
-  - `_is_auth_error(error)` — detects 401/403/auth failures (skip retry)
-  - `_is_transient(error)` — detects rate limits, timeouts, server errors (retry eligible)
-  - `_is_hard_failure(response_text, error)` — empty/whitespace output = failure
-  - `_get_client(provider)` — lazily creates and caches provider clients
-  - `_get_model(provider)` — returns provider-specific model from config
-  - `create_session(...)` — factory function for new Shared LLM Sessions
-  - `SUPPORTED_PROVIDERS` — ("groq", "gemini", "nvidia", "openrouter")
-  - `MAX_RETRIES` = 2, `RETRY_BASE_DELAY` = 1.0, `RETRY_MAX_DELAY` = 8.0
+- `summarizer/provider_router.py`
+  - `ProviderRouter` — run-scoped Shared LLM Session
+  - `resolve_chain()` — builds ordered provider list, skips unavailable providers, warns on unknown names
+  - `call_llm()` — fallback-enabled mode walks the resolved chain; fallback-disabled mode tries only the preferred provider
+  - `_call_with_retry()` — retry logic for transient failures (2 retries, exponential backoff)
+  - `_call_provider()` — OpenAI-compatible path for Groq/NVIDIA/OpenRouter, native `google-genai` path for Gemini
+  - `_missing_config_fields()` / `_is_configured()` — provider readiness checks now cover required config, not just API keys
+  - `_get_client()` — lazily creates provider clients; Gemini now receives `http_options={"timeout": ...}`
+  - `create_session()` — factory for a new run-scoped provider session
 
-### Summarizer and reducer
+### Summarization stages
 
-- `summarizer/llm_summarizer.py` — rewritten:
-  - `LLMSummarizer(session)` — accepts optional ProviderRouter session
-  - `summarize_prompt(prompt)` — calls `session.call_llm()`
-  - `summarize_communities(community_prompts)` — iterates communities, calls summarize_prompt
-  - `save_map_summaries_json/txt(...)` — unchanged output methods
+- `summarizer/llm_summarizer.py`
+  - accepts an optional provider session
+  - uses `session.call_llm()` for community summarization
 
-- `summarizer/hierarchical_reducer.py` — rewritten:
-  - `HierarchicalReducer(session)` — accepts optional ProviderRouter session
-  - `build_reduce_prompt(...)` — unchanged prompt builder
-  - `reduce_summaries(...)` — calls `session.call_llm()` instead of local Groq client
-  - `save_final_summary_json/txt(...)` — unchanged output methods
+- `summarizer/hierarchical_reducer.py`
+  - accepts an optional provider session
+  - uses `session.call_llm()` for final reduction
 
-### Configuration
+### Live pipeline wiring
 
-- `config/settings.py` — added at bottom:
-  - `LLM_PROVIDER` — preferred provider (default: "groq")
-  - `LLM_ENABLE_FALLBACK` — toggle (default: True)
-  - `LLM_FALLBACK_CHAIN` — parsed list (default: ["groq", "gemini", "nvidia", "openrouter"])
-  - `LLM_REQUEST_TIMEOUT_SECONDS` — global timeout (default: 30)
-  - `GROQ_API_KEY`, `GROQ_MODEL` (default: "openai/gpt-oss-120b")
-  - `GEMINI_API_KEY`, `GEMINI_MODEL` (default: "gemini-2.0-flash")
-  - `NVIDIA_NIM_API_KEY`, `NVIDIA_NIM_MODEL`, `NVIDIA_NIM_BASE_URL`
-  - `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`
+- `launcher/runners.py`
+  - `run_full_pipeline()` now creates one provider session with `create_session()`
+  - injects that same session into both `LLMSummarizer` and `HierarchicalReducer`
+  - closes the earlier gap where only unit tests shared the session while the live pipeline did not
 
-- `pyproject.toml` — added dependencies:
-  - `google-genai==2.10.0`
-  - `openai==2.44.0`
+### Launcher gating
 
-- `env.example` — expanded LLM PROVIDER section with all provider settings
+- `launcher/contract.py`
+  - full-pipeline availability checks now accept any correctly configured provider
+  - fallback-disabled mode requires the preferred provider specifically
 
-- `README.md` — added Multi-Provider LLM Fallback section
+### Configuration and docs
+
+- `config/settings.py`
+  - added `LLM_PROVIDER`, `LLM_ENABLE_FALLBACK`, `LLM_FALLBACK_CHAIN`, `LLM_REQUEST_TIMEOUT_SECONDS`
+  - added provider-specific API key, model, and base URL settings
+
+- `pyproject.toml`
+  - added `google-genai==2.10.0`
+  - added `openai==2.44.0`
+
+- `env.example`
+  - expanded the LLM provider section
+
+- `README.md`
+  - documented the multi-provider summarization contract
 
 ## Architecture decisions
 
-- One ProviderRouter module, not a repository-wide LLM rewrite
-- Groq + NVIDIA NIM + OpenRouter share one OpenAI-compatible client path (openai Python SDK)
-- Gemini uses native google-genai SDK
-- Missing API keys = skip provider with warning; invalid provider names = warn and ignore
-- Empty/whitespace output = hard failure triggers failover
-- Auth errors (401, 403, "invalid api key") skip retry and go straight to failover
-- Transient errors (429, rate, timeout, 500/502/503/504) get up to 2 retries with exponential backoff
-- Sticky failover: once failover happens, the rest of the run stays on the recovered provider
-- Shared LLM Session: both LLMSummarizer and HierarchicalReducer accept and reuse the same ProviderRouter instance
-- Relation extraction (graph/entity_extractor.py) intentionally untouched in this pass
-- No launcher changes; config is env-driven only
+- one ProviderRouter module, not a repository-wide LLM rewrite
+- Groq + NVIDIA NIM + OpenRouter share one OpenAI-compatible client path
+- Gemini uses native `google-genai`
+- missing required provider configuration = skip provider with warning
+- empty/whitespace output = hard failure
+- auth errors skip retry and fail over immediately
+- transient errors retry briefly before failover
+- sticky failover is run-scoped
+- relation extraction remains intentionally out of scope
+- provider choice stays env-driven; no new launcher prompt was added
 
-## Tests
+## Review follow-up fixes
 
-117 tests passing, 0 failures. New test files:
+The first implementation pass was close but not fully spec-complete. The follow-up fixed the concrete gaps:
 
-- `tests/test_provider_router.py` — 21 tests:
-  - Chain resolution: configured providers, skip missing keys, warn unknown names, warn unknown preferred, empty chain, preferred-first ordering, cache
-  - Call behavior: success, fallback on failure, all-providers-fail, disabled fallback, empty output, whitespace output
-  - Sticky failover, no providers available, auth error skip retry, transient retry before failover
-  - is_configured, get_model, failure_history, is_hard_failure
+1. **Shared session in the real production path**
+   - fixed in `launcher/runners.py`
+   - new regression: `tests/test_full_pipeline_shared_session_wiring.py`
 
-- `tests/test_shared_session.py` — 6 tests:
-  - Shared session identity, sticky failover across stages, Groq-only backward compatibility
-  - Summarizer output format, reducer output format, reducer prompt builder
+2. **Strict no-fallback mode**
+   - fixed in `summarizer/provider_router.py`
+   - new regressions in `tests/test_provider_router.py`
+
+3. **Gemini timeout wiring**
+   - fixed in `summarizer/provider_router.py`
+   - new regression in `tests/test_provider_router.py`
+
+4. **Launcher gating alignment**
+   - fixed in `launcher/contract.py`
+   - new regressions in `tests/test_full_pipeline_dispatch.py` and `tests/test_launcher_contract.py`
+
+## Verification
+
+- `uv run python -m py_compile launcher/contract.py launcher/runners.py summarizer/provider_router.py summarizer/llm_summarizer.py summarizer/hierarchical_reducer.py tests/test_provider_router.py tests/test_shared_session.py tests/test_full_pipeline_shared_session_wiring.py tests/test_full_pipeline_dispatch.py tests/test_launcher_contract.py tests/test_embedding_entrypoints.py`
+- `uv run pytest -q` → `124 passed`
 
 ## GitHub status
 
-- Issue #18 (provider-routed map summarization): closed with implementation comment
-- Issue #19 (shared provider session for reduction): closed with implementation comment
-- Issue #17 (parent PRD): still open
+- Draft PR: `#20` — `Draft: align multi-provider fallback implementation with review findings`
+- Issue `#17` (parent PRD): open
+- Issues `#18` and `#19`: reopened with corrective comments, implemented on the PR branch, pending merge/close
 
 ## Current repo state
 
-- Branch: main
-- Working tree has uncommitted changes (all multi-provider implementation)
-- Modified files: README.md, config/settings.py, env.example, pyproject.toml, uv.lock, summarizer/llm_summarizer.py, summarizer/hierarchical_reducer.py, docs/todo-in-progress.md, docs/completed/completed-tasks.md, CONTEXT.md, .gitignore
-- New files: summarizer/provider_router.py, tests/test_provider_router.py, tests/test_shared_session.py
-- Archived handoff: docs/completed/handoffs/handoff-2026-07-05-multi-provider-llm-fallback-implementation.md
-- Planning docs from prior session still present (docs/prd-..., docs/slice-...)
-- Personal files untouched
-- .env contains real credentials — do not echo or commit
+- Branch: `fix/multi-provider-review-findings`
+- Draft PR: https://github.com/amaldevice/graph-rag-summarizer/pull/20
+- Core modified files:
+  - `launcher/contract.py`
+  - `launcher/runners.py`
+  - `summarizer/provider_router.py`
+  - `summarizer/llm_summarizer.py`
+  - `summarizer/hierarchical_reducer.py`
+  - `config/settings.py`
+  - `env.example`
+  - `README.md`
+  - `pyproject.toml`
+  - `uv.lock`
+- Core tests:
+  - `tests/test_provider_router.py`
+  - `tests/test_shared_session.py`
+  - `tests/test_full_pipeline_shared_session_wiring.py`
+  - `tests/test_full_pipeline_dispatch.py`
+  - `tests/test_launcher_contract.py`
+  - `tests/test_embedding_entrypoints.py`
+- Planning docs remain in `docs/prd-2026-07-05-multi-provider-llm-fallback.md` and `docs/slice-2026-07-05-multi-provider-llm-fallback.md`
+- Personal files remain untouched
+- `.env` contains real credentials and must not be echoed or committed
 
 ## What still needs doing
 
 ### Immediate
 
-- Commit the implementation and push
-- Close or update parent issue #17
-- Archive planning docs to docs/completed/prd/ and docs/completed/issues/
+- review the draft PR
+- merge the branch when acceptable
+- close/update issues `#17`, `#18`, and `#19` to match the merged state
+- archive the planning docs post-merge if that still matches repo workflow
 
 ### Follow-up candidates (not implemented)
 
-- Route relation extraction through multi-provider fallback (phase 2)
-- Per-provider timeout settings instead of global timeout
+- route relation extraction through multi-provider fallback
+- per-provider timeout settings instead of one global timeout
 - OpenRouter attribution headers
-- Provider health probes at menu time
-- Cost-based or latency-based dynamic routing
+- provider health probes at launcher time
+- cost-based or latency-based routing policies
 
 ## Minimal pickup prompt for the next agent
 
-"The multi-provider LLM fallback implementation is complete. Issues #18 and #19 are closed. Commit the changes, close or update parent issue #17, and archive the planning docs. Relation extraction stays out of scope for this pass."
+"PR #20 contains the review-aligned multi-provider LLM fallback implementation. Re-check the draft PR state, confirm issues #18 and #19 can be closed against the merged branch, and archive the remaining planning docs if that is still the repo's preferred post-merge flow. Relation extraction stays out of scope."

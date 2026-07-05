@@ -135,16 +135,22 @@ def test_query_only_does_not_require_groq(monkeypatch):
     assert check_availability("query-only", "local") == []
 
 
-def test_full_pipeline_requires_groq(monkeypatch):
+def test_full_pipeline_requires_at_least_one_llm_provider(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     missing = check_availability("full-pipeline", "local")
-    assert any("GROQ_API_KEY" in m for m in missing)
+    assert any("At least one configured LLM provider" in m for m in missing)
 
 
-def test_full_pipeline_cloud_requires_qdrant_and_groq(monkeypatch):
+def test_full_pipeline_cloud_requires_qdrant_and_any_llm_provider(monkeypatch):
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("QDRANT_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     missing = check_availability("full-pipeline", "cloud")
     assert len(missing) >= 2
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 SUPPORTED_MODES = ("query-only", "ingest", "full-pipeline")
 SUPPORTED_PROFILES = ("local", "cloud")
+SUPPORTED_LLM_PROVIDERS = ("groq", "gemini", "nvidia", "openrouter")
 DEFAULT_RETRIEVAL_LIMIT = 10
 EXCLUDED_SCAN_DIRS = {
     ".git",
@@ -97,10 +98,74 @@ def check_availability(mode: str, profile: str) -> list[str]:
             pass
 
     if mode == "full-pipeline":
-        if not os.getenv("GROQ_API_KEY", "").strip():
-            missing.append("GROQ_API_KEY is required for Full-Pipeline Run")
+        if not _has_available_llm_provider():
+            missing.append(_full_pipeline_llm_error())
 
     return missing
+
+
+def _has_available_llm_provider() -> bool:
+    preferred_provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+    enable_fallback = os.getenv("LLM_ENABLE_FALLBACK", "True").strip().lower() == "true"
+    fallback_chain = [
+        provider.strip().lower()
+        for provider in os.getenv("LLM_FALLBACK_CHAIN", "groq,gemini,nvidia,openrouter").split(",")
+        if provider.strip()
+    ]
+
+    if not enable_fallback:
+        return not _missing_llm_fields(preferred_provider)
+
+    providers_to_check = []
+    for provider in [preferred_provider, *fallback_chain]:
+        if provider in SUPPORTED_LLM_PROVIDERS and provider not in providers_to_check:
+            providers_to_check.append(provider)
+
+    return any(not _missing_llm_fields(provider) for provider in providers_to_check)
+
+
+def _missing_llm_fields(provider: str) -> list[str]:
+    requirements = {
+        "groq": (
+            ("GROQ_API_KEY", os.getenv("GROQ_API_KEY", "")),
+            ("GROQ_MODEL", os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")),
+        ),
+        "gemini": (
+            ("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")),
+            ("GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash")),
+        ),
+        "nvidia": (
+            ("NVIDIA_NIM_API_KEY", os.getenv("NVIDIA_NIM_API_KEY", "")),
+            ("NVIDIA_NIM_MODEL", os.getenv("NVIDIA_NIM_MODEL", "meta/llama-3.1-70b-instruct")),
+            ("NVIDIA_NIM_BASE_URL", os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")),
+        ),
+        "openrouter": (
+            ("OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY", "")),
+            ("OPENROUTER_MODEL", os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct")),
+            ("OPENROUTER_BASE_URL", os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")),
+        ),
+    }
+    fields = requirements.get(provider)
+    if not fields:
+        return [f"unknown provider '{provider}'"]
+    return [field for field, value in fields if not value.strip()]
+
+
+def _full_pipeline_llm_error() -> str:
+    preferred_provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+    enable_fallback = os.getenv("LLM_ENABLE_FALLBACK", "True").strip().lower() == "true"
+
+    if not enable_fallback:
+        missing_fields = _missing_llm_fields(preferred_provider)
+        return (
+            f"{preferred_provider} is required for Full-Pipeline Run when fallback is disabled: "
+            f"missing {', '.join(missing_fields)}"
+        )
+
+    return (
+        "At least one configured LLM provider is required for Full-Pipeline Run "
+        "(Groq, Gemini, NVIDIA NIM, or OpenRouter)."
+    )
 
 
 # ------------------------------------------------------------------

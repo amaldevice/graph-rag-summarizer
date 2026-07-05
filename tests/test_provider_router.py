@@ -4,6 +4,7 @@
 # ============================================================
 
 import sys
+import types
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -48,6 +49,35 @@ def test_resolve_chain_skips_providers_without_keys(monkeypatch):
     router = create_session(fallback_chain=["groq", "gemini", "nvidia", "openrouter"])
     chain = router.resolve_chain()
     assert chain == ["groq"]
+
+
+def test_resolve_chain_skips_provider_with_missing_model(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "key-groq")
+    monkeypatch.setattr(settings, "GROQ_MODEL", "   ")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_API_KEY", "")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+
+    router = create_session(fallback_chain=["groq"])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert router.resolve_chain() == []
+        assert any("GROQ_MODEL" in str(warning.message) for warning in caught)
+
+
+def test_resolve_chain_skips_provider_with_missing_base_url(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_API_KEY", "")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "key-openrouter")
+    monkeypatch.setattr(settings, "OPENROUTER_MODEL", "router-model")
+    monkeypatch.setattr(settings, "OPENROUTER_BASE_URL", "  ")
+
+    router = create_session(fallback_chain=["openrouter"])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert router.resolve_chain() == []
+        assert any("OPENROUTER_BASE_URL" in str(warning.message) for warning in caught)
 
 
 def test_resolve_chain_warns_on_unknown_provider(monkeypatch):
@@ -218,6 +248,31 @@ def test_call_llm_disabled_fallback_tries_only_preferred(monkeypatch):
         router.call_llm("system", "prompt")
 
     assert len(router.failure_history) == 0
+
+
+def test_call_llm_disabled_fallback_fails_if_preferred_provider_is_unavailable(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "key-gemini")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_API_KEY", "")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+
+    router = create_session(
+        preferred_provider="groq",
+        fallback_chain=["groq", "gemini"],
+        enable_fallback=False,
+    )
+
+    call_log = []
+    monkeypatch.setattr(
+        router,
+        "_call_with_retry",
+        lambda provider, system_prompt, user_prompt: call_log.append(provider),
+    )
+
+    with pytest.raises(RuntimeError, match="Preferred LLM provider 'groq' is unavailable"):
+        router.call_llm("system", "prompt")
+
+    assert call_log == []
 
 
 # ------------------------------------------------------------------
@@ -416,6 +471,32 @@ def test_get_model_returns_provider_specific_model(monkeypatch):
     assert router._get_model("groq") == "groq-model"
     assert router._get_model("gemini") == "gemini-model"
     assert router._is_configured("nvidia") is False or True
+
+
+def test_get_client_passes_timeout_to_gemini_client(monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "key-gemini")
+
+    captured = {}
+    google_module = types.ModuleType("google")
+    genai_module = types.ModuleType("google.genai")
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    genai_module.Client = fake_client
+    google_module.genai = genai_module
+
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.genai", genai_module)
+
+    router = create_session(timeout_seconds=45)
+    router._get_client("gemini")
+
+    assert captured == {
+        "api_key": "key-gemini",
+        "http_options": {"timeout": 45000},
+    }
 
 
 # ------------------------------------------------------------------

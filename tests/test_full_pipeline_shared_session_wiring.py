@@ -1,4 +1,3 @@
-import importlib
 import sys
 import types
 from pathlib import Path
@@ -10,67 +9,9 @@ if str(ROOT_DIR) not in sys.path:
 from config import settings
 
 
-def _load_module_with_stubs(module_name: str, monkeypatch, stubs: dict[str, types.ModuleType]):
-    sys.modules.pop(module_name, None)
-    for stub_name, stub_module in stubs.items():
-        monkeypatch.setitem(sys.modules, stub_name, stub_module)
-    module = importlib.import_module(module_name)
-    return importlib.reload(module)
-
-
-def test_upload_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -> None:
-    used_models: list[str] = []
-    monkeypatch.setattr(settings, "EMBEDDING_MODEL", "shared-model")
-
-    embedder_module = types.ModuleType("embedding.embedder")
-    loader_module = types.ModuleType("preprocessing.docling_loader")
-    qdrant_module = types.ModuleType("vectordb.qdrant_handler")
-
-    class FakeEmbedder:
-        def __init__(self):
-            used_models.append(settings.EMBEDDING_MODEL)
-
-        def embed_chunks(self, chunks):
-            return [[0.1, 0.2] for _ in chunks]
-
-    class FakeLoader:
-        def process_pdf(self, pdf_path: str):
-            del pdf_path
-            return {"chunks": [{"text": "chunk-1"}]}
-
-    class FakeQdrantHandler:
-        def __init__(self, collection_name="test-collection"):
-            self.collection_name = collection_name
-
-        def create_collection_if_not_exists(self, vector_size: int):
-            assert vector_size == 2
-
-        def upsert_chunks(self, chunks, vectors):
-            assert len(chunks) == len(vectors) == 1
-
-    embedder_module.TextEmbedder = FakeEmbedder
-    loader_module.DoclingLoader = FakeLoader
-    qdrant_module.QdrantHandler = FakeQdrantHandler
-
-    upload_module = _load_module_with_stubs(
-        "upload_to_qdrant",
-        monkeypatch,
-        {
-            "embedding.embedder": embedder_module,
-            "preprocessing.docling_loader": loader_module,
-            "vectordb.qdrant_handler": qdrant_module,
-        },
-    )
-
-    monkeypatch.setenv("PDF_PATH", "sample.pdf")
-    upload_module.main()
-
-    assert used_models == ["shared-model"]
-
-
-def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -> None:
-    used_models: list[str] = []
-    monkeypatch.setattr(settings, "EMBEDDING_MODEL", "shared-model")
+def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monkeypatch):
+    shared_session = object()
+    received_sessions = []
 
     embedder_module = types.ModuleType("embedding.embedder")
     qdrant_module = types.ModuleType("vectordb.qdrant_handler")
@@ -89,29 +30,17 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
     feedback_module = types.ModuleType("pipeline.feedback_loop")
 
     class FakeEmbedder:
-        def __init__(self):
-            used_models.append(settings.EMBEDDING_MODEL)
-
         def embed_text(self, text: str):
             del text
             return [0.1, 0.2]
 
     class FakeQdrantHandler:
         def __init__(self, collection_name="test"):
-            pass
+            del collection_name
 
         def search_as_chunks(self, query_vector, limit: int):
             del query_vector, limit
             return [{"chunk_id": "c1", "text": "chunk text", "page_no": 1}]
-
-    class FakeDoclingLoader:
-        def render_and_upload_pages_on_demand(self, pdf_path: str, target_pages: list[int]):
-            del pdf_path, target_pages
-            return []
-
-        def build_page_image_map(self, uploaded_images):
-            del uploaded_images
-            return {}
 
     class FakeEntityExtractor:
         def extract_entities(self, chunks):
@@ -129,7 +58,7 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
 
     class FakeCommunityDetector:
         def detect(self, graph):
-            return graph, [[]], {}, 0.0
+            return graph, [[1]], {}, 0.0
 
     class FakeRanked:
         def head(self, count: int):
@@ -163,7 +92,7 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
 
         def select_top_chunks(self, ranked, retrieved_chunks):
             del ranked, retrieved_chunks
-            return {"communities": []}
+            return {"communities": [{"community_id": 0, "chunk_ids": ["c1"], "num_chunks": 1}]}
 
         def save_pruned_json(self, pruned_result):
             del pruned_result
@@ -179,15 +108,18 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
 
         def build_all_community_prompts(self, pruned_result, query: str, style: str):
             del pruned_result, query, style
-            return []
+            return [{"community_id": 0, "prompt": "summarize", "chunk_ids": ["c1"], "num_chunks": 1}]
+
+    def fake_create_session():
+        return shared_session
 
     class FakeSummarizer:
         def __init__(self, session=None):
-            del session
+            received_sessions.append(("summarizer", session))
 
         def summarize_communities(self, community_prompts):
             del community_prompts
-            return []
+            return [{"community_id": 0, "summary": "community summary", "chunk_ids": ["c1"]}]
 
         def save_map_summaries_json(self, community_summaries):
             del community_summaries
@@ -199,7 +131,7 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
 
     class FakeReducer:
         def __init__(self, session=None):
-            del session
+            received_sessions.append(("reducer", session))
 
         def reduce_summaries(self, community_summaries, query: str, style: str):
             del community_summaries, query, style
@@ -241,15 +173,7 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
 
         def decide(self, quality_result, action_result, retry_state):
             del quality_result, action_result, retry_state
-            return {
-                "decision": "stop",
-                "stop": True,
-                "reason": "done",
-                "retry_state": {},
-                "next_stage": "complete",
-                "final_decision": "stop",
-                "message": "done",
-            }
+            return {"final_decision": "stop"}
 
         def save_decision(self, decision):
             del decision
@@ -257,14 +181,14 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
 
     embedder_module.TextEmbedder = FakeEmbedder
     qdrant_module.QdrantHandler = FakeQdrantHandler
-    docling_module.DoclingLoader = FakeDoclingLoader
+    docling_module.DoclingLoader = object
     entity_module.EntityExtractor = FakeEntityExtractor
     graph_builder_module.GraphBuilder = FakeGraphBuilder
     community_module.CommunityDetector = FakeCommunityDetector
     analyzer_module.GraphAnalyzer = FakeGraphAnalyzer
     pruner_module.SummaryPruner = FakeSummaryPruner
     prompt_builder_module.PromptBuilder = FakePromptBuilder
-    provider_router_module.create_session = lambda: object()
+    provider_router_module.create_session = fake_create_session
     summarizer_module.LLMSummarizer = FakeSummarizer
     reducer_module.HierarchicalReducer = FakeReducer
     evaluator_module.SummaryEvaluator = FakeEvaluator
@@ -278,18 +202,18 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
         "graph.entity_extractor": entity_module,
         "graph.graph_builder": graph_builder_module,
         "graph.community_detector": community_module,
-            "graph.graph_analyzer": analyzer_module,
-            "summarizer.pruner": pruner_module,
-            "summarizer.prompt_builder": prompt_builder_module,
-            "summarizer.provider_router": provider_router_module,
-            "summarizer.llm_summarizer": summarizer_module,
-            "summarizer.hierarchical_reducer": reducer_module,
-            "evaluation.evaluator": evaluator_module,
+        "graph.graph_analyzer": analyzer_module,
+        "summarizer.pruner": pruner_module,
+        "summarizer.prompt_builder": prompt_builder_module,
+        "summarizer.provider_router": provider_router_module,
+        "summarizer.llm_summarizer": summarizer_module,
+        "summarizer.hierarchical_reducer": reducer_module,
+        "evaluation.evaluator": evaluator_module,
         "evaluation.quality_checker": quality_module,
         "pipeline.feedback_loop": feedback_module,
     }
-    for name, mod in stubs.items():
-        monkeypatch.setitem(sys.modules, name, mod)
+    for name, module in stubs.items():
+        monkeypatch.setitem(sys.modules, name, module)
 
     monkeypatch.setattr(settings, "ENABLE_ON_DEMAND_PAGE_RENDER", False)
 
@@ -305,4 +229,7 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
         "json_output": "",
     })
 
-    assert used_models == ["shared-model"]
+    assert received_sessions == [
+        ("summarizer", shared_session),
+        ("reducer", shared_session),
+    ]

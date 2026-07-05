@@ -28,7 +28,7 @@ class ProviderRouter:
         enable_fallback: Optional[bool] = None,
         timeout_seconds: Optional[int] = None,
     ):
-        self.preferred_provider = preferred_provider or settings.LLM_PROVIDER
+        self.preferred_provider = (preferred_provider or settings.LLM_PROVIDER).strip().lower()
         self.enable_fallback = enable_fallback if enable_fallback is not None else settings.LLM_ENABLE_FALLBACK
         self.timeout_seconds = timeout_seconds if timeout_seconds is not None else settings.LLM_REQUEST_TIMEOUT_SECONDS
 
@@ -61,8 +61,12 @@ class ProviderRouter:
             if name not in SUPPORTED_PROVIDERS:
                 warnings.warn(f"Unknown LLM provider '{name}' ignored.", stacklevel=2)
                 continue
-            if not self._is_configured(name):
-                warnings.warn(f"LLM provider '{name}' skipped: missing API key.", stacklevel=2)
+            missing_fields = self._missing_config_fields(name)
+            if missing_fields:
+                warnings.warn(
+                    f"LLM provider '{name}' skipped: missing configuration ({', '.join(missing_fields)}).",
+                    stacklevel=2,
+                )
                 continue
             chain.append(name)
 
@@ -85,16 +89,36 @@ class ProviderRouter:
         self._resolved_chain = chain
         return self._resolved_chain
 
-    def _is_configured(self, provider: str) -> bool:
+    def _required_config(self, provider: str) -> list[tuple[str, str]]:
         if provider == "groq":
-            return bool(settings.GROQ_API_KEY)
-        elif provider == "gemini":
-            return bool(settings.GEMINI_API_KEY)
-        elif provider == "nvidia":
-            return bool(settings.NVIDIA_NIM_API_KEY)
-        elif provider == "openrouter":
-            return bool(settings.OPENROUTER_API_KEY)
-        return False
+            return [
+                ("GROQ_API_KEY", settings.GROQ_API_KEY),
+                ("GROQ_MODEL", settings.GROQ_MODEL),
+            ]
+        if provider == "gemini":
+            return [
+                ("GEMINI_API_KEY", settings.GEMINI_API_KEY),
+                ("GEMINI_MODEL", settings.GEMINI_MODEL),
+            ]
+        if provider == "nvidia":
+            return [
+                ("NVIDIA_NIM_API_KEY", settings.NVIDIA_NIM_API_KEY),
+                ("NVIDIA_NIM_MODEL", settings.NVIDIA_NIM_MODEL),
+                ("NVIDIA_NIM_BASE_URL", settings.NVIDIA_NIM_BASE_URL),
+            ]
+        if provider == "openrouter":
+            return [
+                ("OPENROUTER_API_KEY", settings.OPENROUTER_API_KEY),
+                ("OPENROUTER_MODEL", settings.OPENROUTER_MODEL),
+                ("OPENROUTER_BASE_URL", settings.OPENROUTER_BASE_URL),
+            ]
+        return []
+
+    def _missing_config_fields(self, provider: str) -> list[str]:
+        return [name for name, value in self._required_config(provider) if not str(value).strip()]
+
+    def _is_configured(self, provider: str) -> bool:
+        return not self._missing_config_fields(provider)
 
     def _get_client(self, provider: str):
         """Lazily create and cache the client for a provider."""
@@ -106,7 +130,10 @@ class ProviderRouter:
             client = Groq(api_key=settings.GROQ_API_KEY, timeout=self.timeout_seconds)
         elif provider == "gemini":
             from google import genai
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            client = genai.Client(
+                api_key=settings.GEMINI_API_KEY,
+                http_options={"timeout": self.timeout_seconds * 1000},
+            )
         elif provider == "nvidia":
             from openai import OpenAI
             client = OpenAI(
@@ -193,13 +220,26 @@ class ProviderRouter:
 
     def call_llm(self, system_prompt: str, user_prompt: str) -> str:
         """Call the LLM with fallback. Returns response text or raises RuntimeError."""
+        if not self.enable_fallback:
+            if self.preferred_provider not in SUPPORTED_PROVIDERS:
+                raise RuntimeError(
+                    f"Preferred LLM provider '{self.preferred_provider}' is unknown. "
+                    f"Supported providers: {', '.join(SUPPORTED_PROVIDERS)}."
+                )
+            missing_fields = self._missing_config_fields(self.preferred_provider)
+            if missing_fields:
+                raise RuntimeError(
+                    f"Preferred LLM provider '{self.preferred_provider}' is unavailable: "
+                    f"missing configuration ({', '.join(missing_fields)})."
+                )
+            result = self._call_with_retry(self.preferred_provider, system_prompt, user_prompt)
+            self._active_provider = self.preferred_provider
+            return result
+
         chain = self.resolve_chain()
 
         if not chain:
             raise RuntimeError("No LLM providers available. Check API keys in configuration.")
-
-        if not self.enable_fallback:
-            return self._call_with_retry(chain[0], system_prompt, user_prompt)
 
         remaining = [p for p in chain if p not in self._failed_providers]
         if not remaining:

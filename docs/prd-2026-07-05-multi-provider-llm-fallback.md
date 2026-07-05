@@ -1,7 +1,7 @@
 # PRD — multi-provider LLM fallback for summarization runs
 
 Date: 2026-07-05
-Status: Published as issue #17
+Status: Published as issue #17; current implementation tracked in draft PR #20
 
 ## Problem Statement
 

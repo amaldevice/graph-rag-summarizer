@@ -1,7 +1,7 @@
 # Slice breakdown — multi-provider LLM fallback for summarization runs
 
 Date: 2026-07-05
-Status: Published as issues #18 and #19
+Status: Published as issues #18 and #19; implemented on branch `fix/multi-provider-review-findings` and tracked in draft PR #20
 Parent PRD issue: #17
 
 ## Slices
