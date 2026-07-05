@@ -132,4 +132,4 @@ Invoke these in the next session if implementing from the new plan:
 
 ## Minimal pickup prompt for the next agent
 
-"Continue from `summarizer_project/docs/2026-07-04-handoff-dual-backend-next-steps.md` and implement `summarizer_project/docs/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md` with minimal diffs, preserving the post-VectorDB summarizer contract."
+"Continue from `summarizer_project/docs/completed/handoffs/2026-07-04-handoff-dual-backend-next-steps.md` and implement `summarizer_project/docs/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md` with minimal diffs, preserving the post-VectorDB summarizer contract."

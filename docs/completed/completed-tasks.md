@@ -13,6 +13,13 @@
 
 ## 2026-07-05
 
+- **Published the launcher artifact-directory + stage-aware logging planning set**
+  - Wrote `docs/prd-2026-07-05-launcher-artifact-directory-and-stage-aware-logging.md` and published it as GitHub issue `#22`.
+  - Wrote `docs/issue-2026-07-05-launcher-artifact-directory-and-stage-aware-logging.md` and published it as GitHub issue `#23`.
+  - Locked the approved scope: Artifact output directory applies to Full-Pipeline Runs only, while one shared verbose toggle plus stage/state output applies across Query-Only, Ingest, and Full-Pipeline modes.
+  - Kept the first pass intentionally narrow: no log files, no artifact renaming, no Query-Only output-directory rewrite, and no new slice breakdown beyond the single ready-for-agent implementation issue.
+  - Verification: reviewed `launcher/contract.py`, `launcher/runners.py`, `tests/test_launcher_contract.py`, `tests/test_query_only_runner.py`, `tests/test_ingest_runner.py`, and `tests/test_full_pipeline_dispatch.py`; `gh issue create --title "PRD: artifact-directory Full-Pipeline Runs and stage-aware launcher logging" ...`; `gh issue create --title "Ship artifact-directory Full-Pipeline Runs and stage-aware launcher logging" ...`; `gh issue view 22`; `gh issue view 23`.
+
 - **Fixed the Groq full-pipeline crash without dropping Groq from the provider contract**
   - Re-labeled GitHub issue `#21` from `enhancement` to `bug` and kept it as the implementation tracker for the Groq/httpx compatibility failure.
   - Replaced the native `groq` SDK construction path in `summarizer/provider_router.py` and `graph/entity_extractor.py` with the OpenAI-compatible client path pointed at `https://api.groq.com/openai/v1`.
@@ -20,6 +27,29 @@
   - Added regression coverage in `tests/test_groq_openai_compat.py` and extended `tests/test_provider_router.py` so Groq now fails closed when `GROQ_BASE_URL` is blank.
   - Verification: `uv run python -m py_compile config/settings.py summarizer/provider_router.py graph/entity_extractor.py tests/test_groq_openai_compat.py tests/test_provider_router.py`; `uv run pytest -q tests/test_groq_openai_compat.py tests/test_provider_router.py`; `uv run pytest -q` (`130 passed`).
 
+- **Published a tracking issue for the Groq full-pipeline compatibility fix**
+  - Created GitHub issue `#21` — `Stabilize Groq full-pipeline runs with the OpenAI-compatible client path`.
+  - Captured the observed Full-Pipeline Run failure, the diagnosed `groq==0.9.0` vs `httpx==0.28.1` compatibility mismatch, the alternative fix options, and the currently chosen OpenAI-compatible Groq direction.
+  - Published the issue as `enhancement` + `ready-for-agent` so it can serve as the implementation log and next execution target.
+  - Verification: `gh issue view 21 --json number,title,labels,url,body`.
+
+- **Tidied the `docs/` structure**
+  - Moved completed handoffs, PRDs, and slice docs out of the active `docs/` root and into `docs/completed/handoffs/`, `docs/completed/prd/`, and `docs/completed/issues/`.
+  - Moved the launcher runbook into `docs/runbook-single-launcher.md` and removed the stray `docs/.DS_Store` file.
+  - Reduced the active `docs/` root to the still-relevant backlog/runbook files while leaving the supporting agent, ADR, and superpowers reference docs in place.
+  - Verification: reviewed the post-move `docs/` tree and checked archived handoff links that still needed updated archive paths.
+
+- **Added a compact single-launcher runbook**
+  - Added `docs/runbook-single-launcher.md` to explain the real `main.py` execution flow, the profile/mode split, interactive vs non-interactive behavior, and the available CLI arguments.
+  - Kept the guide compact and aligned it to the current launcher contract instead of duplicating older planning language.
+  - Included concrete example commands plus current runtime notes for cloud profile, local embedding execution, connection checks, and the current one-PDF-per-collection safety recommendation.
+  - Verification: reviewed `launcher/contract.py` and `launcher/runners.py` against the runbook; `uv run python - <<'PY' ... Path('docs/runbook-single-launcher.md').read_text() ... PY` confirmed the doc includes the shipped modes and argument names.
+
+- **Added a cloud environment template and standalone cloud connection checks**
+  - Added `.env.cloud` as a cloud-oriented template for Qdrant Cloud, Cloudflare R2, LLM providers, and the default embedding runtime.
+  - Added `scripts/check_cloud_connections.py` so R2 and Qdrant Cloud connectivity can be tested without going through `main.py`.
+  - Added `tests/test_cloud_connection_check.py` to keep the standalone checker from drifting.
+  - Verification: `uv run python -m py_compile scripts/check_cloud_connections.py tests/test_cloud_connection_check.py`; `uv run python scripts/check_cloud_connections.py --help`; `uv run pytest -q tests/test_cloud_connection_check.py` (3 passed).
 - **Reviewed and shipped draft PR #20 for the launcher + multi-provider branch**
   - Re-ran targeted compile checks for the launcher and provider-router seams.
   - Re-ran the full test suite and confirmed `124` tests pass before merge.

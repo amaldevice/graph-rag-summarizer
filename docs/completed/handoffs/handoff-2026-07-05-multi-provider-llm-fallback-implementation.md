@@ -134,7 +134,7 @@ The first implementation pass was close but not fully spec-complete. The follow-
   - `tests/test_full_pipeline_dispatch.py`
   - `tests/test_launcher_contract.py`
   - `tests/test_embedding_entrypoints.py`
-- Planning docs remain in `docs/prd-2026-07-05-multi-provider-llm-fallback.md` and `docs/slice-2026-07-05-multi-provider-llm-fallback.md`
+- Planning docs remain in `docs/completed/prd/prd-2026-07-05-multi-provider-llm-fallback.md` and `docs/completed/issues/slice-2026-07-05-multi-provider-llm-fallback.md`
 - Personal files remain untouched
 - `.env` contains real credentials and must not be echoed or committed
 
