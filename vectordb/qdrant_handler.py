@@ -4,6 +4,8 @@
 # Support indexing mode and retrieval mode
 # ============================================================
 
+import os
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
@@ -22,13 +24,20 @@ class QdrantHandler:
     def __init__(
         self,
         client: QdrantClient | None = None,
-        collection_name: str = QDRANT_COLLECTION,
-        qdrant_backend: str = QDRANT_BACKEND,
-        qdrant_url: str = QDRANT_URL,
-        qdrant_api_key: str = QDRANT_API_KEY,
-        qdrant_host: str = QDRANT_HOST,
-        qdrant_port: int = QDRANT_PORT,
+        collection_name: str | None = None,
+        qdrant_backend: str | None = None,
+        qdrant_url: str | None = None,
+        qdrant_api_key: str | None = None,
+        qdrant_host: str | None = None,
+        qdrant_port: int | None = None,
     ):
+        collection_name = collection_name or os.getenv("QDRANT_COLLECTION", QDRANT_COLLECTION)
+        qdrant_backend = (qdrant_backend or os.getenv("QDRANT_BACKEND", QDRANT_BACKEND)).lower()
+        qdrant_url = qdrant_url if qdrant_url is not None else os.getenv("QDRANT_URL", QDRANT_URL)
+        qdrant_api_key = qdrant_api_key if qdrant_api_key is not None else os.getenv("QDRANT_API_KEY", QDRANT_API_KEY)
+        qdrant_host = qdrant_host or os.getenv("QDRANT_HOST", QDRANT_HOST)
+        qdrant_port = int(qdrant_port or os.getenv("QDRANT_PORT", QDRANT_PORT))
+
         if client is not None:
             self.client = client
         else:

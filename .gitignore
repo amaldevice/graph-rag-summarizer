@@ -32,3 +32,8 @@ Thumbs.db
 
 # Local embedding caches
 .cache/embedding/
+
+# Local workspace-only files
+.commandcode/
+/The Let Them Theory.pdf
+/WhatsApp Image 2026-06-25 at 20.20.50.jpeg

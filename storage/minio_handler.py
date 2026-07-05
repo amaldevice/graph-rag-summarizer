@@ -19,13 +19,18 @@ class UploadClient(Protocol):
 class MinIOHandler:
     def __init__(
         self,
-        endpoint_url: str = MINIO_ENDPOINT_URL,
-        access_key: str = MINIO_ACCESS_KEY,
-        secret_key: str = MINIO_SECRET_KEY,
-        bucket: str = MINIO_BUCKET,
-        public_base_url: str = MINIO_PUBLIC_BASE_URL,
+        endpoint_url: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        bucket: str | None = None,
+        public_base_url: str | None = None,
         client: UploadClient | None = None,
     ) -> None:
+        endpoint_url = endpoint_url or os.getenv("MINIO_ENDPOINT_URL", MINIO_ENDPOINT_URL)
+        access_key = access_key or os.getenv("MINIO_ACCESS_KEY", MINIO_ACCESS_KEY)
+        secret_key = secret_key or os.getenv("MINIO_SECRET_KEY", MINIO_SECRET_KEY)
+        bucket = bucket or os.getenv("MINIO_BUCKET", MINIO_BUCKET)
+        public_base_url = public_base_url or os.getenv("MINIO_PUBLIC_BASE_URL", MINIO_PUBLIC_BASE_URL)
         self.bucket_name = bucket
         self.public_base_url = public_base_url.rstrip("/")
         self.client = client or boto3.client(

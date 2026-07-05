@@ -87,3 +87,29 @@ FALLBACK_RENDER_DPI = int(os.getenv("FALLBACK_RENDER_DPI", 120))
 # Jika True, image tidak diekstrak saat process_pdf awal.
 # Image baru dirender/upload saat memang dibutuhkan berdasarkan page number.
 ENABLE_ON_DEMAND_PAGE_RENDER = os.getenv("ENABLE_ON_DEMAND_PAGE_RENDER", "True").lower() == "true"
+
+# --- LLM PROVIDER ROUTER ---
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+LLM_ENABLE_FALLBACK = os.getenv("LLM_ENABLE_FALLBACK", "True").lower() == "true"
+LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", 30))
+DEFAULT_LLM_FALLBACK_CHAIN = "groq,gemini,nvidia,openrouter"
+LLM_FALLBACK_CHAIN = [
+    p.strip().lower()
+    for p in os.getenv("LLM_FALLBACK_CHAIN", DEFAULT_LLM_FALLBACK_CHAIN).split(",")
+    if p.strip()
+]
+
+# Provider-specific credentials and models
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+NVIDIA_NIM_API_KEY = os.getenv("NVIDIA_NIM_API_KEY", "")
+NVIDIA_NIM_MODEL = os.getenv("NVIDIA_NIM_MODEL", "meta/llama-3.1-70b-instruct")
+NVIDIA_NIM_BASE_URL = os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")

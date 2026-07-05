@@ -19,13 +19,18 @@ class UploadClient(Protocol):
 class R2Handler:
     def __init__(
         self,
-        account_id: str = R2_ACCOUNT_ID,
-        access_key_id: str = R2_ACCESS_KEY_ID,
-        secret_access_key: str = R2_SECRET_ACCESS_KEY,
-        bucket: str = R2_BUCKET,
-        public_base_url: str = R2_PUBLIC_BASE_URL,
+        account_id: str | None = None,
+        access_key_id: str | None = None,
+        secret_access_key: str | None = None,
+        bucket: str | None = None,
+        public_base_url: str | None = None,
         client: UploadClient | None = None,
     ) -> None:
+        account_id = account_id or os.getenv("R2_ACCOUNT_ID", R2_ACCOUNT_ID)
+        access_key_id = access_key_id or os.getenv("R2_ACCESS_KEY_ID", R2_ACCESS_KEY_ID)
+        secret_access_key = secret_access_key or os.getenv("R2_SECRET_ACCESS_KEY", R2_SECRET_ACCESS_KEY)
+        bucket = bucket or os.getenv("R2_BUCKET", R2_BUCKET)
+        public_base_url = public_base_url or os.getenv("R2_PUBLIC_BASE_URL", R2_PUBLIC_BASE_URL)
         self.bucket_name = bucket
         self.public_base_url = public_base_url.rstrip("/")
         self.client = client or boto3.client(
