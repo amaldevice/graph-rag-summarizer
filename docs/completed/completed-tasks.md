@@ -2,6 +2,13 @@
 
 ## 2026-07-05
 
+- **Reviewed and shipped draft PR #20 for the launcher + multi-provider branch**
+  - Re-ran targeted compile checks for the launcher and provider-router seams.
+  - Re-ran the full test suite and confirmed `124` tests pass before merge.
+  - Re-checked the draft PR state, verified there were no reported GitHub checks to wait on, and confirmed the linked implementation issues were ready to close on merge.
+  - Merged PR `#20`, closed issues `#17`, `#18`, and `#19`, and deleted the feature branch after the merge.
+  - Verification: `uv run python -m py_compile launcher/contract.py launcher/runners.py summarizer/provider_router.py summarizer/llm_summarizer.py summarizer/hierarchical_reducer.py tests/test_provider_router.py tests/test_shared_session.py tests/test_full_pipeline_shared_session_wiring.py tests/test_full_pipeline_dispatch.py tests/test_launcher_contract.py tests/test_embedding_entrypoints.py`; `uv run pytest -q` (124 passed).
+
 - **Implemented and review-aligned multi-provider LLM fallback for summarization (issues #18, #19; draft PR #20)**
   - Created `summarizer/provider_router.py` with ProviderRouter support for Groq, Gemini, NVIDIA NIM, and OpenRouter.
   - Rewrote `summarizer/llm_summarizer.py` and `summarizer/hierarchical_reducer.py` to use a shared provider router session.
