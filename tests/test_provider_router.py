@@ -65,6 +65,21 @@ def test_resolve_chain_skips_provider_with_missing_model(monkeypatch):
         assert any("GROQ_MODEL" in str(warning.message) for warning in caught)
 
 
+def test_resolve_chain_skips_provider_with_missing_groq_base_url(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "key-groq")
+    monkeypatch.setattr(settings, "GROQ_MODEL", "groq-model")
+    monkeypatch.setattr(settings, "GROQ_BASE_URL", "  ")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_API_KEY", "")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+
+    router = create_session(fallback_chain=["groq"])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert router.resolve_chain() == []
+        assert any("GROQ_BASE_URL" in str(warning.message) for warning in caught)
+
+
 def test_resolve_chain_skips_provider_with_missing_base_url(monkeypatch):
     monkeypatch.setattr(settings, "GROQ_API_KEY", "")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "")

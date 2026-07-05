@@ -2,6 +2,13 @@
 
 ## 2026-07-05
 
+- **Fixed the Groq full-pipeline crash without dropping Groq from the provider contract**
+  - Re-labeled GitHub issue `#21` from `enhancement` to `bug` and kept it as the implementation tracker for the Groq/httpx compatibility failure.
+  - Replaced the native `groq` SDK construction path in `summarizer/provider_router.py` and `graph/entity_extractor.py` with the OpenAI-compatible client path pointed at `https://api.groq.com/openai/v1`.
+  - Added `GROQ_BASE_URL` to `config/settings.py` and `env.example` so the Groq transport shape is explicit and configurable.
+  - Added regression coverage in `tests/test_groq_openai_compat.py` and extended `tests/test_provider_router.py` so Groq now fails closed when `GROQ_BASE_URL` is blank.
+  - Verification: `uv run python -m py_compile config/settings.py summarizer/provider_router.py graph/entity_extractor.py tests/test_groq_openai_compat.py tests/test_provider_router.py`; `uv run pytest -q tests/test_groq_openai_compat.py tests/test_provider_router.py`; `uv run pytest -q` (`130 passed`).
+
 - **Reviewed and shipped draft PR #20 for the launcher + multi-provider branch**
   - Re-ran targeted compile checks for the launcher and provider-router seams.
   - Re-ran the full test suite and confirmed `124` tests pass before merge.

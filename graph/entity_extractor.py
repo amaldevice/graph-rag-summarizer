@@ -10,12 +10,10 @@ import re
 import time
 
 import spacy
-from config.settings import SPACY_MODEL
+from openai import OpenAI
 
-try:
-    from groq import Groq
-except ImportError:
-    Groq = None
+from config import settings
+from config.settings import SPACY_MODEL
 
 
 class EntityExtractor:
@@ -26,8 +24,12 @@ class EntityExtractor:
         self.groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY")
         self.groq_client = None
 
-        if self.groq_api_key and Groq is not None:
-            self.groq_client = Groq(api_key=self.groq_api_key)
+        if self.groq_api_key:
+            self.groq_client = OpenAI(
+                api_key=self.groq_api_key,
+                base_url=settings.GROQ_BASE_URL,
+                timeout=settings.LLM_REQUEST_TIMEOUT_SECONDS,
+            )
 
         # Entity yang biasanya noise di paper
         self.stop_entities = {

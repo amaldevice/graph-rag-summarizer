@@ -94,6 +94,7 @@ class ProviderRouter:
             return [
                 ("GROQ_API_KEY", settings.GROQ_API_KEY),
                 ("GROQ_MODEL", settings.GROQ_MODEL),
+                ("GROQ_BASE_URL", settings.GROQ_BASE_URL),
             ]
         if provider == "gemini":
             return [
@@ -126,8 +127,12 @@ class ProviderRouter:
             return self._clients[provider]
 
         if provider == "groq":
-            from groq import Groq
-            client = Groq(api_key=settings.GROQ_API_KEY, timeout=self.timeout_seconds)
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=settings.GROQ_API_KEY,
+                base_url=settings.GROQ_BASE_URL,
+                timeout=self.timeout_seconds,
+            )
         elif provider == "gemini":
             from google import genai
             client = genai.Client(
