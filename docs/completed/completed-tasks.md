@@ -1,5 +1,64 @@
 # Completed Tasks
 
+## 2026-07-05
+
+- **Closed the remaining single-launcher PRD gaps**
+  - Added repo-local PDF discovery / scan for interactive ingest and kept manual PDF-path entry as the fallback path.
+  - Added existing-collection risk messaging plus an explicit confirmation step for ingest; non-interactive ingest now requires `--confirm-existing-collection` to target an existing collection intentionally.
+  - Fixed the summary-screen flow so declining execution returns to edit mode instead of exiting.
+  - Wired Launch Profile selection into real per-run session overrides for Qdrant and storage backends instead of leaving the profile as summary-only UI state.
+  - Converted `upload_to_qdrant.py` into a thin backward-compatible wrapper over the shared ingest runner.
+  - Added targeted regression coverage for PDF discovery, ingest confirmation behavior, summary edit looping, and legacy upload-wrapper delegation.
+  - Verification: `uv run pytest -q` (90 passed); `uv run python -m py_compile main.py upload_to_qdrant.py launcher/contract.py launcher/runners.py storage/factory.py storage/minio_handler.py storage/r2_handler.py vectordb/qdrant_handler.py tests/test_launcher_contract.py tests/test_launcher_main.py tests/test_upload_to_qdrant_wrapper.py tests/test_embedding_entrypoints.py`.
+
+- **Corrected the launcher planning artifacts after a repo-vs-PRD audit**
+  - Re-read the launcher handoff, local PRD, GitHub parent issue `#13`, GitHub ingest slice `#15`, and the current launcher code to separate what is actually shipped from what was prematurely marked complete.
+  - Revised `docs/handoff-2026-07-05-profile-driven-single-launcher-implementation.md` so it no longer claims the whole roadmap is done; it now calls out the remaining ingest and summary-loop gaps directly.
+  - Added an implementation-status note to `docs/prd-2026-07-05-profile-driven-single-launcher.md` so the PRD remains the same contract but no longer reads like the repo already satisfies every parent requirement.
+  - Synced the tracking intent for GitHub issue `#13` and the remaining ingest work in issue `#15` instead of leaving the docs in an over-closed state; issue `#15` is reopened and issue `#13` stays open with an explicit partial-implementation note.
+  - Verification: compared the live launcher files against the PRD and slice issues; ran `uv run pytest -q` (81 passed); then confirmed `gh issue view 13 --json state,body` and `gh issue view 15 --json state,body` show the corrected tracker state.
+
+- **Implemented most of the profile-driven single launcher (issue #14 complete, issue #16 complete enough, issue #15 follow-up remaining)**
+  - Rewrote `main.py` as the single human-facing launcher with three Launcher Modes: Query-Only Run, Ingest Run, and Full-Pipeline Run.
+  - Added `launcher/contract.py` with profile resolution (CLI > LAUNCHER_PROFILE env > legacy backend selectors), mode resolution, availability checks, collection discovery, CLI parsing, interactive wizard, summary confirmation, and non-interactive fail-fast.
+  - Added `launcher/runners.py` with mode-specific runners: `run_query_only` (retrieval-only, no Groq dependency), `run_ingest` (PDF validation, collection suggestion), `run_full_pipeline` (dispatches to existing retrieval-graph-summarize-evaluate flow).
+  - Query-Only Run is a true first-class path that does not import Groq or full-pipeline modules.
+  - `upload_to_qdrant.py` preserved as backward-compatible ingest entrypoint.
+  - Added `LAUNCHER_PROFILE` setting to `env.example`.
+  - Updated `README.md` to teach the launcher workflow with CLI examples.
+  - Added 37 new tests across 4 test files: `test_launcher_contract.py` (31), `test_query_only_runner.py` (3), `test_ingest_runner.py` (4), `test_full_pipeline_dispatch.py` (4).
+  - Updated `test_embedding_entrypoints.py` to work with the new launcher architecture.
+  - Full test suite passes: 81 tests, 0 failures.
+  - Query-Only (`#14`) and Full-Pipeline (`#16`) can stay closed, but the ingest slice (`#15`) still has follow-up work around PDF discovery, ingest-specific risk messaging, and explicit existing-collection confirmation.
+  - Commented on GitHub issues #14, #15, and #16 with implementation summaries; follow-up tracker correction is still needed for `#15`.
+  - Verification: `uv run python -m pytest tests/ -v` (81 passed); `gh issue view 14,15,16 --json state`.
+
+- **Clarified the current PDF ingest behavior for local/cloud Qdrant flows**
+  - Re-checked the live ingest path across `upload_to_qdrant.py`, `preprocessing/docling_loader.py`, `vectordb/qdrant_handler.py`, `config/settings.py`, and `main.py`.
+  - Confirmed the same upload entrypoint works for local or cloud Qdrant via environment selectors, but the current point ID strategy is only safe for fresh collections.
+  - Identified the current product gap: reusing one collection for multiple PDFs can overwrite prior chunks because each PDF restarts `chunk_id` from zero and Qdrant uses that value as the point ID.
+  - Added a backlog note for future explicit ingest modes and document-safe IDs.
+  - Verification: inspected the current runtime code paths and matched the collection/upsert behavior against the active settings defaults.
+
+- **Captured the safe PDF ingest improvement as one future PRD issue**
+  - Wrote `docs/prd-2026-07-05-safe-pdf-ingest-modes.md` and published it as GitHub issue `#12`.
+  - Kept the improvement unsliced for now; the single PRD issue covers append, replace-document, and replace-collection behavior together.
+  - Dropped the temporary local slice draft because no child issues will be published yet.
+  - Verification: `gh issue create --title "PRD: safe PDF ingest modes for shared Qdrant collections" ...`; `gh issue view 12 --json number,title,state,labels,url`.
+
+- **Published the profile-driven single-launcher planning set**
+  - Added `CONTEXT.md` to codify the launcher vocabulary: Launch Profile, Launcher Mode, Stable Default, Session Override, Collection Target, Ingest Run, Query-Only Run, and Full-Pipeline Run.
+  - Added ADR `docs/adr/0001-profile-driven-single-launcher.md` to record the profile-driven single-launcher decision and why Session Overrides beat rewriting `.env`.
+  - Wrote `docs/prd-2026-07-05-profile-driven-single-launcher.md` and published it as GitHub issue `#13`.
+  - Broke the PRD into ready-for-agent vertical slices and published child issues `#14`, `#15`, and `#16`, then synced the local slice doc with the real issue numbers.
+  - Verification: `gh issue create --title "PRD: profile-driven single launcher for graph-rag-summarizer" ...`; `gh issue view 13 --json number,title,state,labels,url,comments`; `gh issue create --title "Ship a Query-Only Run through the single launcher" ...`; `gh issue create --title "Extend the single launcher to Ingest Runs with PDF selection and collection safety guards" ...`; `gh issue create --title "Extend the single launcher to Full-Pipeline Runs with availability checks and optional local PDF enrichment" ...`.
+
+- **Prepared a fresh implementation handoff for the launcher roadmap**
+  - Added `docs/handoff-2026-07-05-profile-driven-single-launcher-implementation.md` for the next agent.
+  - Tailored the handoff for onboarding plus step-by-step implementation of parent issue `#13` through child issues `#14`, `#15`, and `#16`, while explicitly keeping issue `#12` out of scope.
+  - Included repo-state warnings, onboarding order, implementation order, desired outputs, verification expectations, and suggested skills without duplicating the full PRD bodies.
+  - Verification: reviewed the existing handoff style, re-checked the open issue set, and saved a matching temp-dir copy per the handoff skill contract.
+
 ## 2026-07-04
 
 - **Set up Matt Pocock engineering skill config**

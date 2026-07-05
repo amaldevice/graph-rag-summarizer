@@ -2,10 +2,69 @@
 
 Graph RAG Summarizer is a prototype pipeline for long-document retrieval and summarization. It combines Docling-based document extraction, selectable storage and Qdrant backends, graph analysis, and Groq-based summarization.
 
-The repository separates ingestion from query-time summarization:
+## Single Launcher
 
-- `upload_to_qdrant.py` ingests a document into Qdrant.
-- `main.py` retrieves indexed chunks and produces a summary.
+`main.py` is the single human-facing entrypoint with three Launcher Modes:
+
+- **Query-Only Run** — retrieve ranked chunks without graph, summarization, or evaluation.
+- **Ingest Run** — extract a PDF and write its embeddings into Qdrant.
+- **Full-Pipeline Run** — retrieve, build graph, summarize, evaluate, and produce a quality report.
+
+The launcher resolves runtime choices through: **CLI flags > interactive wizard > Stable Defaults from configuration**. Per-run choices are Session Overrides only; the launcher never rewrites `.env`.
+
+### CLI usage
+
+```bash
+# Query-Only Run
+uv run python main.py --mode query-only --collection my_col --query "What is the main idea?"
+
+# Ingest Run
+uv run python main.py --mode ingest --pdf paper.pdf --collection my_paper
+
+# Full-Pipeline Run
+uv run python main.py --mode full-pipeline --collection my_col --query "Summarize the findings"
+```
+
+### Interactive mode
+
+Run in a terminal and the launcher can fill any missing runtime inputs through a wizard:
+
+```bash
+uv run python main.py
+```
+
+Interactive ingest can:
+
+- prompt for the Launch Profile with the configured default preselected,
+- scan the repository for local PDF files and let you pick one,
+- suggest a Collection Target from the PDF filename,
+- show existing Qdrant collections when discovery works,
+- and require an explicit confirmation before ingesting into an existing collection.
+
+### Non-interactive (scripting)
+
+Add `--no-interactive` to fail fast on missing inputs:
+
+```bash
+uv run python main.py --no-interactive --mode query-only --collection col --query "test"
+```
+
+For non-interactive ingest into an existing collection, add an explicit safety override:
+
+```bash
+uv run python main.py --no-interactive --mode ingest --pdf paper.pdf --collection existing_col --confirm-existing-collection
+```
+
+### Launch Profiles
+
+Use `--profile local` or `--profile cloud`, or set `LAUNCHER_PROFILE` in `.env`. If `--profile` is omitted in interactive mode, the wizard prompts with the configured default preselected. The profile selects the Qdrant + storage backend pairing for the current run only:
+
+- `local` → local Qdrant + MinIO
+- `cloud` → Qdrant Cloud + Cloudflare R2
+
+### Backward compatibility
+
+`upload_to_qdrant.py` remains as a standalone ingest entrypoint, but now delegates to the shared ingest runner instead of maintaining a separate ingest path.
 
 ## Architecture
 
@@ -151,8 +210,8 @@ Useful runtime overrides include `PDF_PATH`, `QUERY_TEXT`, and `RETRIEVAL_LIMIT`
 docker compose up -d
 cp env.example .env
 # update .env for MinIO + local Qdrant
-uv run python upload_to_qdrant.py
-uv run python main.py
+uv run python main.py --mode ingest --pdf paper.pdf --collection my_paper
+uv run python main.py --mode query-only --collection my_paper --query "What is this about?"
 ```
 
 Stop the local stack with:
@@ -166,8 +225,8 @@ docker compose down
 ```bash
 cp env.example .env
 # update .env for R2 + Qdrant Cloud
-uv run python upload_to_qdrant.py
-uv run python main.py
+uv run python main.py --mode ingest --pdf paper.pdf --collection my_paper
+uv run python main.py --mode query-only --collection my_paper --query "What is this about?"
 ```
 
 ## Outputs

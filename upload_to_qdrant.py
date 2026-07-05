@@ -8,34 +8,32 @@ load_dotenv()
 
 import os
 
-from preprocessing.docling_loader import DoclingLoader
-from embedding.embedder import TextEmbedder
-from vectordb.qdrant_handler import QdrantHandler
+from config.settings import QDRANT_COLLECTION
+from launcher.contract import resolve_profile, suggest_collection_from_pdf
+from launcher.runners import run_ingest
+
+
+def _build_legacy_ingest_config() -> dict:
+    pdf_path = os.getenv("PDF_PATH", "sample.pdf")
+    collection = os.getenv("QDRANT_COLLECTION", QDRANT_COLLECTION).strip()
+    if not collection:
+        collection = suggest_collection_from_pdf(pdf_path)
+
+    return {
+        "mode": "ingest",
+        "profile": resolve_profile(None, os.getenv("LAUNCHER_PROFILE", "") or None),
+        "collection": collection,
+        "query": "",
+        "retrieval_limit": 0,
+        "pdf_path": pdf_path,
+        "json_output": "",
+        "confirm_existing_collection": True,
+    }
 
 
 def main():
-    pdf_path = os.getenv("PDF_PATH", "sample.pdf")
-
     print("\n=== UPLOAD MODE ===")
-    print(f"PDF_PATH : {pdf_path}")
-
-    loader = DoclingLoader()
-    result = loader.process_pdf(pdf_path)
-    chunks = result["chunks"]
-    if not chunks:
-        raise ValueError("Tidak ada chunk yang berhasil diekstrak dari dokumen.")
-
-    embedder = TextEmbedder()
-    vectors = embedder.embed_chunks(chunks)
-
-    qdrant = QdrantHandler()
-    qdrant.create_collection_if_not_exists(vector_size=len(vectors[0]))
-    qdrant.upsert_chunks(chunks, vectors)
-
-    print("\n=== UPLOAD DONE ===")
-    print(f"Total chunks uploaded : {len(chunks)}")
-    print(f"Collection            : {qdrant.collection_name}")
-    print("Dokumen berhasil diproses dan disimpan ke Qdrant.")
+    run_ingest(_build_legacy_ingest_config())
 
 
 if __name__ == "__main__":

@@ -39,8 +39,8 @@ def test_upload_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) 
             return {"chunks": [{"text": "chunk-1"}]}
 
     class FakeQdrantHandler:
-        def __init__(self):
-            self.collection_name = "test-collection"
+        def __init__(self, collection_name="test-collection"):
+            self.collection_name = collection_name
 
         def create_collection_if_not_exists(self, vector_size: int):
             assert vector_size == 2
@@ -96,6 +96,9 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             return [0.1, 0.2]
 
     class FakeQdrantHandler:
+        def __init__(self, collection_name="test"):
+            pass
+
         def search_as_chunks(self, query_vector, limit: int):
             del query_vector, limit
             return [{"chunk_id": "c1", "text": "chunk text", "page_no": 1}]
@@ -260,28 +263,37 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
     quality_module.QualityChecker = FakeQualityChecker
     feedback_module.FeedbackLoopController = FakeFeedbackLoopController
 
-    main_module = _load_module_with_stubs(
-        "main",
-        monkeypatch,
-        {
-            "embedding.embedder": embedder_module,
-            "vectordb.qdrant_handler": qdrant_module,
-            "preprocessing.docling_loader": docling_module,
-            "graph.entity_extractor": entity_module,
-            "graph.graph_builder": graph_builder_module,
-            "graph.community_detector": community_module,
-            "graph.graph_analyzer": analyzer_module,
-            "summarizer.pruner": pruner_module,
-            "summarizer.prompt_builder": prompt_builder_module,
-            "summarizer.llm_summarizer": summarizer_module,
-            "summarizer.hierarchical_reducer": reducer_module,
-            "evaluation.evaluator": evaluator_module,
-            "evaluation.quality_checker": quality_module,
-            "pipeline.feedback_loop": feedback_module,
-        },
-    )
+    stubs = {
+        "embedding.embedder": embedder_module,
+        "vectordb.qdrant_handler": qdrant_module,
+        "preprocessing.docling_loader": docling_module,
+        "graph.entity_extractor": entity_module,
+        "graph.graph_builder": graph_builder_module,
+        "graph.community_detector": community_module,
+        "graph.graph_analyzer": analyzer_module,
+        "summarizer.pruner": pruner_module,
+        "summarizer.prompt_builder": prompt_builder_module,
+        "summarizer.llm_summarizer": summarizer_module,
+        "summarizer.hierarchical_reducer": reducer_module,
+        "evaluation.evaluator": evaluator_module,
+        "evaluation.quality_checker": quality_module,
+        "pipeline.feedback_loop": feedback_module,
+    }
+    for name, mod in stubs.items():
+        monkeypatch.setitem(sys.modules, name, mod)
 
-    monkeypatch.setattr(main_module.settings, "ENABLE_ON_DEMAND_PAGE_RENDER", False)
-    main_module.main()
+    monkeypatch.setattr(settings, "ENABLE_ON_DEMAND_PAGE_RENDER", False)
+
+    from launcher.runners import run_full_pipeline
+
+    run_full_pipeline({
+        "mode": "full-pipeline",
+        "profile": "local",
+        "collection": "test",
+        "query": "test",
+        "retrieval_limit": 5,
+        "pdf_path": "",
+        "json_output": "",
+    })
 
     assert used_models == ["shared-model"]
