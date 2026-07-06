@@ -118,9 +118,11 @@ class QdrantHandler:
     # UPSERT CHUNKS
     # Simpan vector + payload ke Qdrant
     # ========================================================
-    def upsert_chunks(self, chunks: list, vectors: list):
+    def upsert_chunks(self, chunks: list, vectors: list, batch_size: int = 256):
         if len(chunks) != len(vectors):
             raise ValueError("Jumlah chunks dan vectors harus sama.")
+        # ponytail: fixed-size batches beat fragile byte estimation; tune only if Qdrant limits differ.
+        batch_size = max(1, int(batch_size))
 
         points = []
         for chunk, vector in zip(chunks, vectors):
@@ -153,11 +155,16 @@ class QdrantHandler:
             )
             points.append(point)
 
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points,
-        )
-        print(f"✅ Berhasil upload {len(points)} points ke Qdrant")
+        total_batches = (len(points) + batch_size - 1) // batch_size
+        for batch_number, start in enumerate(range(0, len(points), batch_size), start=1):
+            batch = points[start:start + batch_size]
+            if total_batches > 1:
+                print(f"⬆️ Upload batch {batch_number}/{total_batches}: {len(batch)} points")
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=batch,
+            )
+        print(f"✅ Berhasil upload {len(points)} points ke Qdrant ({total_batches} batch)")
 
     # ========================================================
     # SEARCH RAW RESULTS

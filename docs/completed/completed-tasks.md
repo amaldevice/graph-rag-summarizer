@@ -2,6 +2,19 @@
 
 ## 2026-07-06
 
+- **Implemented Qdrant-safe batched uploads for large Ingest Runs (issue #34)**
+  - Changed Qdrant chunk uploads to write bounded batches instead of one oversized request, preserving the existing Ingest Run launcher flow.
+  - Kept hierarchy/layout/image payload metadata intact while allowing large hierarchy-aware chunk sets to fit within Qdrant Cloud request-size limits.
+  - Added regression coverage proving large fake uploads split into multiple Qdrant upsert calls.
+  - Verification: `uv run pytest -q tests/test_qdrant_handler_cloud.py tests/test_ingest_runner.py tests/test_flowchart_alignment.py`; `uv run python -m py_compile vectordb/qdrant_handler.py tests/test_qdrant_handler_cloud.py`; `uv run pytest -q` (`146 passed`).
+
+- **Published the Qdrant-safe batched Ingest Runs PRD and implementation slice**
+  - Captured the observed Qdrant Cloud upload failure where a hierarchy-aware Ingest Run produced 6,634 chunks and attempted a single ~110 MB JSON payload against a ~32 MB request limit.
+  - Published GitHub issue `#33` as the parent PRD for bounded Qdrant upload batches in Ingest Runs.
+  - Published GitHub issue `#34` as the single ready-for-agent implementation slice because the smallest complete fix lives at the vector store upload seam.
+  - Archived the local PRD and slice notes under `docs/completed/prd/` and `docs/completed/issues/`.
+  - Verification: reviewed `launcher/runners.py`, `vectordb/qdrant_handler.py`, `tests/test_qdrant_handler_cloud.py`, `tests/test_ingest_runner.py`, and current Qdrant client upsert signature; `gh issue create` for `#33` and `#34`; parent issue comment linking the child slice.
+
 - **Implemented flowchart-aligned Full-Pipeline Runs end-to-end (issues #26-#31)**
   - Added hierarchy/layout chunk metadata from Docling ingest through Qdrant payload normalization, while keeping older payloads readable.
   - Added chunk-entity mention edges plus path-aware pruning artifacts with path evidence, semantic retrieval score, centrality score, and community-bounded top-k selection.

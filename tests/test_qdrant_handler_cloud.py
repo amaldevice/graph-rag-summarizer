@@ -69,3 +69,29 @@ def test_upsert_chunks_stores_page_and_image_aliases() -> None:
     assert point.payload["image_urls"] == ["https://pub.example.r2.dev/images/page-3.png"]
     assert point.payload["hierarchy"] == {"level": "paragraph"}
     assert point.payload["layout"] == {"kind": "paragraph", "page_no": 3}
+
+
+def test_upsert_chunks_batches_large_uploads() -> None:
+    calls = []
+
+    class FakeClient:
+        def upsert(self, collection_name, points) -> None:
+            calls.append((collection_name, points))
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+    chunks = [
+        {
+            "chunk_id": idx,
+            "text": f"chunk {idx}",
+            "level": "sentence",
+            "hierarchy": {"level": "sentence", "section": "A"},
+            "layout": {"kind": "sentence", "page_no": 1},
+        }
+        for idx in range(5)
+    ]
+
+    handler.upsert_chunks(chunks, [[0.1, 0.2] for _ in chunks], batch_size=2)
+
+    assert [len(points) for _, points in calls] == [2, 2, 1]
+    assert {collection_name for collection_name, _ in calls} == {"test"}
+    assert calls[0][1][0].payload["hierarchy"] == {"level": "sentence", "section": "A"}
