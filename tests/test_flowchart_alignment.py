@@ -1,0 +1,311 @@
+from pathlib import Path
+import sys
+import types
+
+import networkx as nx
+import pandas as pd
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from evaluation.evaluator import SummaryEvaluator
+from evaluation.quality_checker import QualityChecker
+from graph.graph_builder import GraphBuilder
+from graph.graph_analyzer import GraphAnalyzer
+from pipeline.feedback_loop import FeedbackLoopController
+from summarizer.hierarchical_reducer import HierarchicalReducer
+from summarizer.prompt_builder import PromptBuilder
+from summarizer.pruner import SummaryPruner
+from vectordb.qdrant_handler import QdrantHandler
+
+
+def test_qdrant_preserves_hierarchy_payload_on_upsert_and_retrieval():
+    captured = {}
+
+    class FakeClient:
+        def upsert(self, collection_name, points):
+            captured["points"] = points
+
+    chunk = {
+        "chunk_id": 4,
+        "text": "Sentence level evidence.",
+        "level": "sentence",
+        "hierarchy": {"level": "sentence", "section": "Findings", "paragraph_index": 2, "sentence_index": 1},
+        "layout": {"kind": "text", "page_no": 5},
+        "source": "paper.pdf",
+        "page_no": 5,
+    }
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+    handler.upsert_chunks([chunk], [[0.1, 0.2]])
+    payload = captured["points"][0].payload
+    assert payload["hierarchy"] == chunk["hierarchy"]
+    assert payload["layout"] == chunk["layout"]
+
+    class FakeResult:
+        def __init__(self, payload):
+            self.id = 4
+            self.score = 0.7
+            self.payload = payload
+
+    handler.search = lambda query_vector, limit=1: [FakeResult(payload)]
+    retrieved = handler.search_as_chunks([0.1, 0.2], limit=1)[0]
+    assert retrieved["hierarchy"]["section"] == "Findings"
+    assert retrieved["layout"]["kind"] == "text"
+
+
+def test_path_aware_pruner_adds_path_evidence_to_selected_chunks():
+    ranked = pd.DataFrame([
+        {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.9, "pagerank": 0.9, "text_preview": "A"},
+        {"node": "chunk_1", "type": "chunk", "community": 0, "rank": 2, "composite_score": 0.2, "pagerank": 0.2, "text_preview": "B"},
+        {"node": "ent_bridge", "type": "entity", "community": 0, "rank": 3, "composite_score": 0.8, "pagerank": 0.8, "text_preview": "bridge"},
+    ])
+    graph = nx.Graph()
+    graph.add_edge("chunk_0", "ent_bridge", weight=1.0, edge_type="mentions")
+    graph.add_edge("ent_bridge", "chunk_1", weight=1.0, edge_type="mentions")
+    chunks = [
+        {"chunk_id": 0, "text": "A", "score": 0.9, "level": "paragraph", "source": "paper"},
+        {"chunk_id": 1, "text": "B", "score": 0.95, "level": "paragraph", "source": "paper"},
+    ]
+
+    result = SummaryPruner(top_k_per_community=2, top_k_global=2).select_top_chunks(ranked, chunks, graph=graph)
+
+    selected = result["communities"][0]["chunks"]
+    assert {c["chunk_id"] for c in selected} == {0, 1}
+    assert any(c["path_evidence"] for c in selected)
+    assert result["selection_strategy"] == "path_aware"
+
+
+def test_graph_builder_links_chunks_to_mentioned_entities():
+    graph = GraphBuilder(knn_k=1, sim_threshold=0.99).build_graph(
+        chunks=[
+            {"chunk_id": "c0", "text": "Alpha appears here.", "level": "sentence"},
+            {"chunk_id": "c1", "text": "Beta appears here.", "level": "sentence"},
+        ],
+        chunk_embeddings=[[1.0, 0.0], [0.0, 1.0]],
+        all_entities=[
+            {"chunk_id": "c0", "text": "Alpha", "label": "ORG"},
+            {"chunk_id": "c1", "text": "Beta", "label": "ORG"},
+        ],
+        all_relations=[],
+    )
+
+    assert graph.has_edge("chunk_0", "ent_alpha")
+    assert graph["chunk_0"]["ent_alpha"]["edge_type"] == "mentions"
+    assert graph.has_edge("chunk_1", "ent_beta")
+
+
+def test_prompt_builder_uses_nap_cap_cgm_sections():
+    prompt = PromptBuilder().build_community_prompt(
+        3,
+        [{
+            "chunk_id": 7,
+            "rank": 1,
+            "composite_score": 0.8,
+            "level": "paragraph",
+            "hierarchy": {"section": "Findings"},
+            "path_evidence": [{"path": ["chunk_7", "ent_x", "chunk_8"]}],
+            "text": "Grounded fact.",
+        }],
+        query="Summarize findings",
+    )
+    assert "NAP" in prompt
+    assert "CAP" in prompt
+    assert "CGM" in prompt
+    assert "path_evidence" in prompt
+    assert "Findings" in prompt
+
+
+def test_raptor_reducer_creates_levels_for_large_inputs():
+    calls = []
+
+    class FakeSession:
+        def call_llm(self, system_prompt, prompt):
+            calls.append(prompt)
+            return f"summary-{len(calls)}"
+
+    class FakeEmbedder:
+        def embed_text(self, text):
+            return [float(len(text) % 3), 0.0]
+
+    reducer = HierarchicalReducer(session=FakeSession(), embedder=FakeEmbedder(), raptor_group_size=2)
+    result = reducer.reduce_summaries(
+        [
+            {"community_id": idx, "summary": f"community {idx}", "chunk_ids": [idx]}
+            for idx in range(5)
+        ],
+        query="main idea",
+    )
+
+    assert result["reduction_strategy"] == "raptor"
+    assert len(result["reduction_levels"]) >= 2
+    assert result["final_summary"] == f"summary-{len(calls)}"
+
+
+def test_evaluator_reports_grounded_metric_statuses_without_optional_models():
+    result = SummaryEvaluator().evaluate_without_reference(
+        "alpha beta",
+        source_chunks=[{"text": "alpha beta gamma"}],
+        query="What is alpha?",
+    )
+    metrics = result["grounded_metrics"]
+    assert set(metrics) == {"factcc", "summac", "geval", "qa_coverage"}
+    assert metrics["factcc"]["status"] in {"available", "unavailable"}
+    assert metrics["summac"]["status"] in {"available", "unavailable"}
+    assert metrics["geval"]["status"] in {"available", "unavailable"}
+    assert metrics["qa_coverage"]["status"] == "available"
+
+    quality = QualityChecker(min_summary_words=1).check(result)
+    assert "metric_decisions" in quality
+    assert QualityChecker(min_summary_words=1).suggest_action(quality)["action"] in {"accept", "retry_retrieval", "retry_prompt", "retry_reduce", "manual_review", "review"}
+
+
+def test_feedback_controller_maps_actions_to_retry_stages():
+    controller = FeedbackLoopController(max_retries=2)
+    base = {"retrieval_retries": 0, "prompt_retries": 0, "reduce_retries": 0, "total_retries": 0}
+    retrieval = controller.decide({"status": "FAIL"}, {"action": "retry_retrieval"}, base)
+    prompt = controller.decide({"status": "FAIL"}, {"action": "retry_prompt"}, base)
+    reduce = controller.decide({"status": "FAIL"}, {"action": "retry_reduce"}, base)
+    assert retrieval["next_stage"] == "retrieval"
+    assert prompt["next_stage"] == "prompt"
+    assert reduce["next_stage"] == "reduce"
+
+
+def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
+    from config import settings
+
+    calls = {"retrieval": 0, "graph": 0, "summarize": 0, "reduce": 0, "decision": 0}
+    modules = {name: types.ModuleType(name) for name in [
+        "embedding.embedder", "vectordb.qdrant_handler", "preprocessing.docling_loader",
+        "graph.entity_extractor", "graph.graph_builder", "graph.community_detector",
+        "graph.graph_analyzer", "summarizer.pruner", "summarizer.prompt_builder",
+        "summarizer.provider_router", "summarizer.llm_summarizer", "summarizer.hierarchical_reducer",
+        "evaluation.evaluator", "evaluation.quality_checker", "pipeline.feedback_loop",
+    ]}
+
+    class FakeEmbedder:
+        def embed_text(self, text): return [0.1, 0.2]
+
+    class FakeQdrant:
+        def __init__(self, collection_name="test"): pass
+        def search_as_chunks(self, query_vector, limit):
+            calls["retrieval"] += 1
+            return [{"chunk_id": 1, "text": "alpha beta", "page_no": 1, "score": 0.9}]
+
+    class FakeExtractor:
+        def extract_entities(self, chunks): return {1: []}, []
+        def extract_relations_llm(self, text, entities): return []
+
+    class FakeGraphBuilder:
+        def build_graph(self, *args):
+            calls["graph"] += 1
+            return object()
+
+    class FakeDetector:
+        def detect(self, graph): return graph, {0: ["chunk_0"]}, {}, 0.1
+
+    class FakeAnalyzer:
+        def analyze(self, graph): return pd.DataFrame([{"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 1.0, "text_preview": "alpha"}])
+        def save_ranked_csv(self, ranked, output_path): return output_path
+        def save_ranked_json(self, ranked, output_path): return output_path
+        def save_summary_json(self, ranked, communities, modularity, output_path): return output_path
+
+    class FakePruner:
+        def __init__(self, top_k_per_community, top_k_global): pass
+        def select_top_chunks(self, ranked, chunks, graph=None): return {"communities": [{"community_id": 0, "chunks": chunks}]}
+        def save_pruned_json(self, result, output_path): return output_path
+        def save_pruned_csv(self, result, output_path): return output_path
+
+    class FakePromptBuilder:
+        def __init__(self, max_chars_per_chunk): pass
+        def build_all_community_prompts(self, result, query, style): return [{"community_id": 0, "prompt": "prompt", "chunk_ids": [1]}]
+
+    class FakeSummarizer:
+        def __init__(self, session=None): pass
+        def summarize_communities(self, prompts):
+            calls["summarize"] += 1
+            return [{"community_id": 0, "summary": f"map {calls['summarize']}", "chunk_ids": [1]}]
+        def save_map_summaries_json(self, summaries, output_path): return output_path
+        def save_map_summaries_txt(self, summaries, output_path): return output_path
+
+    class FakeReducer:
+        def __init__(self, session=None, embedder=None): pass
+        def reduce_summaries(self, summaries, query, style):
+            calls["reduce"] += 1
+            return {"final_summary": f"final {calls['reduce']}"}
+        def save_final_summary_json(self, result, output_path): return output_path
+        def save_final_summary_txt(self, result, output_path): return output_path
+
+    class FakeEvaluator:
+        def __init__(self, judge_session=None): pass
+        def evaluate_without_reference(self, generated_summary, source_chunks, query=None): return {"generated_length": 10, "has_reference": False}
+        def save_evaluation_json(self, result, output_path): return output_path
+
+    class FakeQuality:
+        def check(self, result): return {"status": "FAIL"}
+        def suggest_action(self, quality): return {"action": "retry_prompt"}
+        def save_quality_report(self, quality, action, output_path): return output_path
+
+    class FakeFeedback:
+        def __init__(self, max_retries): pass
+        def decide(self, quality_result, action_result, retry_state):
+            calls["decision"] += 1
+            if calls["decision"] == 1:
+                return {"stop": False, "next_stage": "prompt", "updated_retry_state": {"total_retries": 1}, "final_decision": None}
+            return {"stop": True, "next_stage": None, "updated_retry_state": retry_state, "final_decision": "accept"}
+        def save_decision(self, decision, output_path): return output_path
+
+    modules["embedding.embedder"].TextEmbedder = FakeEmbedder
+    modules["vectordb.qdrant_handler"].QdrantHandler = FakeQdrant
+    modules["preprocessing.docling_loader"].DoclingLoader = object
+    modules["graph.entity_extractor"].EntityExtractor = FakeExtractor
+    modules["graph.graph_builder"].GraphBuilder = FakeGraphBuilder
+    modules["graph.community_detector"].CommunityDetector = FakeDetector
+    modules["graph.graph_analyzer"].GraphAnalyzer = FakeAnalyzer
+    modules["summarizer.pruner"].SummaryPruner = FakePruner
+    modules["summarizer.prompt_builder"].PromptBuilder = FakePromptBuilder
+    modules["summarizer.provider_router"].create_session = lambda: object()
+    modules["summarizer.llm_summarizer"].LLMSummarizer = FakeSummarizer
+    modules["summarizer.hierarchical_reducer"].HierarchicalReducer = FakeReducer
+    modules["evaluation.evaluator"].SummaryEvaluator = FakeEvaluator
+    modules["evaluation.quality_checker"].QualityChecker = FakeQuality
+    modules["pipeline.feedback_loop"].FeedbackLoopController = FakeFeedback
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(settings, "ENABLE_ON_DEMAND_PAGE_RENDER", False)
+
+    from launcher.runners import run_full_pipeline
+    run_full_pipeline({"collection": "c", "query": "q", "retrieval_limit": 3, "artifact_dir": "output/test", "verbose": False})
+
+    assert calls["retrieval"] == 1
+    assert calls["graph"] == 1
+    assert calls["summarize"] == 2
+    assert calls["reduce"] == 2
+
+
+def test_docling_chunk_text_adds_hierarchy_for_sections_and_sentences():
+    from preprocessing.docling_loader import DoclingLoader
+
+    class TitleItem:
+        text = "Findings"
+        page_no = 1
+
+    class ParagraphItem:
+        text = "First finding. Second finding."
+        page_no = 1
+
+    class FakeDocument:
+        def iterate_items(self):
+            yield TitleItem(), None
+            yield ParagraphItem(), None
+
+    class FakeResult:
+        document = FakeDocument()
+
+    chunks = DoclingLoader.__new__(DoclingLoader).chunk_text(FakeResult(), source_name="paper.pdf")
+
+    assert chunks[0]["level"] == "section"
+    assert chunks[0]["hierarchy"]["section"] == "Findings"
+    assert [c["level"] for c in chunks[1:]] == ["sentence", "sentence"]
+    assert chunks[1]["hierarchy"]["paragraph_index"] == 1
+    assert chunks[2]["hierarchy"]["sentence_index"] == 2

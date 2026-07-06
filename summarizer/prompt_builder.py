@@ -40,12 +40,16 @@ class PromptBuilder:
         chunk_blocks = []
         for idx, chunk in enumerate(chunks, start=1):
             text = self._truncate_text(chunk.get("text", ""))
+            hierarchy = chunk.get("hierarchy") or {}
+            path_evidence = chunk.get("path_evidence") or []
             chunk_blocks.append(
                 f"[Chunk {idx}]\n"
                 f"chunk_id: {chunk.get('chunk_id', 'unknown')}\n"
                 f"rank: {chunk.get('rank', 'unknown')}\n"
                 f"composite_score: {chunk.get('composite_score', 0):.4f}\n"
                 f"level: {chunk.get('level', 'paragraph')}\n"
+                f"hierarchy_section: {hierarchy.get('section')}\n"
+                f"path_evidence: {path_evidence}\n"
                 f"text:\n{text}"
             )
 
@@ -62,6 +66,9 @@ Community ID:
 {community_id}
 
 Important instructions:
+- NAP (Node-Aware Prompt): treat each chunk as a graph node with rank, hierarchy, and path evidence.
+- CAP (Community-Aware Prompt): summarize only Community {community_id} and explain shared ideas across its selected nodes.
+- CGM (Community-to-Global Merge): write this community summary so it can be merged into a global final answer later.
 - Use only the information provided in the chunks below.
 - Focus on the most central and repeated ideas.
 - Preserve factual meaning.

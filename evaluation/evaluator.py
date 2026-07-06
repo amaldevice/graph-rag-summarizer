@@ -19,9 +19,10 @@ except ImportError:
 
 
 class SummaryEvaluator:
-    def __init__(self, use_stemmer: bool = True, bert_lang: str = "en"):
+    def __init__(self, use_stemmer: bool = True, bert_lang: str = "en", judge_session=None):
         self.use_stemmer = use_stemmer
         self.bert_lang = bert_lang
+        self.judge_session = judge_session
 
     def evaluate_with_reference(self, generated_summary: str, reference_summary: str) -> Dict:
         result = {
@@ -63,7 +64,8 @@ class SummaryEvaluator:
     def evaluate_without_reference(
         self,
         generated_summary: str,
-        source_chunks: Optional[List[Dict]] = None
+        source_chunks: Optional[List[Dict]] = None,
+        query: Optional[str] = None,
     ) -> Dict:
         source_text = " ".join(chunk.get("text", "") for chunk in (source_chunks or []))
         source_words = source_text.split()
@@ -76,13 +78,84 @@ class SummaryEvaluator:
         if summary_vocab:
             lexical_overlap = len(summary_vocab.intersection(source_vocab)) / max(len(summary_vocab), 1)
 
-        return {
+        result = {
             "has_reference": False,
             "generated_length": len(summary_words),
             "source_length": len(source_words),
             "lexical_overlap": lexical_overlap,
-            "source_chunk_count": len(source_chunks or [])
+            "source_chunk_count": len(source_chunks or []),
         }
+        result["grounded_metrics"] = self._grounded_metrics(
+            generated_summary=generated_summary,
+            source_text=source_text,
+            query=query,
+            lexical_overlap=lexical_overlap,
+        )
+        return result
+
+    def _grounded_metrics(
+        self,
+        generated_summary: str,
+        source_text: str,
+        query: Optional[str],
+        lexical_overlap: float,
+    ) -> Dict:
+        # ponytail: FactCC/SummaC are optional research evaluators; report absence instead of adding heavy deps.
+        metrics = {
+            "factcc": {
+                "status": "unavailable",
+                "score": None,
+                "reason": "FactCC evaluator is not configured",
+            },
+            "summac": {
+                "status": "unavailable",
+                "score": None,
+                "reason": "SummaC evaluator is not configured",
+            },
+            "geval": {
+                "status": "unavailable",
+                "score": None,
+                "reason": "LLM judge session is not configured",
+            },
+            "qa_coverage": self._qa_coverage(generated_summary, source_text, query),
+        }
+        if self.judge_session is not None:
+            metrics["geval"] = self._geval(generated_summary, source_text, query)
+        return metrics
+
+    def _qa_coverage(self, generated_summary: str, source_text: str, query: Optional[str]) -> Dict:
+        summary_vocab = self._vocab(generated_summary)
+        if query:
+            targets = self._vocab(query)
+        else:
+            targets = set(list(self._vocab(source_text))[:20])
+        score = 1.0 if not targets else len(summary_vocab.intersection(targets)) / max(len(targets), 1)
+        return {
+            "status": "available",
+            "score": score,
+            "reason": "Query term coverage proxy",
+        }
+
+    def _geval(self, generated_summary: str, source_text: str, query: Optional[str]) -> Dict:
+        prompt = (
+            "Score this summary from 0 to 1 for faithfulness to the source. "
+            f"Query: {query or ''}\nSource: {source_text[:3000]}\nSummary: {generated_summary}"
+        )
+        try:
+            raw = self.judge_session.call_llm("Return only a number from 0 to 1.", prompt)
+            score = float(str(raw).strip().split()[0])
+            score = max(0.0, min(1.0, score))
+            return {"status": "available", "score": score, "reason": "LLM judge score"}
+        except Exception as exc:
+            return {"status": "unavailable", "score": None, "reason": str(exc)}
+
+    def _vocab(self, text: str) -> set:
+        words = []
+        for word in text.split():
+            cleaned = word.lower().strip(".,;:!?()[]{}\"'")
+            if cleaned:
+                words.append(cleaned)
+        return set(words)
 
     def build_quality_decision(
         self,

@@ -2,6 +2,28 @@
 
 ## 2026-07-06
 
+- **Implemented flowchart-aligned Full-Pipeline Runs end-to-end (issues #26-#31)**
+  - Added hierarchy/layout chunk metadata from Docling ingest through Qdrant payload normalization, while keeping older payloads readable.
+  - Added chunk-entity mention edges plus path-aware pruning artifacts with path evidence, semantic retrieval score, centrality score, and community-bounded top-k selection.
+  - Updated map and reduce prompts with explicit NAP/CAP/CGM instructions and selected evidence metadata.
+  - Added RAPTOR-style multi-level reduction for larger community sets using the existing embedding runtime, with single-merge fallback for small runs.
+  - Added grounded evaluation metric status objects for FactCC, SummaC, G-Eval, and QA coverage; missing optional evaluators report unavailable instead of crashing.
+  - Closed the feedback loop inside Full-Pipeline Runs with bounded automatic reruns from retrieval, prompt, or reduction, plus per-attempt artifacts.
+  - Added regression coverage in `tests/test_flowchart_alignment.py` and updated existing Qdrant payload assertions.
+  - Verification: `uv run pytest -q tests/test_flowchart_alignment.py tests/test_qdrant_handler_cloud.py tests/test_ingest_runner.py tests/test_full_pipeline_shared_session_wiring.py tests/test_shared_session.py tests/test_embedding_entrypoints.py`; `uv run pytest -q tests/test_flowchart_alignment.py tests/test_full_pipeline_dispatch.py tests/test_launcher_contract.py tests/test_launcher_main.py tests/test_query_only_runner.py tests/test_qdrant_handler_backends.py tests/test_docling_loader_storage_contract.py tests/test_text_embedder_runtime.py tests/test_provider_router.py`; `uv run python -m py_compile launcher/runners.py preprocessing/docling_loader.py vectordb/qdrant_handler.py graph/graph_builder.py summarizer/pruner.py summarizer/prompt_builder.py summarizer/hierarchical_reducer.py evaluation/evaluator.py evaluation/quality_checker.py pipeline/feedback_loop.py tests/test_flowchart_alignment.py tests/test_qdrant_handler_cloud.py`; `uv run pytest -q` (`145 passed`).
+
+- **Published the flowchart-aligned Full-Pipeline PRD and approved child issue slices**
+  - Created GitHub issue `#25` for the PRD covering hierarchy-aware chunking, path-aware pruning, NAP/CAP/CGM prompts, RAPTOR-style reduction, grounded evaluation signals, and bounded adaptive feedback reruns.
+  - Published approved vertical slices as issues `#26` through `#31` in dependency order.
+  - Archived the finalized local PRD and slice breakdown under `docs/completed/prd/` and `docs/completed/issues/`.
+  - Verification: `gh issue view 25`; `gh issue create` for issues `#26`-`#31`; parent issue comment linking the child slice chain.
+
+- **Compared the project flow against the provided GraphRAG summarization flowchart**
+  - Inspected the provided WhatsApp flowchart image and matched it against the current ingest, retrieval, graph, summarization, evaluation, and feedback modules.
+  - Confirmed the project is broadly aligned from Docling ingest through Qdrant retrieval, graph/community ranking, map/reduce summarization, quality gate, and feedback decision output.
+  - Identified partial gaps: chunking is Docling-item/fallback paragraph based rather than explicit sentence→paragraph→section hierarchy; default embedding is `nomic-ai/nomic-embed-text-v1.5`, not BGE-M3/Sentence-BERT; evaluation is ROUGE/BERTScore when reference exists or lexical overlap without reference, not FactCC/SummaC/G-Eval/QA coverage; feedback writes a retry decision but does not automatically loop back and rerun the corresponding stage.
+  - Verification: inspected `WhatsApp Image 2026-06-25 at 20.20.50.jpeg`; reviewed `README.md`, `launcher/runners.py`, `upload_to_qdrant.py`, `preprocessing/docling_loader.py`, `preprocessing/image_exporter.py`, `embedding/embedder.py`, `vectordb/qdrant_handler.py`, `graph/*`, `summarizer/*`, `evaluation/*`, and `pipeline/feedback_loop.py` with `rg`/line-numbered static review.
+
 - **Shipped artifact-directory Full-Pipeline Runs plus stage-aware launcher logging (PRD #22, issue #23)**
   - Replaced the misleading Full-Pipeline `json_output` flow with an explicit `artifact_dir` contract in `launcher/contract.py` and preserved that value through the launcher edit loop in `main.py`.
   - Added a collision-resistant per-run default artifact directory and mode-aware summary rendering so Query-Only Run still shows one JSON artifact while Full-Pipeline Run shows its artifact directory.

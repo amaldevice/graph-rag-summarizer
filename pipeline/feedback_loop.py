@@ -68,6 +68,26 @@ class FeedbackLoopController:
                 "message": "Retry retrieval with broader or adjusted context, then rebuild graph and summaries."
             }
 
+        if action == "retry_prompt":
+            updated["prompt_retries"] = updated.get("prompt_retries", 0) + 1
+            return {
+                "stop": False,
+                "final_decision": None,
+                "next_stage": "prompt",
+                "updated_retry_state": updated,
+                "message": "Retry prompt construction and map summarization with stricter instructions."
+            }
+
+        if action == "retry_reduce":
+            updated["reduce_retries"] = updated.get("reduce_retries", 0) + 1
+            return {
+                "stop": False,
+                "final_decision": None,
+                "next_stage": "reduce",
+                "updated_retry_state": updated,
+                "message": "Retry hierarchical reduction with refined merge instructions."
+            }
+
         if action == "retry_prompt_or_reduce":
             prompt_retries = updated.get("prompt_retries", 0)
             reduce_retries = updated.get("reduce_retries", 0)
