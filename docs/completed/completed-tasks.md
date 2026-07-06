@@ -2,6 +2,11 @@
 
 ## 2026-07-06
 
+- **Captured Flow Project next-development notes**
+  - Added `docs/handoff-2026-07-06-flow-project-next-development.md` as a lightweight markdown note instead of opening another PRD/issue, because this is a development memory note rather than approved implementation scope.
+  - Summarized the current flowchart alignment status, added the flowchart status table, latest run evidence, remaining partial areas, and the recommended next small slice: tiny sentence chunk filtering.
+  - Verification: reviewed the latest artifact summary from `output/full_pipeline_2026-07-06T13-51-43-901349Z` already analyzed in-thread and saved the note under the required handoff naming prefix.
+
 - **Implemented Qdrant-safe batched uploads for large Ingest Runs (issue #34)**
   - Changed Qdrant chunk uploads to write bounded batches instead of one oversized request, preserving the existing Ingest Run launcher flow.
   - Kept hierarchy/layout/image payload metadata intact while allowing large hierarchy-aware chunk sets to fit within Qdrant Cloud request-size limits.
