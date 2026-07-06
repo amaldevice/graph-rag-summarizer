@@ -5,6 +5,7 @@
 # ============================================================
 
 import os
+import re
 from pathlib import Path
 
 from docling.document_converter import DocumentConverter
@@ -31,9 +32,60 @@ class DoclingLoader:
     def extract_text(self, doc_result):
         return doc_result.document.export_to_markdown()
 
+    def _infer_level(self, element, text: str) -> str:
+        name = type(element).__name__.lower()
+        if "section" in name or "heading" in name or "title" in name:
+            return "section"
+        if "table" in name:
+            return "table"
+        if "picture" in name or "figure" in name:
+            return "figure"
+        if len(self._sentence_parts(text)) > 1:
+            return "paragraph"
+        if len(text.split()) <= 30 and text.endswith((".", "?", "!")):
+            return "sentence"
+        return "paragraph"
+
+    def _sentence_parts(self, text: str) -> list[str]:
+        # ponytail: tiny sentence splitter; replace with NLP segmentation if sentence quality matters.
+        parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+        return parts if len(parts) > 1 else [text.strip()]
+
+    def _chunk_payload(
+        self,
+        chunk_id: int,
+        text: str,
+        level: str,
+        source_name: str,
+        page_no,
+        section: str | None,
+        paragraph_index: int | None,
+        sentence_index: int | None = None,
+    ) -> dict:
+        return {
+            "chunk_id": chunk_id,
+            "text": text.strip(),
+            "level": level,
+            "hierarchy": {
+                "level": level,
+                "section": section,
+                "paragraph_index": paragraph_index,
+                "sentence_index": sentence_index,
+            },
+            "layout": {
+                "kind": level,
+                "page_no": page_no,
+            },
+            "source": source_name,
+            "page_no": page_no,
+            "image_url": None,
+        }
+
     def chunk_text(self, doc_result, source_name: str = "docling"):
         chunks = []
         chunk_id = 0
+        paragraph_index = 0
+        current_section = None
 
         for element, _level in doc_result.document.iterate_items():
             text = getattr(element, "text", None)
@@ -46,14 +98,36 @@ class DoclingLoader:
                 if prov and len(prov) > 0:
                     page_no = getattr(prov[0], "page_no", None)
 
-            chunks.append({
-                "chunk_id": chunk_id,
-                "text": text.strip(),
-                "level": type(element).__name__,
-                "source": source_name,
-                "page_no": page_no,
-                "image_url": None,
-            })
+            level = self._infer_level(element, text.strip())
+            if level == "section":
+                current_section = text.strip()
+
+            if level == "paragraph":
+                paragraph_index += 1
+                for sentence_index, sentence in enumerate(self._sentence_parts(text), start=1):
+                    sentence_level = "sentence" if sentence != text.strip() else "paragraph"
+                    chunks.append(self._chunk_payload(
+                        chunk_id,
+                        sentence,
+                        sentence_level,
+                        source_name,
+                        page_no,
+                        current_section,
+                        paragraph_index,
+                        sentence_index if sentence_level == "sentence" else None,
+                    ))
+                    chunk_id += 1
+                continue
+
+            chunks.append(self._chunk_payload(
+                chunk_id,
+                text,
+                level,
+                source_name,
+                page_no,
+                current_section,
+                paragraph_index if level != "section" else None,
+            ))
             chunk_id += 1
 
         if not chunks:
@@ -61,14 +135,7 @@ class DoclingLoader:
             full_text = self.extract_text(doc_result)
             raw_chunks = [c.strip() for c in full_text.split("\n\n") if c.strip()]
             chunks = [
-                {
-                    "chunk_id": idx,
-                    "text": chunk,
-                    "level": "paragraph",
-                    "source": source_name,
-                    "page_no": None,
-                    "image_url": None,
-                }
+                self._chunk_payload(idx, chunk, "paragraph", source_name, None, None, idx + 1)
                 for idx, chunk in enumerate(raw_chunks)
             ]
 

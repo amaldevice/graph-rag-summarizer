@@ -30,6 +30,8 @@ def test_search_as_chunks_normalizes_graph_rag_payload() -> None:
         "chunk_id": 7,
         "text": "hello",
         "level": "paragraph",
+        "hierarchy": {"level": "paragraph", "section": None},
+        "layout": {"kind": "paragraph", "page_no": 3},
         "source": "paper.pdf",
         "page_no": 3,
         "image_url": "https://pub.example.r2.dev/images/page-3.png",
@@ -65,3 +67,5 @@ def test_upsert_chunks_stores_page_and_image_aliases() -> None:
     assert point.payload["page"] == 3
     assert point.payload["image_url"] == "https://pub.example.r2.dev/images/page-3.png"
     assert point.payload["image_urls"] == ["https://pub.example.r2.dev/images/page-3.png"]
+    assert point.payload["hierarchy"] == {"level": "paragraph"}
+    assert point.payload["layout"] == {"kind": "paragraph", "page_no": 3}

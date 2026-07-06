@@ -16,7 +16,9 @@ class GraphBuilder:
     def build_graph(self, chunks, chunk_embeddings, all_entities, all_relations):
         G = nx.Graph()
 
+        chunk_index_by_id = {}
         for i, chunk in enumerate(chunks):
+            chunk_index_by_id[chunk.get("chunk_id", i)] = i
             G.add_node(
                 f"chunk_{i}",
                 type="chunk",
@@ -28,6 +30,24 @@ class GraphBuilder:
         for ent_text, ent_label in unique_entities:
             node_id = f'ent_{ent_text.lower().replace(" ", "_")}'
             G.add_node(node_id, type="entity", label=ent_label, text=ent_text)
+
+        for entity in all_entities:
+            chunk_index = chunk_index_by_id.get(entity.get("chunk_id"))
+            if chunk_index is None:
+                continue
+
+            ent_text = entity.get("text", "")
+            if not ent_text:
+                continue
+
+            node_id = f'ent_{ent_text.lower().replace(" ", "_")}'
+            if G.has_node(node_id):
+                G.add_edge(
+                    f"chunk_{chunk_index}",
+                    node_id,
+                    weight=1.0,
+                    edge_type="mentions"
+                )
 
         sim_matrix = cosine_similarity(np.array(chunk_embeddings))
         for i in range(len(chunks)):

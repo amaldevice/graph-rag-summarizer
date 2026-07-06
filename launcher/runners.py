@@ -131,7 +131,7 @@ def run_ingest(config: dict) -> None:
 
 
 def run_full_pipeline(config: dict) -> None:
-    """Execute a Full-Pipeline Run: retrieve -> graph -> summarize -> evaluate."""
+    """Execute a Full-Pipeline Run with bounded adaptive retries."""
     from embedding.embedder import TextEmbedder
     from vectordb.qdrant_handler import QdrantHandler
     from graph.entity_extractor import EntityExtractor
@@ -153,6 +153,7 @@ def run_full_pipeline(config: dict) -> None:
     pdf_path = config.get("pdf_path", "")
     artifact_dir = config.get("artifact_dir", "") or "output"
     verbose = bool(config.get("verbose", False))
+    max_retries = int(config.get("max_feedback_retries", 2))
 
     print("\n=== FULL-PIPELINE RUN ===")
     print(f"  Collection : {collection}")
@@ -167,110 +168,150 @@ def run_full_pipeline(config: dict) -> None:
         "total_retries": 0,
     }
 
-    _print_stage(1, 8, "retrieve chunks", verbose, [
-        f"Collection target: {collection}",
-        f"Artifact directory: {artifact_dir}",
-        f"Retrieval limit: {retrieval_limit}",
-    ])
     embedder = TextEmbedder()
     qdrant = QdrantHandler(collection_name=collection)
-
-    query_vector = embedder.embed_text(query)
-    retrieved_chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
-
-    print(f"\n  Retrieved chunks: {len(retrieved_chunks)}")
-
-    retrieved_chunks = _maybe_render_images(retrieved_chunks, pdf_path)
-
-    _print_stage(2, 8, "extract entities and relations", verbose, f"Chunk count: {len(retrieved_chunks)}")
     extractor = EntityExtractor()
-    entity_map, all_entities = extractor.extract_entities(retrieved_chunks)
-    all_relations = []
-    for chunk in retrieved_chunks:
-        rels = extractor.extract_relations_llm(
-            chunk["text"],
-            entity_map.get(chunk["chunk_id"], []),
-        )
-        all_relations.extend(rels)
-
-    _print_stage(3, 8, "build graph", verbose, [
-        f"Entities: {len(all_entities)}",
-        f"Relations: {len(all_relations)}",
-    ])
     graph_builder = GraphBuilder()
-    chunk_embeddings = [embedder.embed_text(c["text"]) for c in retrieved_chunks]
-    G = graph_builder.build_graph(retrieved_chunks, chunk_embeddings, all_entities, all_relations)
-
-    _print_stage(4, 8, "detect communities", verbose)
     detector = CommunityDetector()
-    G, communities, community_map, modularity = detector.detect(G)
-
-    _print_stage(5, 8, "rank graph and prune context", verbose, [
-        f"Communities: {len(communities)}",
-        f"Modularity: {modularity:.4f}",
-    ])
     analyzer = GraphAnalyzer()
-    ranked = analyzer.analyze(G)
-    csv_path = analyzer.save_ranked_csv(ranked, _artifact_path(artifact_dir, "graph_ranked_nodes.csv"))
-    json_path = analyzer.save_ranked_json(ranked, _artifact_path(artifact_dir, "graph_ranked_nodes.json"))
-    summary_path = analyzer.save_summary_json(ranked, communities, modularity, _artifact_path(artifact_dir, "graph_summary.json"))
-
-    print(f"\n  Communities : {len(communities)}")
-    print(f"  Modularity  : {modularity:.4f}")
-
     pruner = SummaryPruner(top_k_per_community=3, top_k_global=10)
-    pruned_result = pruner.select_top_chunks(ranked, retrieved_chunks)
-    pruned_json = pruner.save_pruned_json(pruned_result, _artifact_path(artifact_dir, "pruned_summary_context.json"))
-    pruned_csv = pruner.save_pruned_csv(pruned_result, _artifact_path(artifact_dir, "pruned_summary_context.csv"))
-
-    _print_stage(6, 8, "summarize communities", verbose)
     prompt_builder = PromptBuilder(max_chars_per_chunk=1200)
-    community_prompts = prompt_builder.build_all_community_prompts(pruned_result, query=query, style="concise")
-
     session = create_session()
     if verbose:
         resolved_chain = session.resolve_chain() if hasattr(session, "resolve_chain") else []
         if resolved_chain:
             print(f"  Resolved providers: {', '.join(resolved_chain)}")
     summarizer = LLMSummarizer(session=session)
-    community_summaries = summarizer.summarize_communities(community_prompts)
-    map_json = summarizer.save_map_summaries_json(community_summaries, _artifact_path(artifact_dir, "community_map_summaries.json"))
-    map_txt = summarizer.save_map_summaries_txt(community_summaries, _artifact_path(artifact_dir, "community_map_summaries.txt"))
-
-    _print_stage(7, 8, "reduce final summary", verbose, f"Community summaries: {len(community_summaries)}")
-    reducer = HierarchicalReducer(session=session)
-    final_result = reducer.reduce_summaries(community_summaries, query=query, style="concise")
-    final_json = reducer.save_final_summary_json(final_result, _artifact_path(artifact_dir, "final_summary.json"))
-    final_txt = reducer.save_final_summary_txt(final_result, _artifact_path(artifact_dir, "final_summary.txt"))
-
-    print("\n  Final Summary:")
-    print(f"  {final_result['final_summary'][:200]}...")
-
-    _print_stage(8, 8, "evaluate quality and decide", verbose)
-    evaluator = SummaryEvaluator()
-    eval_result = evaluator.evaluate_without_reference(
-        generated_summary=final_result["final_summary"],
-        source_chunks=retrieved_chunks,
-    )
-    evaluation_path = evaluator.save_evaluation_json(eval_result, _artifact_path(artifact_dir, "evaluation_result.json"))
-
+    try:
+        reducer = HierarchicalReducer(session=session, embedder=embedder)
+    except TypeError:
+        reducer = HierarchicalReducer(session=session)
+    try:
+        evaluator = SummaryEvaluator(judge_session=session)
+    except TypeError:
+        evaluator = SummaryEvaluator()
     checker = QualityChecker()
-    quality_result = checker.check(eval_result)
-    action_result = checker.suggest_action(quality_result)
-    report_path = checker.save_quality_report(quality_result, action_result, _artifact_path(artifact_dir, "quality_gate_report.json"))
+    controller = FeedbackLoopController(max_retries=max_retries)
 
-    print(f"\n  Quality Status  : {quality_result['status']}")
-    print(f"  Suggested Action: {action_result['action']}")
+    next_stage = "retrieval"
+    attempt = 0
+    retrieved_chunks = []
+    ranked = None
+    communities = []
+    modularity = 0.0
+    pruned_result = {"communities": []}
+    community_prompts = []
+    community_summaries = []
 
-    controller = FeedbackLoopController(max_retries=2)
-    decision = controller.decide(
-        quality_result=quality_result,
-        action_result=action_result,
-        retry_state=retry_state,
-    )
-    decision_path = controller.save_decision(decision, _artifact_path(artifact_dir, "feedback_loop_decision.json"))
+    while True:
+        current_dir = artifact_dir if attempt == 0 else _artifact_path(artifact_dir, f"attempt-{attempt}")
 
-    print(f"\n  Decision: {decision['final_decision']}")
+        if next_stage == "retrieval":
+            _print_stage(1, 8, "retrieve chunks", verbose, [
+                f"Collection target: {collection}",
+                f"Artifact directory: {current_dir}",
+                f"Retrieval limit: {retrieval_limit}",
+                f"Attempt: {attempt}",
+            ])
+            query_vector = embedder.embed_text(query)
+            retrieved_chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
+            print(f"\n  Retrieved chunks: {len(retrieved_chunks)}")
+            retrieved_chunks = _maybe_render_images(retrieved_chunks, pdf_path)
+
+            _print_stage(2, 8, "extract entities and relations", verbose, f"Chunk count: {len(retrieved_chunks)}")
+            entity_map, all_entities = extractor.extract_entities(retrieved_chunks)
+            all_relations = []
+            for chunk in retrieved_chunks:
+                rels = extractor.extract_relations_llm(
+                    chunk["text"],
+                    entity_map.get(chunk["chunk_id"], []),
+                )
+                all_relations.extend(rels)
+
+            _print_stage(3, 8, "build graph", verbose, [
+                f"Entities: {len(all_entities)}",
+                f"Relations: {len(all_relations)}",
+            ])
+            chunk_embeddings = [embedder.embed_text(c["text"]) for c in retrieved_chunks]
+            G = graph_builder.build_graph(retrieved_chunks, chunk_embeddings, all_entities, all_relations)
+
+            _print_stage(4, 8, "detect communities", verbose)
+            G, communities, community_map, modularity = detector.detect(G)
+
+            _print_stage(5, 8, "rank graph and prune context", verbose, [
+                f"Communities: {len(communities)}",
+                f"Modularity: {modularity:.4f}",
+            ])
+            ranked = analyzer.analyze(G)
+            analyzer.save_ranked_csv(ranked, _artifact_path(current_dir, "graph_ranked_nodes.csv"))
+            analyzer.save_ranked_json(ranked, _artifact_path(current_dir, "graph_ranked_nodes.json"))
+            analyzer.save_summary_json(ranked, communities, modularity, _artifact_path(current_dir, "graph_summary.json"))
+
+            print(f"\n  Communities : {len(communities)}")
+            print(f"  Modularity  : {modularity:.4f}")
+
+            try:
+                pruned_result = pruner.select_top_chunks(ranked, retrieved_chunks, graph=G)
+            except TypeError:
+                pruned_result = pruner.select_top_chunks(ranked, retrieved_chunks)
+            pruner.save_pruned_json(pruned_result, _artifact_path(current_dir, "pruned_summary_context.json"))
+            pruner.save_pruned_csv(pruned_result, _artifact_path(current_dir, "pruned_summary_context.csv"))
+            next_stage = "prompt"
+
+        if next_stage == "prompt":
+            _print_stage(6, 8, "summarize communities", verbose)
+            community_prompts = prompt_builder.build_all_community_prompts(pruned_result, query=query, style="concise")
+            community_summaries = summarizer.summarize_communities(community_prompts)
+            summarizer.save_map_summaries_json(community_summaries, _artifact_path(current_dir, "community_map_summaries.json"))
+            summarizer.save_map_summaries_txt(community_summaries, _artifact_path(current_dir, "community_map_summaries.txt"))
+            next_stage = "reduce"
+
+        if next_stage == "reduce":
+            _print_stage(7, 8, "reduce final summary", verbose, f"Community summaries: {len(community_summaries)}")
+            final_result = reducer.reduce_summaries(community_summaries, query=query, style="concise")
+            reducer.save_final_summary_json(final_result, _artifact_path(current_dir, "final_summary.json"))
+            reducer.save_final_summary_txt(final_result, _artifact_path(current_dir, "final_summary.txt"))
+
+            print("\n  Final Summary:")
+            print(f"  {final_result['final_summary'][:200]}...")
+
+            _print_stage(8, 8, "evaluate quality and decide", verbose)
+            try:
+                eval_result = evaluator.evaluate_without_reference(
+                    generated_summary=final_result["final_summary"],
+                    source_chunks=retrieved_chunks,
+                    query=query,
+                )
+            except TypeError:
+                eval_result = evaluator.evaluate_without_reference(
+                    generated_summary=final_result["final_summary"],
+                    source_chunks=retrieved_chunks,
+                )
+            evaluator.save_evaluation_json(eval_result, _artifact_path(current_dir, "evaluation_result.json"))
+
+            quality_result = checker.check(eval_result)
+            action_result = checker.suggest_action(quality_result)
+            checker.save_quality_report(quality_result, action_result, _artifact_path(current_dir, "quality_gate_report.json"))
+
+            print(f"\n  Quality Status  : {quality_result['status']}")
+            print(f"  Suggested Action: {action_result['action']}")
+
+            decision = controller.decide(
+                quality_result=quality_result,
+                action_result=action_result,
+                retry_state=retry_state,
+            )
+            controller.save_decision(decision, _artifact_path(current_dir, "feedback_loop_decision.json"))
+            print(f"\n  Decision: {decision.get('final_decision')}")
+
+            if decision.get("stop", True):
+                break
+
+            retry_state = decision.get("updated_retry_state", retry_state)
+            next_stage = decision.get("next_stage") or "reduce"
+            attempt += 1
+            if next_stage == "retrieval":
+                retrieval_limit += 2
 
 
 def _maybe_render_images(retrieved_chunks: list, pdf_path: str) -> list:

@@ -6,6 +6,7 @@
 import json
 from pathlib import Path
 
+import networkx as nx
 import pandas as pd
 
 
@@ -33,9 +34,43 @@ class SummaryPruner:
             lookup[idx] = chunk
         return lookup
 
-    def select_top_chunks(self, ranked_df: pd.DataFrame, chunks):
+    def _path_evidence(self, graph, node_name: str, peer_nodes: list[str]) -> list[dict]:
+        if graph is None:
+            return []
+        evidence = []
+        for peer in peer_nodes:
+            if peer == node_name:
+                continue
+            try:
+                path = list(nx.shortest_path(graph, node_name, peer))
+            except Exception:
+                continue
+            if 2 < len(path) <= 4:
+                evidence.append({"path": path, "length": len(path) - 1})
+            if len(evidence) >= 3:
+                break
+        return evidence
+
+    def _chunk_record(self, row, chunk, path_evidence=None):
+        return {
+            "chunk_id": int(row["chunk_id_resolved"]),
+            "community": int(row.get("community", -1)),
+            "rank": int(row.get("rank", 0)) if pd.notna(row.get("rank", 0)) else 0,
+            "composite_score": float(row["composite_score"]),
+            "path_aware_score": float(row.get("path_aware_score", row["composite_score"])),
+            "text": chunk.get("text", row.get("text_preview", "")),
+            "text_preview": row.get("text_preview", ""),
+            "level": chunk.get("level", "paragraph"),
+            "hierarchy": chunk.get("hierarchy", {"level": chunk.get("level", "paragraph")}),
+            "layout": chunk.get("layout", {"kind": chunk.get("level", "paragraph")}),
+            "source": chunk.get("source", "unknown"),
+            "path_evidence": path_evidence or [],
+        }
+
+    def select_top_chunks(self, ranked_df: pd.DataFrame, chunks, graph=None):
         if ranked_df.empty:
             return {
+                "selection_strategy": "path_aware",
                 "global_top_chunks": [],
                 "communities": []
             }
@@ -46,6 +81,7 @@ class SummaryPruner:
 
         if df.empty:
             return {
+                "selection_strategy": "path_aware",
                 "global_top_chunks": [],
                 "communities": []
             }
@@ -53,30 +89,37 @@ class SummaryPruner:
         df["chunk_id_resolved"] = df["node"].apply(self._normalize_chunk_id)
         df = df[df["chunk_id_resolved"].notna()].copy()
         df["chunk_id_resolved"] = df["chunk_id_resolved"].astype(int)
+        node_names = df["node"].tolist()
+        df["path_signal"] = df["node"].apply(
+            lambda node: min(len(self._path_evidence(graph, node, node_names)), 3) / 3
+        )
+        df["retrieval_score"] = df["chunk_id_resolved"].apply(
+            lambda cid: float((self._chunk_lookup(chunks).get(cid, {}) or {}).get("score") or 0)
+        )
+        df["path_aware_score"] = (
+            (df["composite_score"].astype(float) * 0.7)
+            + (df["retrieval_score"].astype(float) * 0.2)
+            + (df["path_signal"].astype(float) * 0.1)
+        )
 
         chunk_lookup = self._chunk_lookup(chunks)
 
         global_top = (
-            df.sort_values("composite_score", ascending=False)
+            df.sort_values("path_aware_score", ascending=False)
               .head(self.top_k_global)
         )
 
         global_top_chunks = []
         for _, row in global_top.iterrows():
             chunk = chunk_lookup.get(row["chunk_id_resolved"], {})
-            global_top_chunks.append({
-                "chunk_id": int(row["chunk_id_resolved"]),
-                "community": int(row.get("community", -1)),
-                "rank": int(row.get("rank", 0)) if pd.notna(row.get("rank", 0)) else 0,
-                "composite_score": float(row["composite_score"]),
-                "text": chunk.get("text", row.get("text_preview", "")),
-                "text_preview": row.get("text_preview", ""),
-                "level": chunk.get("level", "paragraph"),
-                "source": chunk.get("source", "unknown")
-            })
+            global_top_chunks.append(self._chunk_record(
+                row,
+                chunk,
+                self._path_evidence(graph, row["node"], node_names),
+            ))
 
         communities = []
-        grouped = df.sort_values(["community", "composite_score"], ascending=[True, False]).groupby("community")
+        grouped = df.sort_values(["community", "path_aware_score"], ascending=[True, False]).groupby("community")
 
         for community_id, group in grouped:
             top_rows = group.head(self.top_k_per_community)
@@ -84,15 +127,11 @@ class SummaryPruner:
 
             for _, row in top_rows.iterrows():
                 chunk = chunk_lookup.get(row["chunk_id_resolved"], {})
-                selected_chunks.append({
-                    "chunk_id": int(row["chunk_id_resolved"]),
-                    "rank": int(row.get("rank", 0)) if pd.notna(row.get("rank", 0)) else 0,
-                    "composite_score": float(row["composite_score"]),
-                    "text": chunk.get("text", row.get("text_preview", "")),
-                    "text_preview": row.get("text_preview", ""),
-                    "level": chunk.get("level", "paragraph"),
-                    "source": chunk.get("source", "unknown")
-                })
+                selected_chunks.append(self._chunk_record(
+                    row,
+                    chunk,
+                    self._path_evidence(graph, row["node"], group["node"].tolist()),
+                ))
 
             communities.append({
                 "community_id": int(community_id),
@@ -101,6 +140,7 @@ class SummaryPruner:
             })
 
         return {
+            "selection_strategy": "path_aware",
             "global_top_chunks": global_top_chunks,
             "communities": communities
         }
@@ -127,6 +167,7 @@ class SummaryPruner:
                     "chunk_id": chunk["chunk_id"],
                     "rank": chunk["rank"],
                     "composite_score": chunk["composite_score"],
+                    "path_aware_score": chunk.get("path_aware_score", chunk["composite_score"]),
                     "level": chunk["level"],
                     "source": chunk["source"],
                     "text_preview": chunk["text_preview"],

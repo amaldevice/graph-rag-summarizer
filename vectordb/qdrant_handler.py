@@ -88,6 +88,13 @@ class QdrantHandler:
             pass
 
         page_no = payload.get("page_no", payload.get("page"))
+        level = payload.get("level", "paragraph")
+        hierarchy = dict(payload.get("hierarchy") or {})
+        hierarchy.setdefault("level", level)
+        hierarchy.setdefault("section", payload.get("section"))
+        layout = dict(payload.get("layout") or {})
+        layout.setdefault("kind", payload.get("layout_kind", level))
+        layout.setdefault("page_no", page_no)
         image_url = payload.get("image_url")
         if image_url is None:
             image_urls = payload.get("image_urls") or []
@@ -97,7 +104,9 @@ class QdrantHandler:
         return {
             "chunk_id": chunk_id,
             "text": payload.get("text", ""),
-            "level": payload.get("level", "paragraph"),
+            "level": level,
+            "hierarchy": hierarchy,
+            "layout": layout,
             "source": payload.get("source", "docling"),
             "page_no": page_no,
             "image_url": image_url,
@@ -127,6 +136,8 @@ class QdrantHandler:
                 "chunk_id": chunk_id,
                 "text": chunk.get("text", ""),
                 "level": chunk.get("level", "paragraph"),
+                "hierarchy": chunk.get("hierarchy") or {"level": chunk.get("level", "paragraph")},
+                "layout": chunk.get("layout") or {"kind": chunk.get("level", "paragraph"), "page_no": page_no},
                 "source": chunk.get("source", "docling"),
                 "page_no": page_no,
                 "page": page_no,

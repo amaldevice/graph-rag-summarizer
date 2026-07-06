@@ -27,6 +27,7 @@ class QualityChecker:
         status = "PASS"
         issues: List[str] = []
         warnings: List[str] = []
+        metric_decisions = {}
 
         generated_length = evaluation_result.get("generated_length", 0)
         if generated_length < self.min_summary_words:
@@ -73,6 +74,25 @@ class QualityChecker:
                     f"Lexical overlap below threshold: {lexical_overlap:.4f} < {self.min_lexical_overlap:.4f}"
                 )
 
+        for name, metric in (evaluation_result.get("grounded_metrics") or {}).items():
+            metric_status = metric.get("status", "unavailable")
+            score = metric.get("score")
+            decision = "unavailable"
+            if metric_status == "available":
+                decision = "pass"
+                if score is not None and score < self.min_lexical_overlap:
+                    decision = "fail"
+                    status = "FAIL"
+                    issues.append(f"{name} below threshold: {score:.4f} < {self.min_lexical_overlap:.4f}")
+            else:
+                warnings.append(f"{name} unavailable: {metric.get('reason', 'not configured')}")
+            metric_decisions[name] = {
+                "status": metric_status,
+                "score": score,
+                "decision": decision,
+                "reason": metric.get("reason", ""),
+            }
+
         if not issues and not warnings:
             message = "Quality gate passed"
         elif not issues and warnings:
@@ -86,6 +106,7 @@ class QualityChecker:
             "message": message,
             "issues": issues,
             "warnings": warnings,
+            "metric_decisions": metric_decisions,
             "thresholds": {
                 "min_rougeL": self.min_rougeL,
                 "min_bertscore_f1": self.min_bertscore_f1,
@@ -111,14 +132,19 @@ class QualityChecker:
             }
 
         issues = " ".join(quality_result.get("issues", []))
-        if "Lexical overlap" in issues:
+        if "qa_coverage" in issues or "Lexical overlap" in issues:
             return {
                 "action": "retry_retrieval",
                 "reason": "Summary may not be grounded strongly enough in source chunks"
             }
+        if "geval" in issues or "factcc" in issues or "summac" in issues:
+            return {
+                "action": "retry_prompt",
+                "reason": "Grounded quality signal failed; retry prompt and map summarization"
+            }
         if "ROUGE-L" in issues or "BERTScore" in issues:
             return {
-                "action": "retry_prompt_or_reduce",
+                "action": "retry_reduce",
                 "reason": "Summary content quality is below threshold against reference"
             }
 
