@@ -2,6 +2,12 @@
 
 ## 2026-07-07
 
+- **Published ready-for-agent issues for the remaining Flow Project partial blocks**
+  - Created GitHub issues `#36` through `#42` for the yellow/partial flowchart blocks that did not already have a dedicated follow-up tracker.
+  - Covered table/figure evidence, parent-child hierarchy expansion, tiny sentence filtering, hybrid entity/relation extraction hardening, PathRAG-grade path scoring, embedding-aware RAPTOR grouping, and forced-fail feedback-loop smoke verification.
+  - Updated `docs/handoff-2026-07-06-flow-project-next-development.md` so every partial block now points to its tracking issue, including existing SummaC/FactCC issue `#35`.
+  - Verification: `gh issue view` confirmed issues `#36`-`#42` are open, labeled `ready-for-agent`, and include pros, cons, and step-by-step flow sections.
+
 - **Expanded the Flow Project next-development handoff partial-block guidance**
   - Updated `docs/handoff-2026-07-06-flow-project-next-development.md` with per-block notes for every yellow/partial flowchart area.
   - Added why each block is not full research-grade yet, step-by-step implementation notes, pros/cons, and expected impact on the current flow/output.

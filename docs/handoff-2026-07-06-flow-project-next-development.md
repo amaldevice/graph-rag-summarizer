@@ -85,6 +85,7 @@ These blocks are implemented enough for the current project flow, but not full r
 
 ### 1. Preprocessing: table / figure / image handling
 
+- **Tracking issue:** #36 — `Promote table and figure evidence into Full-Pipeline Runs`.
 - **Why still partial:** Docling text/layout extraction is wired, but table/figure/image artifacts are not first-class summary evidence yet. On-demand image mode can also skip image export during ingest.
 - **Step-by-step if implemented:**
   1. Define the minimal payload contract: `kind`, `page`, `bbox`, `caption`, `text`, optional `image_url`.
@@ -98,6 +99,7 @@ These blocks are implemented enough for the current project flow, but not full r
 
 ### 2. Adaptive hierarchical chunking
 
+- **Tracking issue:** #37 — `Build parent-child sentence paragraph section context expansion`.
 - **Why still partial:** Current chunks carry hierarchy/layout metadata and can select `section`/`sentence`, but there is no clean parent-child tree from sentence → paragraph → section.
 - **Step-by-step if implemented:**
   1. Add stable `parent_id`, `section_id`, and `path` metadata during ingest.
@@ -111,6 +113,7 @@ These blocks are implemented enough for the current project flow, but not full r
 
 ### 3. Tiny sentence chunk filtering
 
+- **Tracking issue:** #38 — `Filter tiny sentence chunks before summary pruning`.
 - **Why still partial:** Sentence-level chunks are now active, so very short chunks like `Let Me.` can be selected.
 - **Step-by-step if implemented:**
   1. Add a minimum word threshold in pruning, e.g. 8-12 words.
@@ -123,6 +126,7 @@ These blocks are implemented enough for the current project flow, but not full r
 
 ### 4. Hybrid entity extraction
 
+- **Tracking issue:** #39 — `Harden hybrid entity and relation extraction availability`.
 - **Why still partial:** spaCy entity extraction works, but LLM relation mining depends on provider/API config. Without it, the graph is still useful but less semantically rich.
 - **Step-by-step if implemented:**
   1. Make relation-extraction availability explicit in run artifacts.
@@ -135,6 +139,7 @@ These blocks are implemented enough for the current project flow, but not full r
 
 ### 5. PathRAG-grade pruning / reranking
 
+- **Tracking issue:** #40 — `Upgrade path-aware pruning toward PathRAG-grade path scoring`.
 - **Why still partial:** Current pruning is path-aware and records path evidence, but it is still heuristic. It is not a full PathRAG implementation with formal path enumeration and scoring.
 - **Step-by-step if implemented:**
   1. Define path candidates from retrieved chunks through entity/relation/community nodes.
@@ -148,6 +153,7 @@ These blocks are implemented enough for the current project flow, but not full r
 
 ### 6. RAPTOR-style reduce grouping
 
+- **Tracking issue:** #41 — `Group RAPTOR-style reductions by embedding similarity`.
 - **Why still partial:** Multi-level reduction exists, but grouping is fixed batches, not embedding-clustered per level.
 - **Step-by-step if implemented:**
   1. Embed community map summaries with the existing Nomic embedder.
@@ -176,6 +182,7 @@ These blocks are implemented enough for the current project flow, but not full r
 
 ### 8. Adaptive feedback loop live failure paths
 
+- **Tracking issue:** #42 — `Add a forced-fail smoke path for adaptive feedback reruns`.
 - **Why still partial:** Retry code exists for retrieval/prompt/reduce, but the latest live runs passed quality directly. The failure path is covered by unit behavior, not a forced live run.
 - **Step-by-step if implemented:**
   1. Add a temporary/dev-only strict threshold or fake low metric for a smoke run.
