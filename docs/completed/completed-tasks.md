@@ -2,6 +2,12 @@
 
 ## 2026-07-07
 
+- **Expanded the Flow Project next-development handoff partial-block guidance**
+  - Updated `docs/handoff-2026-07-06-flow-project-next-development.md` with per-block notes for every yellow/partial flowchart area.
+  - Added why each block is not full research-grade yet, step-by-step implementation notes, pros/cons, and expected impact on the current flow/output.
+  - Linked the optional SummaC/FactCC work back to issue `#35` so the next agent has a concrete tracker.
+  - Verification: reviewed the updated handoff section and confirmed the required partial-block guidance is present.
+
 - **Published the optional SummaC/FactCC evaluation follow-up issue**
   - Created GitHub issue `#35` — `Wire optional SummaC and FactCC grounded evaluation adapters` — as the next-development tracker for upgrading the current unavailable placeholder metrics into optional grounded evaluators.
   - Included pros/cons, risks, step-by-step flow integration, acceptance criteria, and current implementation seams for the next agent.
