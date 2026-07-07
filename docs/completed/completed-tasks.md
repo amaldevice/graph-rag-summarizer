@@ -1,5 +1,13 @@
 # Completed Tasks
 
+## 2026-07-07
+
+- **Published the optional SummaC/FactCC evaluation follow-up issue**
+  - Created GitHub issue `#35` — `Wire optional SummaC and FactCC grounded evaluation adapters` — as the next-development tracker for upgrading the current unavailable placeholder metrics into optional grounded evaluators.
+  - Included pros/cons, risks, step-by-step flow integration, acceptance criteria, and current implementation seams for the next agent.
+  - Kept the issue scoped to optional adapters so normal Query-Only, Ingest, and Full-Pipeline Runs do not gain mandatory heavy research dependencies.
+  - Verification: reviewed `evaluation/evaluator.py`, `evaluation/quality_checker.py`, `tests/test_flowchart_alignment.py`, searched existing FactCC/SummaC issues, and verified `gh issue view 35` returns the expected ready-for-agent issue.
+
 ## 2026-07-06
 
 - **Captured Flow Project next-development notes**
