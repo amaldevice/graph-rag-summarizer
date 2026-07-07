@@ -2,6 +2,11 @@
 
 ## 2026-07-07
 
+- **Published the lightweight grounded evaluation metrics follow-up issue**
+  - Created GitHub issue `#43` — `Add lightweight grounded evaluation metrics without heavy models` — for entity consistency, number/date consistency, sentence support, citation coverage, redundancy, query relevance, and evidence diversity.
+  - Updated `docs/handoff-2026-07-06-flow-project-next-development.md` so the evaluation-layer partial block points to `#43` as the cheaper first pass and keeps `#35` for heavier FactCC/SummaC adapters.
+  - Verification: `gh issue view 43` confirmed the ready-for-agent issue includes pros, cons, step-by-step flow, acceptance criteria, and no-new-required-dependency scope.
+
 - **Published ready-for-agent issues for the remaining Flow Project partial blocks**
   - Created GitHub issues `#36` through `#42` for the yellow/partial flowchart blocks that did not already have a dedicated follow-up tracker.
   - Covered table/figure evidence, parent-child hierarchy expansion, tiny sentence filtering, hybrid entity/relation extraction hardening, PathRAG-grade path scoring, embedding-aware RAPTOR grouping, and forced-fail feedback-loop smoke verification.

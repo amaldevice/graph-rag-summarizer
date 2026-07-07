@@ -165,10 +165,13 @@ These blocks are implemented enough for the current project flow, but not full r
 - **Cons:** More embedding calls and more complex deterministic testing.
 - **Effect on output:** Final summaries should have cleaner thematic grouping and fewer abrupt topic jumps.
 
-### 7. Evaluation layer: FactCC / SummaC
+### 7. Evaluation layer: FactCC / SummaC and lightweight metrics
 
 - **Why still partial:** The metric slots exist, but real adapters are not wired because FactCC/SummaC can add heavy dependencies, model downloads, and compatibility risk.
 - **Tracking issue:** #35 — `Wire optional SummaC and FactCC grounded evaluation adapters`.
+- **Lightweight metrics issue:** #43 — `Add lightweight grounded evaluation metrics without heavy models`.
+- **Lightweight metric candidates:** entity consistency, number/date consistency, sentence evidence support, citation coverage, redundancy, query relevance, and evidence diversity.
+- **Implementation order:** #43 is the cheaper first pass; #35 remains the heavier optional research-evaluator pass.
 - **Step-by-step if implemented:**
   1. Keep `grounded_metrics.factcc` and `grounded_metrics.summac` keys stable.
   2. Add lazy optional adapters, starting with SummaC.
