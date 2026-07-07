@@ -2,6 +2,12 @@
 
 ## 2026-07-07
 
+- **Created beginner-friendly Flow Project teaching materials**
+  - Added a teaching mission, resources, and notes for learning how the GraphRAG Summarizer flow turns a PDF into a final evaluated summary.
+  - Added `lessons/0001-flow-project-overview.html` as a beginner-friendly walkthrough of every flowchart stage, including what each stage does plus its input and output.
+  - Added `reference/flow-project-cheatsheet.html`, shared `assets/lesson.css`, and a tracked copy of the flowchart image for quick review and printable reference.
+  - Verification: inspected the flowchart image, reviewed current implementation anchors in `launcher/runners.py`, `graph/graph_builder.py`, `summarizer/pruner.py`, and `docs/handoff-2026-07-06-flow-project-next-development.md`; ran an HTML parser smoke check for the lesson and reference files.
+
 - **Published the lightweight grounded evaluation metrics follow-up issue**
   - Created GitHub issue `#43` — `Add lightweight grounded evaluation metrics without heavy models` — for entity consistency, number/date consistency, sentence support, citation coverage, redundancy, query relevance, and evidence diversity.
   - Updated `docs/handoff-2026-07-06-flow-project-next-development.md` so the evaluation-layer partial block points to `#43` as the cheaper first pass and keeps `#35` for heavier FactCC/SummaC adapters.
