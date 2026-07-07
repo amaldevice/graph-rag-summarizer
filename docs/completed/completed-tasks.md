@@ -2,10 +2,15 @@
 
 ## 2026-07-07
 
+- **Moved `$teach` materials to local-only workspace state**
+  - Removed `MISSION.md`, `RESOURCES.md`, `NOTES.md`, `assets/`, `lessons/`, and `reference/` from the tracked git index while preserving the local files on disk.
+  - Added those teaching workspace paths to `.gitignore` so they stay out of the remote repository going forward.
+  - Verification: `git check-ignore -v` confirms the teaching files are ignored, and `find` confirms the local lesson/reference files still exist.
+
 - **Created beginner-friendly Flow Project teaching materials**
   - Added a teaching mission, resources, and notes for learning how the GraphRAG Summarizer flow turns a PDF into a final evaluated summary.
   - Added `lessons/0001-flow-project-overview.html` as a beginner-friendly walkthrough of every flowchart stage, including what each stage does plus its input and output.
-  - Added `reference/flow-project-cheatsheet.html`, shared `assets/lesson.css`, and a tracked copy of the flowchart image for quick review and printable reference.
+  - Created `reference/flow-project-cheatsheet.html`, shared `assets/lesson.css`, and a local copy of the flowchart image for quick review and printable reference.
   - Verification: inspected the flowchart image, reviewed current implementation anchors in `launcher/runners.py`, `graph/graph_builder.py`, `summarizer/pruner.py`, and `docs/handoff-2026-07-06-flow-project-next-development.md`; ran an HTML parser smoke check for the lesson and reference files.
 
 - **Published the lightweight grounded evaluation metrics follow-up issue**
