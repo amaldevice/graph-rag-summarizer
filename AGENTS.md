@@ -3,7 +3,7 @@
 Create PRs instead of committing directly to main; add descriptive comments to issues/PRs about what was implemented.
 
 ## Docs
-
+- `docs/` -  every in progress docs must be placed in here not in `docs/completed/`
 - `docs/todo-in-progress.md` — live onboarding patokan / what's pending
 - `docs/completed/completed-tasks.md` — completed archive index and decision history
 - `docs/completed/prd/`, `docs/completed/issues/`, `docs/completed/handoffs/` — categorized archive folders

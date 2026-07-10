@@ -2,6 +2,10 @@
 
 ## 2026-07-11
 
+- **Committed the requested active-docs guidance in `AGENTS.md`**
+  - Added the repository rule that in-progress documentation stays under `docs/` and is not placed in `docs/completed/`.
+  - Verification: reviewed the one-line `AGENTS.md` diff and confirmed no unrelated files were staged.
+
 - **Kept the Issue #44 planning artifacts active in the root `docs/` area**
   - Moved the PRD and published slice breakdown out of the completed archive because Issue #44 and its implementation program remain active.
   - Active files: `docs/prd-2026-07-11-adaptive-global-graph-construction.md` and `docs/slice-2026-07-11-adaptive-global-graph-construction.md`.
