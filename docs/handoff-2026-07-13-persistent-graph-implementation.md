@@ -104,16 +104,27 @@ Lifecycle:
 
 ### Phase 0 — land the decisions
 
-Merge the ADR stack in order so the implementation branch starts from `main` with the accepted contracts:
+Merge the ADR stack in order so the implementation branch starts from `main` with the accepted contracts. The current PR bases are stacked, so retarget the next PR to `main` after its predecessor lands:
 
 ```text
-PR #62 → main
-PR #63 → main
-PR #64 → main
-PR #65 → main
+1. PR #62 → main
+2. Retarget PR #63 base to main, then merge PR #63 → main
+3. Retarget PR #64 base to main, then merge PR #64 → main
+4. Retarget PR #65 base to main, then merge PR #65 → main
 ```
 
-If the stacked bases remain, retarget each next ADR PR to `main` after its predecessor lands. Do not implement runtime code on the docs/ADR branches.
+PR #66 is independent and already targets `main`; merge it after the ADR stack so the handoff lands alongside the accepted decisions. After each merge, fetch the updated `main` before creating the next branch. Do not implement runtime code on the docs/ADR branches.
+
+The resulting landing order is:
+
+```text
+main
+ ├─ #62 ADR persistent graph
+ ├─ #63 ADR relation recovery
+ ├─ #64 ADR topology/community
+ ├─ #65 ADR context allocation
+ └─ #66 implementation handoff
+```
 
 ### PR A — persistent ingest graph foundation
 
@@ -238,7 +249,8 @@ Live Qdrant/R2/LLM smoke tests are optional and must not be required for determi
 
 ## Issue and merge policy
 
-- PR A–D target `main` sequentially. Do not merge implementation PRs into the ADR/doc branches.
+- PR A–D target `main` sequentially. Create each branch from the latest merged `main`; do not merge implementation PRs into the ADR/doc branches.
+- The implementation landing order is `PR A → main`, then `PR B → main`, then `PR C → main`, then `PR D → main`. Each later branch is created only after the previous PR is merged and the tests are green.
 - Use explicit closing keywords in implementation PR bodies only, for example `Closes #47` and `Closes #48`.
 - Issues close automatically only when the PR is merged into the repository default branch. References in an intermediate stacked PR do not replace final verification.
 - ADR PRs #62–#65 do not close implementation issues.
