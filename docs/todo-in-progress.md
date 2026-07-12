@@ -1,8 +1,7 @@
 # Todo / In Progress
 
 ## Planned / Backlog
-
-- Add document-safe PDF ingest modes for Qdrant collections (`append`, `replace-document`, `replace-collection`) so multi-PDF ingestion does not collide on point IDs.
+- Add persistent graph construction during ingest after the document-safe collection contract is complete.
 
 ## In Progress
 

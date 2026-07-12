@@ -37,11 +37,33 @@ class PromptBuilder:
             style_instruction_map["concise"]
         )
 
+        def chunk_identity(item):
+            document_id = item.get("document_id")
+            local_id = item.get("local_chunk_id")
+            if document_id is not None and local_id is not None:
+                return f"{document_id}:chunk:{local_id}"
+            return str(item.get("chunk_uid", item.get("chunk_id")))
+
         chunk_blocks = []
+        selected_chunk_ids = {chunk_identity(chunk) for chunk in chunks}
+        seen_parent_ids = set()
         for idx, chunk in enumerate(chunks, start=1):
             text = self._truncate_text(chunk.get("text", ""))
             hierarchy = chunk.get("hierarchy") or {}
             path_evidence = chunk.get("path_evidence") or []
+            parent_context = []
+            for item in chunk.get("parent_context") or []:
+                if item.get("context_only") and item.get("text", "").strip() == chunk.get("text", "").strip():
+                    continue
+                parent_id = chunk_identity(item)
+                if parent_id in selected_chunk_ids or parent_id in seen_parent_ids:
+                    continue
+                seen_parent_ids.add(parent_id)
+                parent_context.append(item)
+            parent_context_text = "\n".join(
+                f"- [{item.get('level', 'parent')}] {self._truncate_text(item.get('text', ''))}"
+                for item in parent_context
+            ) or "none"
             chunk_blocks.append(
                 f"[Chunk {idx}]\n"
                 f"chunk_id: {chunk.get('chunk_id', 'unknown')}\n"
@@ -50,6 +72,7 @@ class PromptBuilder:
                 f"level: {chunk.get('level', 'paragraph')}\n"
                 f"hierarchy_section: {hierarchy.get('section')}\n"
                 f"path_evidence: {path_evidence}\n"
+                f"parent_context:\n{parent_context_text}\n"
                 f"text:\n{text}"
             )
 

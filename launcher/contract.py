@@ -6,6 +6,7 @@
 
 import argparse
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +14,9 @@ from pathlib import Path
 SUPPORTED_MODES = ("query-only", "ingest", "full-pipeline")
 SUPPORTED_PROFILES = ("local", "cloud")
 SUPPORTED_LLM_PROVIDERS = ("groq", "gemini", "nvidia", "openrouter")
+SUPPORTED_INGEST_MODES = ("append", "replace-document", "replace-collection")
 DEFAULT_RETRIEVAL_LIMIT = 10
+DEFAULT_INGEST_MODE = "append"
 EXCLUDED_SCAN_DIRS = {
     ".git",
     ".venv",
@@ -24,6 +27,14 @@ EXCLUDED_SCAN_DIRS = {
     ".commandcode",
     ".omx",
 }
+
+
+def build_chunk_uid(document_id: str, chunk_id) -> str:
+    return f"{document_id}:chunk:{chunk_id}"
+
+
+def build_stable_point_id(document_id: str, chunk_id) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"graph-rag:{build_chunk_uid(document_id, chunk_id)}"))
 
 
 # ------------------------------------------------------------------
@@ -71,6 +82,16 @@ def resolve_mode(cli_mode: str | None) -> str | None:
     if mode not in SUPPORTED_MODES:
         raise ValueError(
             f"Unknown mode '{mode}'. Choose from: {', '.join(SUPPORTED_MODES)}"
+        )
+    return mode
+
+
+def resolve_ingest_mode(ingest_mode: str | None) -> str:
+    """Resolve the explicit collection lifecycle operation for an ingest run."""
+    mode = (ingest_mode or DEFAULT_INGEST_MODE).lower().strip()
+    if mode not in SUPPORTED_INGEST_MODES:
+        raise ValueError(
+            f"Unknown ingest mode '{mode}'. Choose from: {', '.join(SUPPORTED_INGEST_MODES)}"
         )
     return mode
 
@@ -195,6 +216,11 @@ def suggest_collection_from_pdf(pdf_path: str) -> str:
     return safe.lower().strip("_")
 
 
+def suggest_document_id_from_pdf(pdf_path: str) -> str:
+    """Derive a stable, human-readable document ID from a PDF filename."""
+    return suggest_collection_from_pdf(pdf_path)
+
+
 def discover_local_pdfs(search_root: str | Path = ".") -> list[str]:
     """Discover repo-local PDFs for common ingest usage."""
     root = Path(search_root)
@@ -279,7 +305,17 @@ def build_cli_parser() -> argparse.ArgumentParser:
         "--confirm-existing-collection",
         action="store_true",
         default=False,
-        help="Allow ingest into an existing collection without an interactive confirmation prompt",
+        help="Legacy compatibility flag; explicit --ingest-mode controls the collection operation",
+    )
+    parser.add_argument(
+        "--ingest-mode",
+        choices=SUPPORTED_INGEST_MODES,
+        default=None,
+        help="Collection operation for ingest: append, replace-document, or replace-collection (default: append)",
+    )
+    parser.add_argument(
+        "--document-id",
+        help="Stable document identifier for shared-collection ingest (defaults to the PDF filename)",
     )
     return parser
 
@@ -353,6 +389,8 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
     artifact_dir = getattr(cli_args, "artifact_dir", None)
     verbose = bool(getattr(cli_args, "verbose", False))
     confirm_existing_collection = bool(getattr(cli_args, "confirm_existing_collection", False))
+    ingest_mode = resolve_ingest_mode(getattr(cli_args, "ingest_mode", None))
+    document_id = getattr(cli_args, "document_id", None)
 
     if mode in ("query-only", "full-pipeline"):
         if not collection:
@@ -391,7 +429,6 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
                 pdf_path = _prompt_text("PDF file path", required=True)
 
         existing_collections = discover_collections(profile)
-        existing_names = set(existing_collections)
         if existing_collections:
             print("\nExisting collections detected:")
             for name in existing_collections:
@@ -409,15 +446,9 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
                     default=suggested,
                     required=True,
                 )
-            if collection in existing_names and not confirm_existing_collection:
-                print(f"\nRisk: collection '{collection}' already exists.")
-                raw = input("Use this existing collection anyway? [y/N]: ").strip().lower()
-                if raw in ("y", "yes"):
-                    confirm_existing_collection = True
-                    break
-                collection = ""
-                continue
             break
+
+        document_id = document_id or suggest_document_id_from_pdf(pdf_path)
 
     if mode == "query-only" and not json_output:
         json_output = _prompt_text(
@@ -448,6 +479,8 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
         "artifact_dir": artifact_dir or "",
         "verbose": verbose,
         "confirm_existing_collection": confirm_existing_collection,
+        "ingest_mode": ingest_mode,
+        "document_id": document_id or "",
     }
 
 
@@ -465,6 +498,8 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
     artifact_dir = getattr(cli_args, "artifact_dir", None) or ""
     verbose = bool(getattr(cli_args, "verbose", False))
     confirm_existing_collection = bool(getattr(cli_args, "confirm_existing_collection", False))
+    ingest_mode = resolve_ingest_mode(getattr(cli_args, "ingest_mode", None))
+    document_id = getattr(cli_args, "document_id", None)
 
     if mode in ("query-only", "full-pipeline"):
         if not collection:
@@ -477,11 +512,7 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
             raise SystemExit("Error: --pdf is required for non-interactive ingest mode")
         if not collection:
             collection = suggest_collection_from_pdf(pdf_path)
-        if collection in set(discover_collections(profile)) and not confirm_existing_collection:
-            raise SystemExit(
-                "Error: --collection targets an existing collection. "
-                "Re-run interactively to confirm, or pass --confirm-existing-collection."
-            )
+        document_id = document_id or suggest_document_id_from_pdf(pdf_path)
 
     if mode == "query-only" and not json_output:
         json_output = f"output/{mode.replace('-', '_')}_results.json"
@@ -499,6 +530,8 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
         "artifact_dir": artifact_dir,
         "verbose": verbose,
         "confirm_existing_collection": confirm_existing_collection,
+        "ingest_mode": ingest_mode,
+        "document_id": document_id or "",
     }
 
 
@@ -518,6 +551,9 @@ def show_summary_and_confirm(config: dict, is_tty: bool) -> bool:
         print(f"  Limit     : {config['retrieval_limit']}")
     if config.get("pdf_path"):
         print(f"  PDF       : {config['pdf_path']}")
+    if config["mode"] == "ingest":
+        print(f"  Ingest Mode: {config.get('ingest_mode', DEFAULT_INGEST_MODE)}")
+        print(f"  Document ID: {config.get('document_id') or '(derived from PDF)'}")
     if config["mode"] == "query-only" and config.get("json_output"):
         print(f"  Output    : {config['json_output']}")
     if config["mode"] == "full-pipeline" and config.get("artifact_dir"):

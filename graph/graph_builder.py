@@ -18,7 +18,10 @@ class GraphBuilder:
 
         chunk_index_by_id = {}
         for i, chunk in enumerate(chunks):
-            chunk_index_by_id[chunk.get("chunk_id", i)] = i
+            if chunk.get("context_only"):
+                continue
+            chunk_key = chunk.get("chunk_uid", chunk.get("chunk_id", i))
+            chunk_index_by_id[chunk_key] = i
             G.add_node(
                 f"chunk_{i}",
                 type="chunk",
@@ -32,7 +35,8 @@ class GraphBuilder:
             G.add_node(node_id, type="entity", label=ent_label, text=ent_text)
 
         for entity in all_entities:
-            chunk_index = chunk_index_by_id.get(entity.get("chunk_id"))
+            chunk_key = entity.get("chunk_uid", entity.get("chunk_id"))
+            chunk_index = chunk_index_by_id.get(chunk_key)
             if chunk_index is None:
                 continue
 
@@ -49,14 +53,22 @@ class GraphBuilder:
                     edge_type="mentions"
                 )
 
+        active_indices = [i for i, chunk in enumerate(chunks) if not chunk.get("context_only")]
+        if not active_indices:
+            return G
+
         sim_matrix = cosine_similarity(np.array(chunk_embeddings))
-        for i in range(len(chunks)):
+        active_index_set = set(active_indices)
+        for i in active_indices:
             scores = sim_matrix[i].copy()
             scores[i] = -1
+            for inactive_index in range(len(chunks)):
+                if inactive_index not in active_index_set:
+                    scores[inactive_index] = -1
             top_idx = np.argsort(scores)[-self.knn_k:][::-1]
 
             for j in top_idx:
-                if sim_matrix[i][j] > self.sim_threshold:
+                if j in active_index_set and sim_matrix[i][j] > self.sim_threshold:
                     G.add_edge(
                         f"chunk_{i}",
                         f"chunk_{j}",

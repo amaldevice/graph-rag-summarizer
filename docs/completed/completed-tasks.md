@@ -1,5 +1,52 @@
 # Completed Tasks
 
+## 2026-07-12
+
+- **Implemented issue #37 parent-child context expansion and issue #38 tiny sentence filtering**
+  - Added stable section/paragraph/sentence IDs and bounded hierarchy paths during Docling chunking, including context-only parents for single-sentence chunks.
+  - Added Qdrant parent retrieval with document-safe point IDs, partial/unavailable status reporting, legacy-payload fallback, and prompt/artifact parent-context visibility.
+  - Excluded context-only parents from entity/graph/pruner selection while retaining them for bounded context recovery.
+  - Added the 8-word sentence filter with section/title exemption and observable filtered-chunk records without changing path-aware score calculation.
+  - Verification: `uv run pytest -q` (`171 passed`); targeted hierarchy/Qdrant/ingest suite (`38 passed`); `py_compile`; `git diff --check`.
+
+- **Created a compact starter architecture guide for new agents**
+  - Added `docs/ONBOARDING_STARTER_ARCHITECTURE.md` with the project mental model, technology stack, launcher modes, ingest and Full-Pipeline flows, source map, core data contracts, onboarding order, and current GraphRAG boundaries.
+  - Kept the guide aligned with the existing single-launcher/Qdrant architecture and explicitly documented that graph construction is currently query-time, not persisted during ingest.
+  - Verification: validated 17 referenced paths, `uv run pytest -q` (`161 passed`), and `git diff --check`.
+
+- **Created an issue-to-flow architecture docs canvas**
+  - Added `docs/canvas/issue-flow-architecture.html` with current PR/issue status, before/after flow comparisons, issue dependency graph, blocker semantics, and detailed stage-by-stage architecture impact.
+  - Covered the active PR #53, staged #12 delivery, closed parent issues #25/#33, and open adaptive graph chain #44–#52.
+  - Verification: Python HTML parser smoke test, internal-anchor validation, `git diff --check`, and local HTTP server/curl render check.
+
+## 2026-07-12
+
+- **Implemented document-safe PDF ingest modes for shared Qdrant collections (issue #12)**
+  - Added stable document IDs and deterministic UUID point IDs while preserving local chunk order in payload metadata.
+  - Added `append`, `replace-document`, and `replace-collection` lifecycle modes to the launcher and legacy upload wrapper.
+  - Added document-aware retrieval and graph/pruner handoff metadata, including repeated local-ID protection across documents.
+  - Added mixed-document page-image safeguards and warnings for unavailable or ambiguous local PDF enrichment.
+  - Updated README, runbook, and environment examples with the new ingest contract.
+  - Verification: `uv run pytest -q` (`161 passed`); targeted ingest/graph suite (`76 passed`); `py_compile`; `git diff --check`.
+
+## 2026-07-11
+
+- **Committed the requested active-docs guidance in `AGENTS.md`**
+  - Added the repository rule that in-progress documentation stays under `docs/` and is not placed in `docs/completed/`.
+  - Verification: reviewed the one-line `AGENTS.md` diff and confirmed no unrelated files were staged.
+
+- **Kept the Issue #44 planning artifacts active in the root `docs/` area**
+  - Moved the PRD and published slice breakdown out of the completed archive because Issue #44 and its implementation program remain active.
+  - Active files: `docs/prd-2026-07-11-adaptive-global-graph-construction.md` and `docs/slice-2026-07-11-adaptive-global-graph-construction.md`.
+  - Verification: confirmed both active paths exist, both archived paths are absent, and `git diff --check` passes.
+
+- **Finalized Issue #44 as a repo-local PRD and published eight vertical slices**
+  - Added the complete adaptive global graph construction PRD with 48 user stories, explicit boundaries around issues #39 and #40, implementation decisions, and a Full-Pipeline-first testing strategy.
+  - Published ready-for-agent issues #45 through #52 for auditable relation evidence, entity canonicalization and orphan diagnostics, bounded global candidates, verified graph recovery, adaptive semantic topology, multiresolution community selection, embedding-clustering diagnostics, and adaptive context allocation.
+  - Recorded each issue's blocking edges and kept #45 and #49 as the initial parallel execution frontier.
+  - Kept the PRD and slice breakdown active under the root `docs/` area while Issue #44 and its child implementation issues remain open.
+  - Verification: `gh issue view 44`; `gh issue view 39`; `gh issue view 40`; `gh issue view 45` through `52`; all child issues are open and labeled `ready-for-agent`; markdown structure check found all required PRD sections, 48 user stories, 8 tickets, and 61 acceptance criteria; `git diff --check`.
+
 ## 2026-07-07
 
 - **Moved `$teach` materials to local-only workspace state**

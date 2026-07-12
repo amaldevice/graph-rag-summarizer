@@ -6,6 +6,7 @@
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 def _print_stage(stage_number: int, total_stages: int, title: str, verbose: bool = False, details=None) -> None:
@@ -22,6 +23,22 @@ def _print_stage(stage_number: int, total_stages: int, title: str, verbose: bool
 
 def _artifact_path(artifact_dir: str, filename: str) -> str:
     return os.path.join(artifact_dir, filename)
+
+
+def _stamp_document_identity(chunks: list, document_id: str) -> list:
+    from launcher.contract import build_chunk_uid, build_stable_point_id
+
+    for chunk in chunks:
+        chunk_id = chunk.get("chunk_id")
+        chunk["document_id"] = document_id
+        chunk["chunk_uid"] = build_chunk_uid(document_id, chunk_id)
+        hierarchy = chunk.get("hierarchy") or {}
+        parent_chunk_id = hierarchy.get("parent_chunk_id")
+        if parent_chunk_id is not None:
+            hierarchy["parent_chunk_uid"] = build_chunk_uid(document_id, parent_chunk_id)
+            hierarchy["parent_point_id"] = build_stable_point_id(document_id, parent_chunk_id)
+        chunk["hierarchy"] = hierarchy
+    return chunks
 
 
 def run_query_only(config: dict) -> None:
@@ -88,7 +105,12 @@ def run_query_only(config: dict) -> None:
 
 
 def run_ingest(config: dict) -> None:
-    """Execute an Ingest Run: PDF -> chunk -> embed -> Qdrant."""
+    """Execute an Ingest Run with document-safe collection lifecycle handling."""
+    from launcher.contract import (
+        DEFAULT_INGEST_MODE,
+        resolve_ingest_mode,
+        suggest_document_id_from_pdf,
+    )
     from preprocessing.docling_loader import DoclingLoader
     from embedding.embedder import TextEmbedder
     from vectordb.qdrant_handler import QdrantHandler
@@ -96,10 +118,16 @@ def run_ingest(config: dict) -> None:
     pdf_path = config["pdf_path"]
     collection = config["collection"]
     verbose = bool(config.get("verbose", False))
+    ingest_mode = resolve_ingest_mode(config.get("ingest_mode", DEFAULT_INGEST_MODE))
+    document_id = (config.get("document_id") or suggest_document_id_from_pdf(pdf_path)).strip()
+    if not document_id:
+        raise SystemExit("Error: document_id cannot be empty")
 
     print("\n=== INGEST RUN ===")
     print(f"  PDF        : {pdf_path}")
     print(f"  Collection : {collection}")
+    print(f"  Ingest Mode: {ingest_mode}")
+    print(f"  Document ID: {document_id}")
 
     if not os.path.exists(pdf_path):
         raise SystemExit(f"Error: PDF file not found: {pdf_path}")
@@ -110,20 +138,36 @@ def run_ingest(config: dict) -> None:
     chunks = result["chunks"]
     if not chunks:
         raise SystemExit("Error: No chunks extracted from the PDF.")
+    _stamp_document_identity(chunks, document_id)
 
     _print_stage(2, 4, "embed chunks", verbose, f"Chunk count: {len(chunks)}")
     embedder = TextEmbedder()
     vectors = embedder.embed_chunks(chunks)
 
-    _print_stage(3, 4, "ensure collection", verbose, f"Collection target: {collection}")
+    _print_stage(3, 4, "prepare collection", verbose, [
+        f"Collection target: {collection}",
+        f"Operation: {ingest_mode}",
+        f"Document ID: {document_id}",
+    ])
     qdrant = QdrantHandler(collection_name=collection)
-    qdrant.create_collection_if_not_exists(vector_size=len(vectors[0]))
+    try:
+        qdrant.prepare_ingest(
+            ingest_mode=ingest_mode,
+            document_id=document_id,
+            vector_size=len(vectors[0]),
+        )
+    except ValueError as exc:
+        raise SystemExit(f"Error: {exc}") from exc
 
     _print_stage(4, 4, "upload chunks", verbose, [
         f"Chunk count: {len(chunks)}",
         f"Vector size: {len(vectors[0])}",
     ])
-    qdrant.upsert_chunks(chunks, vectors)
+    uploaded_point_ids = qdrant.upsert_chunks(chunks, vectors) or []
+    if ingest_mode == "replace-document":
+        qdrant.finalize_replace_document(document_id, uploaded_point_ids)
+    elif ingest_mode == "replace-collection":
+        qdrant.finalize_replace_collection(uploaded_point_ids)
 
     print(f"\n  Total chunks uploaded : {len(chunks)}")
     print(f"  Collection            : {collection}")
@@ -215,6 +259,13 @@ def run_full_pipeline(config: dict) -> None:
             ])
             query_vector = embedder.embed_text(query)
             retrieved_chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
+            expand_parent_context = getattr(qdrant, "expand_parent_context", None)
+            if callable(expand_parent_context):
+                expanded_chunks = expand_parent_context(retrieved_chunks, max_depth=2)
+                if isinstance(expanded_chunks, list):
+                    retrieved_chunks = expanded_chunks
+            elif verbose:
+                print("  Parent context expansion unavailable; using retrieved payloads as-is.")
             print(f"\n  Retrieved chunks: {len(retrieved_chunks)}")
             retrieved_chunks = _maybe_render_images(retrieved_chunks, pdf_path)
 
@@ -224,7 +275,7 @@ def run_full_pipeline(config: dict) -> None:
             for chunk in retrieved_chunks:
                 rels = extractor.extract_relations_llm(
                     chunk["text"],
-                    entity_map.get(chunk["chunk_id"], []),
+                    entity_map.get(chunk.get("chunk_uid", chunk["chunk_id"]), []),
                 )
                 all_relations.extend(rels)
 
@@ -317,18 +368,55 @@ def run_full_pipeline(config: dict) -> None:
 def _maybe_render_images(retrieved_chunks: list, pdf_path: str) -> list:
     """Optionally render page images if on-demand mode is enabled and PDF is available."""
     from config import settings
+    from launcher.contract import suggest_document_id_from_pdf
 
     if not settings.ENABLE_ON_DEMAND_PAGE_RENDER:
         return retrieved_chunks
+    document_ids = {
+        chunk.get("document_id")
+        for chunk in retrieved_chunks
+        if chunk.get("document_id")
+    }
     if not pdf_path:
+        sources = {chunk.get("source") for chunk in retrieved_chunks if chunk.get("source")}
+        if len(sources) > 1 or len(document_ids) > 1:
+            print("⚠️ Mixed-document retrieval: page images skipped because no local PDF was provided.")
         return retrieved_chunks
 
     from preprocessing.docling_loader import DoclingLoader
 
     loader = DoclingLoader()
+    pdf_source = Path(pdf_path).name
+    local_document_id = suggest_document_id_from_pdf(pdf_path)
+    if len(document_ids) > 1:
+        matching_chunks = [
+            chunk for chunk in retrieved_chunks
+            if chunk.get("document_id") == local_document_id
+        ]
+        if not matching_chunks:
+            print("⚠️ Mixed-document retrieval: page images skipped because document IDs are ambiguous.")
+            return retrieved_chunks
+        print(f"⚠️ Mixed-document retrieval: page images limited to document '{local_document_id}'.")
+    else:
+        matching_chunks = [
+            chunk for chunk in retrieved_chunks
+            if not chunk.get("source") or chunk.get("source") == pdf_source
+        ]
+    if document_ids and local_document_id not in document_ids:
+        print("⚠️ Page images skipped: retrieved document ID does not match the local PDF.")
+        return retrieved_chunks
+    other_sources = {
+        chunk.get("source")
+        for chunk in retrieved_chunks
+        if chunk.get("source") and chunk.get("source") != pdf_source
+    }
+    if other_sources:
+        print(f"⚠️ Mixed-document retrieval: page images limited to local source '{pdf_source}'.")
+    if not matching_chunks:
+        return retrieved_chunks
     target_pages = sorted({
         c.get("page_no")
-        for c in retrieved_chunks
+        for c in matching_chunks
         if isinstance(c.get("page_no"), int)
     })
     if not target_pages:
@@ -336,7 +424,7 @@ def _maybe_render_images(retrieved_chunks: list, pdf_path: str) -> list:
 
     uploaded = loader.render_and_upload_pages_on_demand(pdf_path=pdf_path, target_pages=target_pages)
     page_image_map = loader.build_page_image_map(uploaded)
-    for chunk in retrieved_chunks:
+    for chunk in matching_chunks:
         page_no = chunk.get("page_no")
         if page_no in page_image_map:
             chunk["image_url"] = page_image_map[page_no]

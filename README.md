@@ -21,6 +21,16 @@ uv run python main.py --mode query-only --collection my_col --query "What is the
 # Ingest Run
 uv run python main.py --mode ingest --pdf paper.pdf --collection my_paper
 
+# Append a new document to an existing collection
+uv run python main.py --mode ingest --pdf paper.pdf --collection shared \
+  --document-id paper-2026 --ingest-mode append
+
+# Replace one document or rebuild the whole collection
+uv run python main.py --mode ingest --pdf paper.pdf --collection shared \
+  --document-id paper-2026 --ingest-mode replace-document
+uv run python main.py --mode ingest --pdf paper.pdf --collection shared \
+  --document-id paper-2026 --ingest-mode replace-collection
+
 # Full-Pipeline Run
 uv run python main.py --mode full-pipeline --collection my_col --query "Summarize the findings"
 ```
@@ -39,7 +49,7 @@ Interactive ingest can:
 - scan the repository for local PDF files and let you pick one,
 - suggest a Collection Target from the PDF filename,
 - show existing Qdrant collections when discovery works,
-- and require an explicit confirmation before ingesting into an existing collection.
+- derive a Document ID from the PDF filename unless `--document-id` overrides it.
 
 ### Non-interactive (scripting)
 
@@ -49,11 +59,19 @@ Add `--no-interactive` to fail fast on missing inputs:
 uv run python main.py --no-interactive --mode query-only --collection col --query "test"
 ```
 
-For non-interactive ingest into an existing collection, add an explicit safety override:
+For non-interactive ingest, the default operation is safe append. Reusing the same
+Document ID is rejected instead of overwriting the existing document:
 
 ```bash
-uv run python main.py --no-interactive --mode ingest --pdf paper.pdf --collection existing_col --confirm-existing-collection
+uv run python main.py --no-interactive --mode ingest --pdf paper.pdf \
+  --collection existing_col --document-id paper-2026 --ingest-mode append
 ```
+
+Use `replace-document` to remove and reingest one document, or
+`replace-collection` to intentionally rebuild the target collection.
+Collections created before document-safe IDs were introduced may not contain
+`document_id`; rebuild those collections with `replace-collection` before using
+`append` or document-level replacement.
 
 ### Launch Profiles
 
@@ -250,7 +268,8 @@ For local mode, also set:
 - `MINIO_BUCKET`
 - `MINIO_PUBLIC_BASE_URL`
 
-Useful runtime overrides include `PDF_PATH`, `QUERY_TEXT`, and `RETRIEVAL_LIMIT`.
+Useful runtime overrides include `PDF_PATH`, `QUERY_TEXT`, `RETRIEVAL_LIMIT`,
+`DOCUMENT_ID`, and `INGEST_MODE` (`append`, `replace-document`, or `replace-collection`).
 
 ## Quick Start
 
