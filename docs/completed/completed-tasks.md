@@ -7,6 +7,11 @@
   - Confirmed the existing adaptive graph PRD and Wayfinder map/tickets remain the implementation planning surfaces; no duplicate spec or ticket set was created.
   - Verification: ADR structure/reference check and `git diff --check`.
 
+- **Recorded the accepted bounded global relation recovery policy**
+  - Added `docs/adr/0003-bounded-global-relation-recovery.md` covering document-scoped neighborhood candidates, bounded evidence-window verification, provider fallback, raw versus active edges, orphan diagnostics, and stable operational caps.
+  - Linked the decision to Wayfinder ticket #59 and the existing adaptive graph issue chain without duplicating the PRD or tickets.
+  - Verification: ADR structure/reference check and `git diff --check`.
+
 - **Implemented issue #37 parent-child context expansion and issue #38 tiny sentence filtering**
   - Added stable section/paragraph/sentence IDs and bounded hierarchy paths during Docling chunking, including context-only parents for single-sentence chunks.
   - Added Qdrant parent retrieval with document-safe point IDs, partial/unavailable status reporting, legacy-payload fallback, and prompt/artifact parent-context visibility.
