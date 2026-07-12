@@ -26,12 +26,18 @@ def _artifact_path(artifact_dir: str, filename: str) -> str:
 
 
 def _stamp_document_identity(chunks: list, document_id: str) -> list:
-    from launcher.contract import build_chunk_uid
+    from launcher.contract import build_chunk_uid, build_stable_point_id
 
     for chunk in chunks:
         chunk_id = chunk.get("chunk_id")
         chunk["document_id"] = document_id
         chunk["chunk_uid"] = build_chunk_uid(document_id, chunk_id)
+        hierarchy = chunk.get("hierarchy") or {}
+        parent_chunk_id = hierarchy.get("parent_chunk_id")
+        if parent_chunk_id is not None:
+            hierarchy["parent_chunk_uid"] = build_chunk_uid(document_id, parent_chunk_id)
+            hierarchy["parent_point_id"] = build_stable_point_id(document_id, parent_chunk_id)
+        chunk["hierarchy"] = hierarchy
     return chunks
 
 
@@ -253,6 +259,13 @@ def run_full_pipeline(config: dict) -> None:
             ])
             query_vector = embedder.embed_text(query)
             retrieved_chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
+            expand_parent_context = getattr(qdrant, "expand_parent_context", None)
+            if callable(expand_parent_context):
+                expanded_chunks = expand_parent_context(retrieved_chunks, max_depth=2)
+                if isinstance(expanded_chunks, list):
+                    retrieved_chunks = expanded_chunks
+            elif verbose:
+                print("  Parent context expansion unavailable; using retrieved payloads as-is.")
             print(f"\n  Retrieved chunks: {len(retrieved_chunks)}")
             retrieved_chunks = _maybe_render_images(retrieved_chunks, pdf_path)
 
