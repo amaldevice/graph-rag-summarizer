@@ -2,6 +2,11 @@
 
 ## 2026-07-12
 
+- **Recorded the accepted query-time adaptive context allocation policy**
+  - Added `docs/adr/0005-query-time-adaptive-context-allocation.md` covering character budgets, community importance, minimum/maximum allocation, novelty selection, query protection, compatibility fallback, temporary multi-document views, and optional path signals.
+  - Linked the decision to Wayfinder ticket #61 and the adaptive graph issue chain without changing runtime behavior.
+  - Verification: ADR structure/reference check and `git diff --check`.
+
 - **Recorded the accepted adaptive topology and stable community selection policy**
   - Added `docs/adr/0004-adaptive-topology-and-stable-community-selection.md` covering adaptive mutual-kNN topology, per-document graph-shape guardrails, multiresolution Leiden selection, ARI/NMI stability, and diagnostic-only embedding clustering.
   - Linked the decision to Wayfinder ticket #60 and the adaptive graph issue chain without changing runtime behavior.
