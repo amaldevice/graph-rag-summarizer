@@ -2,6 +2,11 @@
 
 ## 2026-07-12
 
+- **Created the end-to-end implementation handoff for persistent graph construction**
+  - Added `docs/handoff-2026-07-13-persistent-graph-implementation.md` with the target ingest/query flow, storage and lifecycle contract, PR A–D implementation sequence, issue/merge policy, desired outputs, verification contract, and suggested execution skills.
+  - Referenced the adaptive graph PRD, ADR stack, Wayfinder map/decisions, and implementation issues without duplicating their canonical content.
+  - Verification: handoff structure/reference check and `git diff --check`.
+
 - **Implemented issue #37 parent-child context expansion and issue #38 tiny sentence filtering**
   - Added stable section/paragraph/sentence IDs and bounded hierarchy paths during Docling chunking, including context-only parents for single-sentence chunks.
   - Added Qdrant parent retrieval with document-safe point IDs, partial/unavailable status reporting, legacy-payload fallback, and prompt/artifact parent-context visibility.
