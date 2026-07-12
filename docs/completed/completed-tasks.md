@@ -2,6 +2,11 @@
 
 ## 2026-07-12
 
+- **Recorded the accepted persistent document-scoped graph architecture**
+  - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` covering ingest-time graph construction, versioned object-storage artifacts, manifest activation, raw versus active relation evidence, stable ingest-time communities, query-time subgraph selection, failure handling, and legacy backfill boundaries.
+  - Confirmed the existing adaptive graph PRD and Wayfinder map/tickets remain the implementation planning surfaces; no duplicate spec or ticket set was created.
+  - Verification: ADR structure/reference check and `git diff --check`.
+
 - **Implemented issue #37 parent-child context expansion and issue #38 tiny sentence filtering**
   - Added stable section/paragraph/sentence IDs and bounded hierarchy paths during Docling chunking, including context-only parents for single-sentence chunks.
   - Added Qdrant parent retrieval with document-safe point IDs, partial/unavailable status reporting, legacy-payload fallback, and prompt/artifact parent-context visibility.
