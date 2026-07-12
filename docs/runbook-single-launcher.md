@@ -5,7 +5,7 @@ The launcher asks for session-specific inputs at runtime, while `.env` stores st
 
 ## What the launcher can do
 
-- **`ingest`** — read one local PDF, chunk it, embed it, then write vectors to a Qdrant collection.
+- **`ingest`** — read one local PDF, chunk it, embed it, then append or replace document data in a Qdrant collection.
 - **`query-only`** — embed one query, retrieve ranked chunks from Qdrant, then optionally save a JSON artifact.
 - **`full-pipeline`** — retrieve chunks, build the graph, summarize, evaluate, and write the downstream artifacts into one artifact directory.
 
@@ -35,7 +35,7 @@ At runtime, the launcher also applies these session overrides:
 4. If interactive, ask for any missing inputs
 5. Show a run summary and ask for confirmation
 6. Execute one mode runner:
-   - `ingest` → PDF -> Docling -> chunks -> embeddings -> Qdrant
+   - `ingest` → PDF -> Docling -> chunks -> document-safe IDs -> embeddings -> Qdrant lifecycle -> Qdrant
    - `query-only` → query -> embedding -> Qdrant retrieval -> console output / JSON
    - `full-pipeline` → retrieval -> graph -> summarization -> evaluation -> reports
 
@@ -52,9 +52,9 @@ If you run `uv run python main.py` in a TTY, the launcher can prompt for:
 - JSON output path for `query-only`
 - artifact output directory for `full-pipeline`
 - verbose logging toggle
-- confirmation before ingesting into an existing collection
+- ingest mode and optional document ID through CLI arguments
 
-For ingest, the launcher can scan the repo for local PDF files and suggest a collection name from the PDF filename.
+For ingest, the launcher can scan the repo for local PDF files and suggest a collection name and document ID from the PDF filename.
 
 ## Non-interactive flow
 
@@ -62,10 +62,10 @@ Use `--no-interactive` when you want a fail-fast CLI run.
 Required inputs are enforced by mode:
 
 - **`query-only`** → `--collection`, `--query`
-- **`ingest`** → `--pdf` (`--collection` optional; if omitted, it is derived from the PDF filename)
+- **`ingest`** → `--pdf` (`--collection` optional; if omitted, it is derived from the PDF filename; mode defaults to `append`)
 - **`full-pipeline`** → `--collection`, `--query`
 
-If non-interactive ingest targets an existing collection, you must add `--confirm-existing-collection`.
+`append` safely rejects an existing `--document-id`. Use `replace-document` to replace one document or `replace-collection` to intentionally rebuild the collection.
 
 ## CLI arguments
 
@@ -81,7 +81,8 @@ If non-interactive ingest targets an existing collection, you must add `--confir
 | `--artifact-dir` | Output directory for Full-Pipeline artifacts | full-pipeline |
 | `--verbose` | Enable clearer stage-level diagnostic logging | all |
 | `--no-interactive` | Disable prompts and require explicit CLI inputs | all |
-| `--confirm-existing-collection` | Allow ingest into an existing collection without an interactive confirmation prompt | ingest |
+| `--ingest-mode` | Collection operation: `append`, `replace-document`, or `replace-collection`; default `append` | ingest |
+| `--document-id` | Stable document ID; defaults to the PDF filename | ingest |
 
 ## Minimal commands
 
@@ -110,7 +111,9 @@ uv run python main.py \
   --mode ingest \
   --profile cloud \
   --pdf sample.pdf \
-  --collection sample_pdf
+  --collection sample_pdf \
+  --document-id sample-pdf \
+  --ingest-mode append
 ```
 
 ### Full pipeline
@@ -153,4 +156,4 @@ Good candidates for runtime input are:
 - `full-pipeline` requires at least one configured LLM provider.
 - Non-verbose runs still print the current stage; `--verbose` adds higher-detail stage context.
 - The launcher checks configuration presence, not end-to-end remote health. Use `uv run python scripts/check_cloud_connections.py` to validate Qdrant Cloud and R2 connectivity separately.
-- Current safest ingest pattern is still **one PDF per collection** until document-safe multi-PDF ingest modes are added.
+- Shared collections support document-safe `append`, `replace-document`, and `replace-collection` ingest modes. Legacy collections without `document_id` must be rebuilt with `replace-collection` first.

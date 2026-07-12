@@ -88,6 +88,7 @@ class EntityExtractor:
         all_entities = []
 
         for chunk in chunks:
+            chunk_key = chunk.get("chunk_uid", chunk["chunk_id"])
             doc = self.nlp(chunk["text"])
             chunk_entities = []
             seen_in_chunk = set()
@@ -108,11 +109,12 @@ class EntityExtractor:
 
                 all_entities.append({
                     "chunk_id": chunk["chunk_id"],
+                    "chunk_uid": chunk_key,
                     "text": ent_text,
                     "label": ent_label
                 })
 
-            entity_map[chunk["chunk_id"]] = chunk_entities
+            entity_map[chunk_key] = chunk_entities
 
         return entity_map, all_entities
 

@@ -30,8 +30,9 @@ class SummaryPruner:
         lookup = {}
         for idx, chunk in enumerate(chunks):
             chunk_id = chunk.get("chunk_id", idx)
-            lookup[chunk_id] = chunk
             lookup[idx] = chunk
+            if chunk_id not in lookup:
+                lookup[chunk_id] = chunk
         return lookup
 
     def _path_evidence(self, graph, node_name: str, peer_nodes: list[str]) -> list[dict]:
@@ -52,8 +53,8 @@ class SummaryPruner:
         return evidence
 
     def _chunk_record(self, row, chunk, path_evidence=None):
-        return {
-            "chunk_id": int(row["chunk_id_resolved"]),
+        record = {
+            "chunk_id": chunk.get("chunk_uid", int(row["chunk_id_resolved"])),
             "community": int(row.get("community", -1)),
             "rank": int(row.get("rank", 0)) if pd.notna(row.get("rank", 0)) else 0,
             "composite_score": float(row["composite_score"]),
@@ -66,6 +67,10 @@ class SummaryPruner:
             "source": chunk.get("source", "unknown"),
             "path_evidence": path_evidence or [],
         }
+        if chunk.get("document_id") is not None:
+            record["document_id"] = chunk["document_id"]
+            record["local_chunk_id"] = chunk.get("chunk_id")
+        return record
 
     def select_top_chunks(self, ranked_df: pd.DataFrame, chunks, graph=None):
         if ranked_df.empty:

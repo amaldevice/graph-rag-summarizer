@@ -20,6 +20,7 @@ from launcher.contract import (
     resolve_mode,
     resolve_profile,
     suggest_collection_from_pdf,
+    suggest_document_id_from_pdf,
     discover_collections,
     discover_local_pdfs,
     build_cli_parser,
@@ -30,6 +31,8 @@ from launcher.contract import (
     SUPPORTED_MODES,
     SUPPORTED_PROFILES,
     DEFAULT_RETRIEVAL_LIMIT,
+    SUPPORTED_INGEST_MODES,
+    DEFAULT_INGEST_MODE,
 )
 
 
@@ -180,6 +183,15 @@ def test_suggest_collection_from_pdf():
     assert suggest_collection_from_pdf("my file name.pdf") == "my_file_name"
 
 
+def test_suggest_document_id_from_pdf_uses_safe_filename_stem():
+    assert suggest_document_id_from_pdf("/path/to/My Paper.pdf") == "my_paper"
+
+
+def test_supported_ingest_modes_have_append_default():
+    assert SUPPORTED_INGEST_MODES == ("append", "replace-document", "replace-collection")
+    assert DEFAULT_INGEST_MODE == "append"
+
+
 def test_discover_local_pdfs_returns_repo_relative_sorted_paths(tmp_path):
     (tmp_path / "alpha.pdf").write_text("a")
     (tmp_path / "docs").mkdir()
@@ -209,6 +221,8 @@ def test_build_cli_parser_has_all_flags():
         "--json-output", "out.json",
         "--artifact-dir", "artifacts/run-1",
         "--verbose",
+        "--ingest-mode", "append",
+        "--document-id", "paper-a",
     ])
     assert args.mode == "query-only"
     assert args.profile == "local"
@@ -220,6 +234,8 @@ def test_build_cli_parser_has_all_flags():
     assert args.json_output == "out.json"
     assert args.artifact_dir == "artifacts/run-1"
     assert args.verbose is True
+    assert args.ingest_mode == "append"
+    assert args.document_id == "paper-a"
 
 
 def test_build_cli_parser_defaults():
@@ -235,6 +251,8 @@ def test_build_cli_parser_defaults():
     assert args.json_output is None
     assert args.artifact_dir is None
     assert args.verbose is False
+    assert args.ingest_mode is None
+    assert args.document_id is None
 
 
 # ------------------------------------------------------------------
@@ -296,11 +314,19 @@ def test_fail_fast_suggests_collection_from_pdf():
     assert result["collection"] == "my_paper"
 
 
-def test_fail_fast_blocks_existing_ingest_collection_without_confirmation(monkeypatch):
+def test_fail_fast_suggests_document_id_and_append_mode_for_ingest():
+    args = _make_args(mode="ingest", pdf="my_paper.pdf", collection=None)
+    result = _fail_fast_missing(args, "local")
+    assert result["document_id"] == "my_paper"
+    assert result["ingest_mode"] == "append"
+
+
+def test_fail_fast_allows_existing_collection_for_safe_append(monkeypatch):
     monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: ["my_paper"])
     args = _make_args(mode="ingest", pdf="my_paper.pdf", collection="my_paper")
-    with pytest.raises(SystemExit, match="existing collection"):
-        _fail_fast_missing(args, "local")
+    result = _fail_fast_missing(args, "local")
+    assert result["collection"] == "my_paper"
+    assert result["ingest_mode"] == "append"
 
 
 def test_fail_fast_allows_existing_ingest_collection_with_confirmation(monkeypatch):
@@ -314,6 +340,20 @@ def test_fail_fast_allows_existing_ingest_collection_with_confirmation(monkeypat
     result = _fail_fast_missing(args, "local")
     assert result["collection"] == "my_paper"
     assert result["confirm_existing_collection"] is True
+
+
+def test_fail_fast_preserves_explicit_replace_ingest_mode(monkeypatch):
+    monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: ["my_paper"])
+    args = _make_args(
+        mode="ingest",
+        pdf="my_paper.pdf",
+        collection="my_paper",
+        ingest_mode="replace-document",
+        document_id="paper-a",
+    )
+    result = _fail_fast_missing(args, "local")
+    assert result["ingest_mode"] == "replace-document"
+    assert result["document_id"] == "paper-a"
 
 
 def test_fail_fast_query_only_success():
@@ -375,15 +415,13 @@ def test_run_interactive_wizard_uses_discovered_pdf_then_default_collection(monk
     assert result["collection"] == "paper_one"
 
 
-def test_run_interactive_wizard_reprompts_on_existing_ingest_collection(monkeypatch, capsys):
+def test_run_interactive_wizard_allows_existing_collection_for_append(monkeypatch, capsys):
     monkeypatch.setattr("launcher.contract.discover_local_pdfs", lambda *_: [])
     monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: ["existing_collection"])
 
     answers = iter([
         "paper.pdf",
         "existing_collection",
-        "n",
-        "new_collection",
         "n",
     ])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
@@ -404,10 +442,10 @@ def test_run_interactive_wizard_reprompts_on_existing_ingest_collection(monkeypa
 
     result = run_interactive_wizard(args, "local", is_tty=True)
 
-    assert result["collection"] == "new_collection"
+    assert result["collection"] == "existing_collection"
     output = capsys.readouterr().out
     assert "Existing collections detected" in output
-    assert "already exists" in output
+    assert "already exists" not in output
 
 
 def test_run_interactive_wizard_prompts_for_profile_when_not_locked(monkeypatch):

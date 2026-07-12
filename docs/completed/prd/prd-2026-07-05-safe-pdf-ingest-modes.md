@@ -1,7 +1,7 @@
 # PRD — safe PDF ingest modes for shared Qdrant collections in graph-rag-summarizer
 
 Date: 2026-07-05
-Status: Published as future-improvement issue #12
+Status: Implemented locally; GitHub issue #12 remains open until the delivery PR is merged.
 
 ## Problem Statement
 

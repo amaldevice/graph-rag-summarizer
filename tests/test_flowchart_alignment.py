@@ -76,6 +76,23 @@ def test_path_aware_pruner_adds_path_evidence_to_selected_chunks():
     assert result["selection_strategy"] == "path_aware"
 
 
+def test_path_aware_pruner_keeps_repeated_local_ids_from_different_documents_separate():
+    ranked = pd.DataFrame([
+        {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.9, "text_preview": "A"},
+        {"node": "chunk_1", "type": "chunk", "community": 0, "rank": 2, "composite_score": 0.8, "text_preview": "B"},
+    ])
+    chunks = [
+        {"chunk_id": 0, "chunk_uid": "paper-a:chunk:0", "document_id": "paper-a", "text": "A", "score": 0.9},
+        {"chunk_id": 0, "chunk_uid": "paper-b:chunk:0", "document_id": "paper-b", "text": "B", "score": 0.8},
+    ]
+
+    result = SummaryPruner(top_k_per_community=2, top_k_global=2).select_top_chunks(ranked, chunks)
+
+    selected = result["communities"][0]["chunks"]
+    assert {chunk["chunk_id"] for chunk in selected} == {"paper-a:chunk:0", "paper-b:chunk:0"}
+    assert {chunk["document_id"] for chunk in selected} == {"paper-a", "paper-b"}
+
+
 def test_graph_builder_links_chunks_to_mentioned_entities():
     graph = GraphBuilder(knn_k=1, sim_threshold=0.99).build_graph(
         chunks=[
@@ -92,6 +109,24 @@ def test_graph_builder_links_chunks_to_mentioned_entities():
 
     assert graph.has_edge("chunk_0", "ent_alpha")
     assert graph["chunk_0"]["ent_alpha"]["edge_type"] == "mentions"
+    assert graph.has_edge("chunk_1", "ent_beta")
+
+
+def test_graph_builder_uses_document_safe_chunk_keys_when_local_ids_repeat():
+    graph = GraphBuilder(knn_k=1, sim_threshold=0.99).build_graph(
+        chunks=[
+            {"chunk_id": 0, "chunk_uid": "paper-a:chunk:0", "text": "Alpha", "level": "sentence"},
+            {"chunk_id": 0, "chunk_uid": "paper-b:chunk:0", "text": "Beta", "level": "sentence"},
+        ],
+        chunk_embeddings=[[1.0, 0.0], [0.0, 1.0]],
+        all_entities=[
+            {"chunk_id": 0, "chunk_uid": "paper-a:chunk:0", "text": "Alpha", "label": "ORG"},
+            {"chunk_id": 0, "chunk_uid": "paper-b:chunk:0", "text": "Beta", "label": "ORG"},
+        ],
+        all_relations=[],
+    )
+
+    assert graph.has_edge("chunk_0", "ent_alpha")
     assert graph.has_edge("chunk_1", "ent_beta")
 
 
