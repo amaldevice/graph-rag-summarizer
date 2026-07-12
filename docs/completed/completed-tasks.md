@@ -2,6 +2,13 @@
 
 ## 2026-07-12
 
+- **Created an issue-to-flow architecture docs canvas**
+  - Added `docs/canvas/issue-flow-architecture.html` with current PR/issue status, before/after flow comparisons, issue dependency graph, blocker semantics, and detailed stage-by-stage architecture impact.
+  - Covered the active PR #53, staged #12 delivery, closed parent issues #25/#33, and open adaptive graph chain #44–#52.
+  - Verification: Python HTML parser smoke test, internal-anchor validation, `git diff --check`, and local HTTP server/curl render check.
+
+## 2026-07-12
+
 - **Implemented document-safe PDF ingest modes for shared Qdrant collections (issue #12)**
   - Added stable document IDs and deterministic UUID point IDs while preserving local chunk order in payload metadata.
   - Added `append`, `replace-document`, and `replace-collection` lifecycle modes to the launcher and legacy upload wrapper.
