@@ -45,6 +45,8 @@ def _config_to_args(config: dict, profile_locked: bool) -> SimpleNamespace:
         artifact_dir=config.get("artifact_dir") or None,
         verbose=config.get("verbose", False),
         confirm_existing_collection=config.get("confirm_existing_collection", False),
+        ingest_mode=config.get("ingest_mode"),
+        document_id=config.get("document_id") or None,
     )
 
 

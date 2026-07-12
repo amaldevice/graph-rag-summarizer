@@ -18,7 +18,8 @@ class GraphBuilder:
 
         chunk_index_by_id = {}
         for i, chunk in enumerate(chunks):
-            chunk_index_by_id[chunk.get("chunk_id", i)] = i
+            chunk_key = chunk.get("chunk_uid", chunk.get("chunk_id", i))
+            chunk_index_by_id[chunk_key] = i
             G.add_node(
                 f"chunk_{i}",
                 type="chunk",
@@ -32,7 +33,8 @@ class GraphBuilder:
             G.add_node(node_id, type="entity", label=ent_label, text=ent_text)
 
         for entity in all_entities:
-            chunk_index = chunk_index_by_id.get(entity.get("chunk_id"))
+            chunk_key = entity.get("chunk_uid", entity.get("chunk_id"))
+            chunk_index = chunk_index_by_id.get(chunk_key)
             if chunk_index is None:
                 continue
 

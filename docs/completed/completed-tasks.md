@@ -1,5 +1,15 @@
 # Completed Tasks
 
+## 2026-07-12
+
+- **Implemented document-safe PDF ingest modes for shared Qdrant collections (issue #12)**
+  - Added stable document IDs and deterministic UUID point IDs while preserving local chunk order in payload metadata.
+  - Added `append`, `replace-document`, and `replace-collection` lifecycle modes to the launcher and legacy upload wrapper.
+  - Added document-aware retrieval and graph/pruner handoff metadata, including repeated local-ID protection across documents.
+  - Added mixed-document page-image safeguards and warnings for unavailable or ambiguous local PDF enrichment.
+  - Updated README, runbook, and environment examples with the new ingest contract.
+  - Verification: `uv run pytest -q` (`161 passed`); targeted ingest/graph suite (`76 passed`); `py_compile`; `git diff --check`.
+
 ## 2026-07-11
 
 - **Committed the requested active-docs guidance in `AGENTS.md`**

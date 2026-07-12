@@ -42,7 +42,9 @@ def test_upload_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) 
         def __init__(self, collection_name="test-collection"):
             self.collection_name = collection_name
 
-        def create_collection_if_not_exists(self, vector_size: int):
+        def prepare_ingest(self, ingest_mode, document_id, vector_size: int):
+            assert ingest_mode == "append"
+            assert document_id == "sample"
             assert vector_size == 2
 
         def upsert_chunks(self, chunks, vectors):
