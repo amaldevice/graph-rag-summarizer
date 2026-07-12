@@ -7,6 +7,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import pytest
+from qdrant_client.http.exceptions import ApiException
 
 from vectordb.qdrant_handler import QdrantHandler, stable_point_id
 
@@ -145,6 +146,134 @@ def test_search_as_chunks_preserves_document_identity() -> None:
     assert chunk["chunk_id"] == 7
     assert chunk["chunk_uid"] == "paper-a:chunk:7"
     assert chunk["document_id"] == "paper-a"
+
+
+def test_expand_parent_context_fetches_bounded_parent_points() -> None:
+    paragraph_id = stable_point_id("paper-a", 1)
+    section_id = stable_point_id("paper-a", 0)
+
+    class FakeClient:
+        def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+            assert collection_name == "test"
+            assert with_payload is True
+            assert with_vectors is False
+            if ids == [paragraph_id]:
+                return [SimpleNamespace(
+                    id=paragraph_id,
+                    payload={
+                        "chunk_id": 1,
+                        "chunk_uid": "paper-a:chunk:1",
+                        "document_id": "paper-a",
+                        "text": "Paragraph context.",
+                        "level": "paragraph",
+                        "hierarchy": {
+                            "paragraph_id": "paragraph:1",
+                            "parent_id": "section:1",
+                            "parent_point_id": section_id,
+                        },
+                    },
+                )]
+            assert ids == [section_id]
+            return [SimpleNamespace(
+                id=section_id,
+                payload={
+                    "chunk_id": 0,
+                    "chunk_uid": "paper-a:chunk:0",
+                    "document_id": "paper-a",
+                    "text": "Findings",
+                    "level": "section",
+                    "hierarchy": {"section_id": "section:1"},
+                },
+            )]
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+    chunks = [{
+        "chunk_id": 2,
+        "chunk_uid": "paper-a:chunk:2",
+        "document_id": "paper-a",
+        "text": "A sufficiently long sentence contains evidence.",
+        "level": "sentence",
+        "hierarchy": {
+            "paragraph_id": "paragraph:1",
+            "parent_id": "paragraph:1",
+            "parent_point_id": paragraph_id,
+        },
+    }]
+
+    result = handler.expand_parent_context(chunks, max_depth=2)
+
+    assert [item["chunk_id"] for item in result[0]["parent_context"]] == ["paper-a:chunk:1", "paper-a:chunk:0"]
+    assert result[0]["parent_context"][0]["reason"] == "hierarchy_parent"
+
+
+def test_expand_parent_context_reports_unavailable_without_breaking_retrieval() -> None:
+    class FakeClient:
+        def retrieve(self, **kwargs):
+            del kwargs
+            raise ApiException("remote unavailable")
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+    chunks = [{
+        "chunk_id": 2,
+        "document_id": "paper-a",
+        "hierarchy": {"parent_chunk_id": 1},
+    }]
+
+    result = handler.expand_parent_context(chunks)
+
+    assert result[0]["parent_context"] == []
+    assert result[0]["parent_context_status"]["status"] == "unavailable"
+    assert result[0]["parent_context_status"]["reason"] == "ApiException"
+
+
+def test_expand_parent_context_keeps_legacy_payloads_readable():
+    class FakeClient:
+        def retrieve(self, **kwargs):
+            raise AssertionError("legacy payload should not trigger a parent lookup")
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+    chunks = [{"chunk_id": 2, "text": "Legacy sentence.", "level": "sentence", "hierarchy": {"level": "sentence"}}]
+
+    result = handler.expand_parent_context(chunks)
+
+    assert result[0]["parent_context"] == []
+    assert result[0]["parent_context_status"]["status"] == "not_present"
+
+
+def test_expand_parent_context_preserves_fetched_parents_on_partial_failure() -> None:
+    paragraph_id = stable_point_id("paper-a", 1)
+
+    class FakeClient:
+        calls = 0
+
+        def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+            del collection_name, ids, with_payload, with_vectors
+            self.calls += 1
+            if self.calls == 1:
+                return [SimpleNamespace(
+                    id=paragraph_id,
+                    payload={
+                        "chunk_id": 1,
+                        "document_id": "paper-a",
+                        "chunk_uid": "paper-a:chunk:1",
+                        "text": "Paragraph context.",
+                        "level": "paragraph",
+                        "hierarchy": {"parent_point_id": stable_point_id("paper-a", 0)},
+                    },
+                )]
+            raise ApiException("section unavailable")
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+    chunks = [{
+        "chunk_id": 2,
+        "document_id": "paper-a",
+        "hierarchy": {"parent_point_id": paragraph_id},
+    }]
+
+    result = handler.expand_parent_context(chunks)
+
+    assert [item["chunk_id"] for item in result[0]["parent_context"]] == ["paper-a:chunk:1"]
+    assert result[0]["parent_context_status"]["status"] == "partial"
 
 
 def test_prepare_ingest_append_rejects_duplicate_document() -> None:

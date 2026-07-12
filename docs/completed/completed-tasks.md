@@ -2,6 +2,13 @@
 
 ## 2026-07-12
 
+- **Implemented issue #37 parent-child context expansion and issue #38 tiny sentence filtering**
+  - Added stable section/paragraph/sentence IDs and bounded hierarchy paths during Docling chunking, including context-only parents for single-sentence chunks.
+  - Added Qdrant parent retrieval with document-safe point IDs, partial/unavailable status reporting, legacy-payload fallback, and prompt/artifact parent-context visibility.
+  - Excluded context-only parents from entity/graph/pruner selection while retaining them for bounded context recovery.
+  - Added the 8-word sentence filter with section/title exemption and observable filtered-chunk records without changing path-aware score calculation.
+  - Verification: `uv run pytest -q` (`171 passed`); targeted hierarchy/Qdrant/ingest suite (`38 passed`); `py_compile`; `git diff --check`.
+
 - **Created an issue-to-flow architecture docs canvas**
   - Added `docs/canvas/issue-flow-architecture.html` with current PR/issue status, before/after flow comparisons, issue dependency graph, blocker semantics, and detailed stage-by-stage architecture impact.
   - Covered the active PR #53, staged #12 delivery, closed parent issues #25/#33, and open adaptive graph chain #44–#52.

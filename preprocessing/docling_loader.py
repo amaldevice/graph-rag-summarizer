@@ -51,6 +51,9 @@ class DoclingLoader:
         parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
         return parts if len(parts) > 1 else [text.strip()]
 
+    def _path_items(self, *items: str | None) -> list[str]:
+        return [item for item in items if item is not None]
+
     def _chunk_payload(
         self,
         chunk_id: int,
@@ -61,16 +64,28 @@ class DoclingLoader:
         section: str | None,
         paragraph_index: int | None,
         sentence_index: int | None = None,
+        section_id: str | None = None,
+        paragraph_id: str | None = None,
+        parent_id: str | None = None,
+        parent_chunk_id: int | None = None,
+        path: list[str] | None = None,
+        context_only: bool = False,
     ) -> dict:
-        return {
+        hierarchy_path = list(path or [])
+        payload = {
             "chunk_id": chunk_id,
             "text": text.strip(),
             "level": level,
             "hierarchy": {
                 "level": level,
                 "section": section,
+                "section_id": section_id,
                 "paragraph_index": paragraph_index,
                 "sentence_index": sentence_index,
+                "paragraph_id": paragraph_id,
+                "parent_id": parent_id,
+                "parent_chunk_id": parent_chunk_id,
+                "path": hierarchy_path,
             },
             "layout": {
                 "kind": level,
@@ -80,12 +95,18 @@ class DoclingLoader:
             "page_no": page_no,
             "image_url": None,
         }
+        if context_only:
+            payload["context_only"] = True
+        return payload
 
     def chunk_text(self, doc_result, source_name: str = "docling"):
         chunks = []
         chunk_id = 0
         paragraph_index = 0
+        section_index = 0
         current_section = None
+        current_section_id = None
+        current_section_chunk_id = None
 
         for element, _level in doc_result.document.iterate_items():
             text = getattr(element, "text", None)
@@ -100,23 +121,89 @@ class DoclingLoader:
 
             level = self._infer_level(element, text.strip())
             if level == "section":
+                section_index += 1
                 current_section = text.strip()
+                current_section_id = f"section:{section_index}"
+                current_section_chunk_id = chunk_id
 
             if level == "paragraph":
                 paragraph_index += 1
+                paragraph_id = f"paragraph:{paragraph_index}"
+                paragraph_chunk_id = chunk_id
+                paragraph_path = self._path_items(current_section_id, paragraph_id)
+                chunks.append(self._chunk_payload(
+                    paragraph_chunk_id,
+                    text,
+                    "paragraph",
+                    source_name,
+                    page_no,
+                    current_section,
+                    paragraph_index,
+                    section_id=current_section_id,
+                    paragraph_id=paragraph_id,
+                    parent_id=current_section_id,
+                    parent_chunk_id=current_section_chunk_id,
+                    path=paragraph_path,
+                ))
+                chunk_id += 1
                 for sentence_index, sentence in enumerate(self._sentence_parts(text), start=1):
-                    sentence_level = "sentence" if sentence != text.strip() else "paragraph"
+                    if sentence == text.strip():
+                        continue
                     chunks.append(self._chunk_payload(
                         chunk_id,
                         sentence,
-                        sentence_level,
+                        "sentence",
                         source_name,
                         page_no,
                         current_section,
                         paragraph_index,
-                        sentence_index if sentence_level == "sentence" else None,
+                        sentence_index,
+                        section_id=current_section_id,
+                        paragraph_id=paragraph_id,
+                        parent_id=paragraph_id,
+                        parent_chunk_id=paragraph_chunk_id,
+                        path=paragraph_path + [f"sentence:{sentence_index}"],
                     ))
                     chunk_id += 1
+                continue
+
+            if level == "sentence":
+                paragraph_index += 1
+                paragraph_id = f"paragraph:{paragraph_index}"
+                paragraph_chunk_id = chunk_id
+                sentence_path = self._path_items(current_section_id, paragraph_id, "sentence:1")
+                chunks.append(self._chunk_payload(
+                    paragraph_chunk_id,
+                    text,
+                    "paragraph",
+                    source_name,
+                    page_no,
+                    current_section,
+                    paragraph_index,
+                    section_id=current_section_id,
+                    paragraph_id=paragraph_id,
+                    parent_id=current_section_id,
+                    parent_chunk_id=current_section_chunk_id,
+                    path=self._path_items(current_section_id, paragraph_id),
+                    context_only=True,
+                ))
+                chunk_id += 1
+                chunks.append(self._chunk_payload(
+                    chunk_id,
+                    text,
+                    level,
+                    source_name,
+                    page_no,
+                    current_section,
+                    paragraph_index,
+                    1,
+                    section_id=current_section_id,
+                    paragraph_id=paragraph_id,
+                    parent_id=paragraph_id,
+                    parent_chunk_id=paragraph_chunk_id,
+                    path=sentence_path,
+                ))
+                chunk_id += 1
                 continue
 
             chunks.append(self._chunk_payload(
@@ -127,6 +214,11 @@ class DoclingLoader:
                 page_no,
                 current_section,
                 paragraph_index if level != "section" else None,
+                section_id=current_section_id,
+                parent_id=current_section_id if level != "section" else None,
+                parent_chunk_id=current_section_chunk_id if level != "section" else None,
+                path=([current_section_id] if level == "section" and current_section_id else
+                    self._path_items(current_section_id, f"{level}:{chunk_id}")),
             ))
             chunk_id += 1
 
@@ -135,7 +227,17 @@ class DoclingLoader:
             full_text = self.extract_text(doc_result)
             raw_chunks = [c.strip() for c in full_text.split("\n\n") if c.strip()]
             chunks = [
-                self._chunk_payload(idx, chunk, "paragraph", source_name, None, None, idx + 1)
+                self._chunk_payload(
+                    idx,
+                    chunk,
+                    "paragraph",
+                    source_name,
+                    None,
+                    None,
+                    idx + 1,
+                    paragraph_id=f"paragraph:{idx + 1}",
+                    path=[f"paragraph:{idx + 1}"],
+                )
                 for idx, chunk in enumerate(raw_chunks)
             ]
 

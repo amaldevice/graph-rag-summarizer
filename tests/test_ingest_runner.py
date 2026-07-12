@@ -199,6 +199,21 @@ def test_run_ingest_stamps_document_identity_before_upload(monkeypatch, tmp_path
     assert captured["chunks"][0]["chunk_uid"] == "paper-a:chunk:0"
 
 
+def test_document_identity_stamping_preserves_parent_chunk_identity():
+    from launcher.runners import _stamp_document_identity
+    from vectordb.qdrant_handler import stable_point_id
+
+    chunks = [{
+        "chunk_id": 2,
+        "hierarchy": {"parent_chunk_id": 1},
+    }]
+
+    stamped = _stamp_document_identity(chunks, "paper-a")
+
+    assert stamped[0]["hierarchy"]["parent_chunk_uid"] == "paper-a:chunk:1"
+    assert stamped[0]["hierarchy"]["parent_point_id"] == stable_point_id("paper-a", 1)
+
+
 def test_on_demand_images_do_not_cross_document_boundaries(monkeypatch, tmp_path, capsys):
     from config import settings
     from launcher.runners import _maybe_render_images

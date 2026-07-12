@@ -89,6 +89,9 @@ class EntityExtractor:
 
         for chunk in chunks:
             chunk_key = chunk.get("chunk_uid", chunk["chunk_id"])
+            if chunk.get("context_only"):
+                entity_map[chunk_key] = []
+                continue
             doc = self.nlp(chunk["text"])
             chunk_entities = []
             seen_in_chunk = set()

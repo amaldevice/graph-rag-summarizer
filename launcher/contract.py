@@ -6,6 +6,7 @@
 
 import argparse
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +31,10 @@ EXCLUDED_SCAN_DIRS = {
 
 def build_chunk_uid(document_id: str, chunk_id) -> str:
     return f"{document_id}:chunk:{chunk_id}"
+
+
+def build_stable_point_id(document_id: str, chunk_id) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"graph-rag:{build_chunk_uid(document_id, chunk_id)}"))
 
 
 # ------------------------------------------------------------------

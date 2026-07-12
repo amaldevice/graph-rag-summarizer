@@ -93,6 +93,88 @@ def test_path_aware_pruner_keeps_repeated_local_ids_from_different_documents_sep
     assert {chunk["document_id"] for chunk in selected} == {"paper-a", "paper-b"}
 
 
+def test_pruner_expands_selected_sentence_with_bounded_parent_context():
+    ranked = pd.DataFrame([
+        {"node": "chunk_2", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.9, "text_preview": "Sentence evidence supports the reported finding in this section clearly."},
+    ])
+    chunks = [
+        {
+            "chunk_id": 0,
+            "text": "Findings",
+            "level": "section",
+            "hierarchy": {"section_id": "section:1", "path": ["section:1"]},
+        },
+        {
+            "chunk_id": 1,
+            "text": "The paragraph provides context.",
+            "level": "paragraph",
+            "hierarchy": {
+                "section_id": "section:1",
+                "paragraph_id": "paragraph:1",
+                "parent_id": "section:1",
+                "parent_chunk_id": 0,
+                "path": ["section:1", "paragraph:1"],
+            },
+        },
+        {
+            "chunk_id": 2,
+            "text": "Sentence evidence supports the reported finding in this section clearly.",
+            "level": "sentence",
+            "hierarchy": {
+                "section_id": "section:1",
+                "paragraph_id": "paragraph:1",
+                "parent_id": "paragraph:1",
+                "parent_chunk_id": 1,
+                "path": ["section:1", "paragraph:1", "sentence:1"],
+            },
+        },
+    ]
+
+    result = SummaryPruner(top_k_per_community=1, top_k_global=1).select_top_chunks(ranked, chunks)
+
+    selected = result["communities"][0]["chunks"][0]
+    assert [item["chunk_id"] for item in selected["parent_context"]] == [1, 0]
+    assert selected["context_expansion"] == {"added_parent_count": 2, "max_depth": 2}
+    assert selected["parent_context"][0]["text"] == "The paragraph provides context."
+
+
+def test_pruner_filters_tiny_sentences_but_keeps_short_sections():
+    ranked = pd.DataFrame([
+        {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.99, "text_preview": "Let Me."},
+        {"node": "chunk_1", "type": "chunk", "community": 0, "rank": 2, "composite_score": 0.8, "text_preview": "Methods"},
+    ])
+    chunks = [
+        {"chunk_id": 0, "text": "Let Me.", "level": "sentence"},
+        {"chunk_id": 1, "text": "Methods", "level": "section"},
+    ]
+
+    result = SummaryPruner(top_k_per_community=2, top_k_global=2).select_top_chunks(ranked, chunks)
+
+    selected = result["communities"][0]["chunks"]
+    assert [chunk["chunk_id"] for chunk in selected] == [1]
+    assert result["filtered_chunks"] == [{
+        "chunk_id": 0,
+        "reason": "tiny_sentence",
+        "word_count": 2,
+        "min_sentence_words": 8,
+    }]
+
+
+def test_prompt_builder_includes_expanded_parent_context():
+    prompt = PromptBuilder().build_community_prompt(
+        0,
+        [{
+            "chunk_id": 2,
+            "text": "Sentence evidence.",
+            "level": "sentence",
+            "parent_context": [{"chunk_id": 1, "level": "paragraph", "text": "The paragraph provides context."}],
+        }],
+    )
+
+    assert "parent_context:" in prompt
+    assert "The paragraph provides context." in prompt
+
+
 def test_graph_builder_links_chunks_to_mentioned_entities():
     graph = GraphBuilder(knn_k=1, sim_threshold=0.99).build_graph(
         chunks=[
@@ -128,6 +210,21 @@ def test_graph_builder_uses_document_safe_chunk_keys_when_local_ids_repeat():
 
     assert graph.has_edge("chunk_0", "ent_alpha")
     assert graph.has_edge("chunk_1", "ent_beta")
+
+
+def test_graph_builder_excludes_context_only_parent_chunks():
+    graph = GraphBuilder(knn_k=1, sim_threshold=0.0).build_graph(
+        chunks=[
+            {"chunk_id": 0, "context_only": True, "text": "Parent context", "level": "paragraph"},
+            {"chunk_id": 1, "text": "Main evidence", "level": "sentence"},
+        ],
+        chunk_embeddings=[[1.0, 0.0], [0.0, 1.0]],
+        all_entities=[],
+        all_relations=[],
+    )
+
+    assert not graph.has_node("chunk_0")
+    assert graph.has_node("chunk_1")
 
 
 def test_prompt_builder_uses_nap_cap_cgm_sections():
@@ -341,6 +438,36 @@ def test_docling_chunk_text_adds_hierarchy_for_sections_and_sentences():
 
     assert chunks[0]["level"] == "section"
     assert chunks[0]["hierarchy"]["section"] == "Findings"
-    assert [c["level"] for c in chunks[1:]] == ["sentence", "sentence"]
-    assert chunks[1]["hierarchy"]["paragraph_index"] == 1
-    assert chunks[2]["hierarchy"]["sentence_index"] == 2
+    assert [c["level"] for c in chunks[1:]] == ["paragraph", "sentence", "sentence"]
+    assert chunks[1]["hierarchy"]["paragraph_id"] == "paragraph:1"
+    assert chunks[1]["hierarchy"]["parent_id"] == "section:1"
+    assert chunks[2]["hierarchy"]["parent_chunk_id"] == chunks[1]["chunk_id"]
+    assert chunks[2]["hierarchy"]["sentence_index"] == 1
+    assert chunks[3]["hierarchy"]["sentence_index"] == 2
+
+
+def test_docling_single_sentence_gets_context_only_paragraph_parent():
+    from preprocessing.docling_loader import DoclingLoader
+
+    class TitleItem:
+        text = "Methods"
+        page_no = 1
+
+    class SentenceItem:
+        text = "A short but meaningful statement."
+        page_no = 1
+
+    class FakeDocument:
+        def iterate_items(self):
+            yield TitleItem(), None
+            yield SentenceItem(), None
+
+    class FakeResult:
+        document = FakeDocument()
+
+    chunks = DoclingLoader.__new__(DoclingLoader).chunk_text(FakeResult(), source_name="paper.pdf")
+
+    assert [chunk["level"] for chunk in chunks] == ["section", "paragraph", "sentence"]
+    assert chunks[1]["context_only"] is True
+    assert chunks[2]["hierarchy"]["parent_chunk_id"] == chunks[1]["chunk_id"]
+    assert chunks[2]["hierarchy"]["parent_id"] == "paragraph:1"
