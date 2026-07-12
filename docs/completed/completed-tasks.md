@@ -2,6 +2,11 @@
 
 ## 2026-07-12
 
+- **Recorded the accepted adaptive topology and stable community selection policy**
+  - Added `docs/adr/0004-adaptive-topology-and-stable-community-selection.md` covering adaptive mutual-kNN topology, per-document graph-shape guardrails, multiresolution Leiden selection, ARI/NMI stability, and diagnostic-only embedding clustering.
+  - Linked the decision to Wayfinder ticket #60 and the adaptive graph issue chain without changing runtime behavior.
+  - Verification: ADR structure/reference check and `git diff --check`.
+
 - **Recorded the accepted persistent document-scoped graph architecture**
   - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` covering ingest-time graph construction, versioned object-storage artifacts, manifest activation, raw versus active relation evidence, stable ingest-time communities, query-time subgraph selection, failure handling, and legacy backfill boundaries.
   - Confirmed the existing adaptive graph PRD and Wayfinder map/tickets remain the implementation planning surfaces; no duplicate spec or ticket set was created.
