@@ -1,7 +1,7 @@
 # PRD — adaptive global graph construction, community discovery, and context selection
 
-Date: 2026-07-11  
-Status: Finalized as the repo-local decision record for parent issue #44  
+Date: 2026-07-11
+Status: Finalized as the repo-local decision record for parent issue #44
 Parent issue: https://github.com/amaldevice/graph-rag-summarizer/issues/44
 
 ## Problem Statement
@@ -20,7 +20,11 @@ Evolve the existing Full-Pipeline Run into a bounded, inspectable graph-construc
 
 The improved graph stage will preserve local extraction evidence, canonicalize entity identities conservatively, classify weak and orphan regions, generate bounded cross-chunk relation candidates, verify candidates when that capability is available, weight and clean graph edges according to evidence strength, adapt semantic chunk connectivity to the retrieved evidence distribution, explore multiple community candidates, select one partition deterministically, and allocate a bounded context budget according to query relevance and marginal information gain.
 
-Every adaptive decision will produce artifacts with resolved policies, scores, budgets, inclusion reasons, and rejection reasons. Query-relevant chunks remain protected even when entity or relation extraction is weak. Existing Query-Only and Ingest Runs remain unchanged, and the existing community summarization, hierarchical reduction, evaluation, Shared LLM Session, Sticky Failover, and bounded feedback behavior continue to operate after the selected evidence is produced.
+Every adaptive decision will produce artifacts with resolved policies, scores, budgets, inclusion reasons, and rejection reasons. Query-relevant chunks remain protected even when entity or relation extraction is weak. Existing Query-Only behavior and downstream contracts remain unchanged, while Ingest may host an internal optional graph-artifact stage owned by ADR 0002; the existing community summarization, hierarchical reduction, evaluation, Shared LLM Session, Sticky Failover, and bounded feedback behavior continue to operate after the selected evidence is produced.
+
+### Clarification / Exception
+
+The existing launcher and operator contract, including Query-Only behavior, remains unchanged. Ingest may include an internal, optional graph-artifact stage, and ADR 0002 is the lifecycle authority for that stage. Stacked follow-on PRs #64 and #65, backed by planning issues #60 and #61, keep ownership of adaptive topology and query-time context allocation; ADR 0004 and ADR 0005 are only the intended files for those follow-on decisions.
 
 ## User Stories
 
@@ -66,7 +70,7 @@ Every adaptive decision will produce artifacts with resolved policies, scores, b
 40. As a maintainer, I want local algorithm tests only where behavior is combinatorial, so that tests do not overfit orchestration internals.
 41. As a maintainer, I want the current embedding runtime reused for graph and clustering diagnostics, so that this feature does not introduce a second embedding contract.
 42. As a maintainer, I want the current graph and clustering dependencies reused first, so that no mandatory dependency is added without evidence.
-43. As a maintainer, I want Query-Only and Ingest Runs unchanged, so that adaptive graph work stays inside the Full-Pipeline Run.
+43. As a maintainer, I want Query-Only and the external launcher/operator contract unchanged, with the optional ingest graph-artifact stage allowed internally under ADR 0002 and query-time adaptive selection still remaining Full-Pipeline, so that adaptive graph work stays inside the Full-Pipeline Run.
 44. As a maintainer, I want the existing Shared LLM Session, Sticky Failover, hierarchical reduction, evaluation, and bounded feedback behavior preserved, so that graph improvements do not regress downstream reliability.
 45. As a maintainer, I want extraction availability and malformed-output handling to remain owned by #39, so that this PRD does not duplicate the extraction reliability slice.
 46. As a maintainer, I want explicit path-candidate enumeration and reranking to remain owned by #40, so that this PRD does not duplicate PathRAG-grade scoring.
@@ -75,7 +79,7 @@ Every adaptive decision will produce artifacts with resolved policies, scores, b
 
 ## Implementation Decisions
 
-- Preserve the profile-driven single launcher ADR. Adaptive graph behavior remains internal to the existing Full-Pipeline Run and uses Stable Defaults or existing run configuration rather than a new Launcher Mode.
+- Preserve the profile-driven single launcher ADR. The internal optional ingest graph-artifact stage is owned by ADR 0002, while query-time adaptive graph/context behavior remains inside the existing Full-Pipeline Run; introduce no new Launcher Mode.
 - Treat PR #32 as the baseline. Hierarchy metadata, mention edges, path-aware plumbing, RAPTOR-style reduction, grounded evaluation contracts, and bounded reruns are prerequisites rather than new scope.
 - Keep extraction availability, spaCy-only fallback reporting, malformed local relation validation, and provider-mode observability in issue #39. Global graph verification will consume that validated availability seam instead of recreating it.
 - Keep explicit path-candidate enumeration, path-quality scoring, selected path identifiers, and rejected-path reasons in issue #40. Adaptive context allocation may consume a normalized path signal when available but must work without it.
@@ -98,13 +102,13 @@ Every adaptive decision will produce artifacts with resolved policies, scores, b
 - Select chunks by normalized relevance, graph support, relation support, optional path signal, and novelty. Use an MMR-like marginal-gain rule to reduce redundancy and stop when the budget is exhausted or gain falls below the resolved cutoff.
 - Preserve query-protected chunks even when relation evidence is weak. Every selected and rejected chunk records per-signal values and an inclusion or rejection reason.
 - Produce auditable artifacts for entity canonicalization, relation candidates, relation verification, graph support and edge diagnostics, orphan recovery, community candidates, community selection, embedding-cluster comparison, adaptive context budgets, and enhanced pruned context.
-- Keep artifacts attempt-scoped under the existing Full-Pipeline artifact directory so retrieval-triggered feedback reruns remain comparable. Do not create a second artifact root or a new run lifecycle.
+- Keep Full-Pipeline attempt diagnostics in the existing run directory so retrieval-triggered feedback reruns remain comparable. Persistent document graph artifacts use ADR 0002's object-storage path; do not create a second artifact root or a new operator-facing run lifecycle.
 - Reuse existing graph, Leiden, embedding, and scikit-learn dependencies first. Any future dependency addition requires a separate evidence-backed decision.
 - Prefer small contracts at existing graph, community, context-selection, and Full-Pipeline seams. Do not introduce a generic graph workflow framework.
 
 ## Testing Decisions
 
-- The primary external seam is the Full-Pipeline Run runner. Use seam-focused test groups that keep the adaptive subsystem introduced by the current slice real while replacing unrelated retrieval, embedding outputs, optional provider calls, summarization, evaluation, and feedback side effects with deterministic fakes. Add one compact tiny-fixture regression with the graph, community, and context contracts together to prove handoffs without turning the suite into a broad live integration harness.
+- The primary external seam is the Full-Pipeline Run runner. Use seam-focused test groups that keep the adaptive subsystem introduced by the current slice real while replacing unrelated retrieval, embedding outputs, optional provider calls, summarization, evaluation, and feedback side effects with deterministic fakes. Keep coverage for the internal optional ingest graph-artifact stage while leaving Query-Only and the external launcher/operator contract unchanged. Add one compact tiny-fixture regression with the graph, community, and context contracts together to prove handoffs without turning the suite into a broad live integration harness.
 - Good tests assert observable graph, partition, context, and artifact contracts rather than private helper calls or exact internal class layouts.
 - Extend the existing Full-Pipeline fake-module tests as prior art for artifact-directory routing, Shared LLM Session preservation, and bounded feedback reruns.
 - Add focused relation-contract tests proving explicit, weak, local, and cross-chunk evidence remain distinguishable and legacy relation records normalize safely.
@@ -117,7 +121,7 @@ Every adaptive decision will produce artifacts with resolved policies, scores, b
 - Add embedding-comparison tests proving agglomerative diagnostics are produced from existing embeddings and never replace the active partition automatically.
 - Add adaptive-budget tests for query-aware community importance, minimum and maximum allocations, total-budget enforcement, redundancy reduction, marginal-gain stopping, and query-protected evidence.
 - Add scope-boundary regression tests proving adaptive selection can consume an optional path signal without constructing path candidates, and global graph verification can consume #39's availability contract without owning provider-mode behavior.
-- Preserve existing Query-Only and Ingest Run tests unchanged. Full-Pipeline regressions must retain the current provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retry behavior.
+- Preserve existing Query-Only and external launcher/operator contract tests unchanged. Full-Pipeline regressions must retain the current provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retry behavior while allowing the internal optional ingest graph-artifact stage to remain covered.
 - Live smoke verification is optional and separate from deterministic CI. When run, compare one small scientific PDF and one larger heterogeneous PDF using graph fragmentation, orphan recovery, candidate acceptance, community coherence, evidence redundancy, prompt budget, and final grounding artifacts.
 
 ## Out of Scope
@@ -133,7 +137,7 @@ Every adaptive decision will produce artifacts with resolved policies, scores, b
 - Automatically merging entities only because their embeddings are similar.
 - Removing all graph, community, or budget configuration parameters.
 - Automatically deleting a query-relevant chunk because entity or relation extraction found no support.
-- Changing Query-Only or Ingest Run behavior.
+- Changing Query-Only behavior or the external launcher/operator contract.
 - Replacing existing community summarization, hierarchical reduction, evaluation, or feedback-loop contracts.
 - Building a graph visualization UI or operator dashboard.
 

@@ -1,8 +1,7 @@
 # Todo / In Progress
 
 ## Planned / Backlog
-- Add persistent graph construction during ingest after the document-safe collection contract is complete.
+- PR #62 docs-only architecture blockers resolved in ADR 0002; no remaining docs work for this slice.
 
 ## In Progress
-
-_None_
+- Overall handoff remains active: land ADR stack, implement PR A-D, code-review each PR, merge sequentially to main.
