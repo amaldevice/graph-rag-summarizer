@@ -1,7 +1,7 @@
 # PRD — adaptive global graph construction, community discovery, and context selection
 
-Date: 2026-07-11  
-Status: Finalized as the repo-local decision record for parent issue #44  
+Date: 2026-07-11
+Status: Finalized as the repo-local decision record for parent issue #44
 Parent issue: https://github.com/amaldevice/graph-rag-summarizer/issues/44
 
 ## Problem Statement
@@ -70,7 +70,7 @@ The existing launcher and operator contract, including Query-Only behavior, rema
 40. As a maintainer, I want local algorithm tests only where behavior is combinatorial, so that tests do not overfit orchestration internals.
 41. As a maintainer, I want the current embedding runtime reused for graph and clustering diagnostics, so that this feature does not introduce a second embedding contract.
 42. As a maintainer, I want the current graph and clustering dependencies reused first, so that no mandatory dependency is added without evidence.
-43. As a maintainer, I want Query-Only and the launcher/operator contract unchanged, while the optional ingest graph-artifact stage stays internal to ADR 0002, so that adaptive graph work stays inside the Full-Pipeline Run.
+43. As a maintainer, I want Query-Only and the external launcher/operator contract unchanged, while the internal optional ingest graph-artifact stage stays available under ADR 0002, so that adaptive graph work stays inside the Full-Pipeline Run.
 44. As a maintainer, I want the existing Shared LLM Session, Sticky Failover, hierarchical reduction, evaluation, and bounded feedback behavior preserved, so that graph improvements do not regress downstream reliability.
 45. As a maintainer, I want extraction availability and malformed-output handling to remain owned by #39, so that this PRD does not duplicate the extraction reliability slice.
 46. As a maintainer, I want explicit path-candidate enumeration and reranking to remain owned by #40, so that this PRD does not duplicate PathRAG-grade scoring.
@@ -108,7 +108,7 @@ The existing launcher and operator contract, including Query-Only behavior, rema
 
 ## Testing Decisions
 
-- The primary external seam is the Full-Pipeline Run runner. Use seam-focused test groups that keep the adaptive subsystem introduced by the current slice real while replacing unrelated retrieval, embedding outputs, optional provider calls, summarization, evaluation, and feedback side effects with deterministic fakes. Add one compact tiny-fixture regression with the graph, community, and context contracts together to prove handoffs without turning the suite into a broad live integration harness.
+- The primary external seam is the Full-Pipeline Run runner. Use seam-focused test groups that keep the adaptive subsystem introduced by the current slice real while replacing unrelated retrieval, embedding outputs, optional provider calls, summarization, evaluation, and feedback side effects with deterministic fakes. Keep coverage for the internal optional ingest graph-artifact stage while leaving Query-Only and the external launcher/operator contract unchanged. Add one compact tiny-fixture regression with the graph, community, and context contracts together to prove handoffs without turning the suite into a broad live integration harness.
 - Good tests assert observable graph, partition, context, and artifact contracts rather than private helper calls or exact internal class layouts.
 - Extend the existing Full-Pipeline fake-module tests as prior art for artifact-directory routing, Shared LLM Session preservation, and bounded feedback reruns.
 - Add focused relation-contract tests proving explicit, weak, local, and cross-chunk evidence remain distinguishable and legacy relation records normalize safely.
@@ -121,7 +121,7 @@ The existing launcher and operator contract, including Query-Only behavior, rema
 - Add embedding-comparison tests proving agglomerative diagnostics are produced from existing embeddings and never replace the active partition automatically.
 - Add adaptive-budget tests for query-aware community importance, minimum and maximum allocations, total-budget enforcement, redundancy reduction, marginal-gain stopping, and query-protected evidence.
 - Add scope-boundary regression tests proving adaptive selection can consume an optional path signal without constructing path candidates, and global graph verification can consume #39's availability contract without owning provider-mode behavior.
-- Preserve existing Query-Only and Ingest Run tests unchanged. Full-Pipeline regressions must retain the current provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retry behavior.
+- Preserve existing Query-Only and external launcher/operator contract tests unchanged. Full-Pipeline regressions must retain the current provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retry behavior while allowing the internal optional ingest graph-artifact stage to remain covered.
 - Live smoke verification is optional and separate from deterministic CI. When run, compare one small scientific PDF and one larger heterogeneous PDF using graph fragmentation, orphan recovery, candidate acceptance, community coherence, evidence redundancy, prompt budget, and final grounding artifacts.
 
 ## Out of Scope
@@ -137,7 +137,7 @@ The existing launcher and operator contract, including Query-Only behavior, rema
 - Automatically merging entities only because their embeddings are similar.
 - Removing all graph, community, or budget configuration parameters.
 - Automatically deleting a query-relevant chunk because entity or relation extraction found no support.
-- Changing Query-Only or Ingest Run behavior.
+- Changing Query-Only behavior or the external launcher/operator contract.
 - Replacing existing community summarization, hierarchical reduction, evaluation, or feedback-loop contracts.
 - Building a graph visualization UI or operator dashboard.
 

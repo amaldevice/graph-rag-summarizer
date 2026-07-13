@@ -1,6 +1,6 @@
 # Persist a document-scoped graph artifact during Ingest Runs
 
-**Status:** Accepted  
+**Status:** Accepted
 **Date:** 2026-07-13
 
 ## Context
@@ -9,7 +9,7 @@ Ingest Runs need one reusable, document-scoped graph-artifact lifecycle. The cur
 
 This ADR owns only the persistent graph artifact, storage path, manifest lifecycle, status reporting, replacement safety, and backfill behavior. Adaptive topology belongs to ADR 0004, and query-time allocation/selection belongs to ADR 0005.
 
-This is an internal, optional stage of Ingest. The launcher/operator contract, Query-Only behavior, and downstream behavior remain unchanged.
+This is an internal, optional stage of Ingest. The external launcher/operator contract, Query-Only behavior, and downstream behavior remain unchanged.
 
 ## Decision
 
@@ -24,22 +24,24 @@ Add an internal optional graph-artifact stage to Ingest Runs without changing th
 
 The manifest contract is:
 
-- `schema_version`
-- `collection`
-- `document_id`
-- `active_version`
-- `active_artifact_key`
-- `artifact_status`
-- `storage_backend`
-- `previous_active_version`
-- `previous_active_artifact_key`
-- `updated_at`
+- `schema_version` — manifest schema version; increments only for breaking manifest changes.
+- `collection` — collection identifier.
+- `document_id` — document identifier.
+- `active_version` — the published artifact version; null only when `artifact_status` is `unavailable`.
+- `active_artifact_key` — the published artifact pointer; null only when `artifact_status` is `unavailable`.
+- `artifact_status` — the current artifact state.
+- `storage_backend` — the storage backend that owns the artifact bytes; null only before the first successful publish.
+- `previous_active_version` — the prior published version; null when no prior active artifact exists.
+- `previous_active_artifact_key` — the prior published pointer; null when no prior active artifact exists.
+- `updated_at` — last manifest update timestamp.
+
+The active pointer pair is the only authoritative reader reference to the active artifact. If either `active_version` or `active_artifact_key` is null, readers must treat the artifact as unavailable and fall back to the existing compatibility path; `previous_*` fields are audit history only.
 
 The artifact status values are:
 
-- `available` — the artifact validated successfully and the active manifest pointer matches that validated artifact version.
-- `partial` — the artifact exists, but one or more graph sub-stages or validations are incomplete; keep the artifact visible, but do not treat it as fully authoritative.
-- `unavailable` — no usable active artifact exists for the document version; consumers must fall back to the existing compatibility path.
+- `available` — the artifact validated successfully and the active manifest pointer matches that validated artifact version. Readers may use it normally.
+- `partial` — the artifact exists, but one or more graph sub-stages or validations are incomplete; keep the artifact visible, but readers must fall back to the existing compatibility path for authoritative behavior.
+- `unavailable` — no usable active artifact exists for the document version; readers must fall back to the existing compatibility path.
 
 The artifact key is exact and versioned:
 
@@ -47,7 +49,7 @@ The artifact key is exact and versioned:
 
 Replacement semantics are:
 
-- `append` — write a new version for a document without deleting prior versions; activate the new pointer only after validation succeeds.
+- `append` — create the first artifact for a new document without deleting prior versions; reject duplicate document append attempts for an already-tracked document_id; activate the new pointer only after validation succeeds.
 - `replace-document` — write a new version for the target document_id and activate it only after validation succeeds; if activation fails, preserve the previous active pointer.
 - `replace-collection` — reprocess each document in the collection using the same document-level rules; a failure for one document must not overwrite that document's previous active pointer.
 
@@ -60,7 +62,7 @@ Activation safety is:
 
 Raw relation evidence and the active graph are separate conceptual layers. Weak, rejected, or unverified candidates remain auditable without being allowed to dominate the active graph.
 
-Existing collections can be backfilled from Qdrant payloads without re-embedding. Backfill ownership belongs to this ingest-stage lifecycle. Legacy points without `document_id` must be rebuilt or re-ingested because document ownership is never guessed.
+Existing collections can be backfilled from Qdrant payloads without re-embedding. Backfill ownership belongs to this ingest-stage lifecycle. Backfill is idempotent per document and resumable after interruption: reruns may continue from the latest stable version without duplicating the active pointer. Legacy points without `document_id` must be rebuilt or re-ingested because document ownership is never guessed.
 
 ## Alternatives rejected
 

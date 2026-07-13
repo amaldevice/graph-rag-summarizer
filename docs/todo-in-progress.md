@@ -4,4 +4,4 @@
 
 ## In Progress
 
-- Fix PR #62 docs review by narrowing ADR 0002 to the ingest-stage graph artifact lifecycle and reconciling the PRD wording.
+- Overall handoff task: finalize ADR 0002 / PRD 43 wording, keep the internal optional ingest artifact allowed, and close out the docs review.
