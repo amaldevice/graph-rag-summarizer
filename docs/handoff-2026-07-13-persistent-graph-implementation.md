@@ -102,7 +102,7 @@ Lifecycle:
 
 ## Implementation PR sequence
 
-### Phase 0 — land the decisions
+### Phase 0 — land the decisions (COMPLETE)
 
 Merge the ADR stack in order so the implementation branch starts from `main` with the accepted contracts. The current PR bases are stacked, so retarget the next PR to `main` after its predecessor lands:
 
