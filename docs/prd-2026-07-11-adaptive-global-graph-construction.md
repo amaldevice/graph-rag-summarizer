@@ -22,6 +22,10 @@ The improved graph stage will preserve local extraction evidence, canonicalize e
 
 Every adaptive decision will produce artifacts with resolved policies, scores, budgets, inclusion reasons, and rejection reasons. Query-relevant chunks remain protected even when entity or relation extraction is weak. Existing Query-Only and Ingest Runs remain unchanged, and the existing community summarization, hierarchical reduction, evaluation, Shared LLM Session, Sticky Failover, and bounded feedback behavior continue to operate after the selected evidence is produced.
 
+### Clarification / Exception
+
+The existing launcher and operator contract, including Query-Only behavior, remains unchanged. An accepted internal, optional graph-artifact stage may run during Ingest Runs, and ADR 0002 is the lifecycle authority for that stage. ADRs 0004 and 0005 keep ownership of adaptive topology and query-time context allocation.
+
 ## User Stories
 
 1. As an operator, I want the Full-Pipeline Run to discover supported relations across retrieved chunks, so that evidence is not limited by arbitrary chunk boundaries.
