@@ -84,6 +84,7 @@ class QdrantHandler:
         self._graph_claim = None
         self._collection_claim = None
         self._denied_document_ids = set()
+        self._active_vector_generations = {}
 
     def set_graph_claim(self, manifests, claim: dict) -> None:
         """Require a current manifest claim before graph-stage Qdrant writes."""
@@ -109,6 +110,9 @@ class QdrantHandler:
 
     def set_denied_document_ids(self, document_ids) -> None:
         self._denied_document_ids = {str(document_id) for document_id in document_ids}
+
+    def set_active_vector_generations(self, generations: dict[str, int]) -> None:
+        self._active_vector_generations = {str(key): int(value) for key, value in generations.items()}
 
     # ========================================================
     # CREATE COLLECTION
@@ -443,12 +447,14 @@ class QdrantHandler:
             payload = {
                 "graph_control_point": "tombstone",
                 "graph_tombstoned": True,
+                "tombstone_complete": True,
                 "document_id": document_id,
                 "document_generation": entry.get("document_generation"),
                 "tombstone_epoch": int(epoch),
                 "tombstone_operation_id": operation_id,
                 "tombstone_attempt_id": entry.get("tombstone_attempt_id"),
                 "tombstone_fence_token": int(fence_token),
+                "collection_fence_token": int(fence_token),
             }
             self._mutate(lambda control_id=control_id, payload=payload: self.client.upsert(
                 collection_name=self.collection_name,
@@ -472,10 +478,16 @@ class QdrantHandler:
             if len(points) != 1 or (points[0].payload or {}) != control["payload"]:
                 raise RuntimeError("tombstone control point proof mismatch")
 
-    def finalize_replace_collection(self, keep_point_ids: list) -> None:
+    def finalize_replace_collection(self, keep_point_ids: list, claim: dict | None = None) -> None:
         """Remove pre-existing points after a replacement upload has completed."""
         keep = {str(point_id) for point_id in keep_point_ids}
-        stale_ids = [point_id for point_id in self._scroll_point_ids() if str(point_id) not in keep]
+        if claim:
+            stale_ids = [
+                point_id for point_id, payload in self._scroll_point_records()
+                if str(point_id) not in keep and not payload.get("graph_control_point")
+            ]
+        else:
+            stale_ids = [point_id for point_id in self._scroll_point_ids() if str(point_id) not in keep]
 
         if stale_ids:
             self._mutate(lambda: self.client.delete(
@@ -485,14 +497,22 @@ class QdrantHandler:
             ))
         print(f"✅ Replace-collection selesai; {len(stale_ids)} legacy points dihapus")
 
-    def finalize_replace_document(self, document_id: str, keep_point_ids: list) -> None:
+    def finalize_replace_document(self, document_id: str, keep_point_ids: list, claim: dict | None = None) -> None:
         """Remove stale points for one document after its replacement upload completes."""
         keep = {str(point_id) for point_id in keep_point_ids}
-        stale_ids = [
-            point_id
-            for point_id in self._scroll_point_ids(self._document_filter(document_id))
-            if str(point_id) not in keep
-        ]
+        if claim:
+            stale_ids = [
+                point_id
+                for point_id, payload in self._scroll_point_records(self._document_filter(document_id))
+                if str(point_id) not in keep
+                and int(payload.get("document_generation", 0)) <= int(claim["document_generation"])
+            ]
+        else:
+            stale_ids = [
+                point_id
+                for point_id in self._scroll_point_ids(self._document_filter(document_id))
+                if str(point_id) not in keep
+            ]
 
         if stale_ids:
             self._mutate(lambda: self.client.delete(
@@ -503,8 +523,11 @@ class QdrantHandler:
         print(f"✅ Replace-document selesai; {len(stale_ids)} stale points dihapus")
 
     def _scroll_point_ids(self, scroll_filter: Filter | None = None) -> list:
+        return [point_id for point_id, _ in self._scroll_point_records(scroll_filter)]
+
+    def _scroll_point_records(self, scroll_filter: Filter | None = None) -> list[tuple[str | int, dict]]:
         scroll_offset = None
-        point_ids = []
+        points_with_payload = []
         while True:
             points, scroll_offset = self.client.scroll(
                 collection_name=self.collection_name,
@@ -514,13 +537,13 @@ class QdrantHandler:
                 with_payload=True,
                 with_vectors=False,
             )
-            point_ids.extend(
-                point.id for point in points
+            points_with_payload.extend(
+                (point.id, point.payload or {}) for point in points
                 if not (point.payload or {}).get("graph_control_point")
             )
             if scroll_offset is None:
                 break
-        return point_ids
+        return points_with_payload
 
     # ========================================================
     # SEARCH RAW RESULTS
@@ -542,6 +565,13 @@ class QdrantHandler:
             with_payload=True,
             with_vectors=False,
         )
+        if self._active_vector_generations:
+            results = [
+                result for result in results
+                if (result.payload or {}).get("document_id") in self._active_vector_generations
+                and (result.payload or {}).get("document_generation") == self._active_vector_generations[(result.payload or {}).get("document_id")]
+                and (result.payload or {}).get("vector_point", True)
+            ]
         return results
 
     # ========================================================

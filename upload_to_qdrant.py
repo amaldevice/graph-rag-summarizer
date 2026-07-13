@@ -8,7 +8,7 @@ load_dotenv()
 
 import os
 
-from config.settings import ENABLE_PERSISTENT_GRAPH, QDRANT_COLLECTION
+from config.settings import QDRANT_COLLECTION
 from launcher.contract import (
     DEFAULT_INGEST_MODE,
     resolve_ingest_mode,
@@ -36,7 +36,8 @@ def _build_legacy_ingest_config() -> dict:
         "pdf_path": pdf_path,
         "ingest_mode": ingest_mode,
         "document_id": document_id,
-        "enable_graph_artifact": ENABLE_PERSISTENT_GRAPH,
+        # Legacy wrapper keeps its historical vector-only contract.
+        "enable_graph_artifact": False,
         "json_output": "",
         "confirm_existing_collection": True,
     }

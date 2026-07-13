@@ -136,6 +136,11 @@ def _configure_query_denial(qdrant, collection, object_store=None):
         if entry.get("status") == "tombstoned"
     ]
     qdrant.set_denied_document_ids(denied)
+    qdrant.set_active_vector_generations({
+        document_id: entry["document_generation"]
+        for document_id, entry in snapshot.manifest.get("documents", {}).items()
+        if entry.get("status") != "tombstoned" and entry.get("document_generation") is not None
+    })
 
 
 def run_query_only(config: dict) -> None:
@@ -258,7 +263,7 @@ def run_ingest(config: dict) -> None:
                 graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
                 config["graph_claim"] = graph_claim
         except Exception as exc:
-            config["graph_reservation_error"] = f"{type(exc).__name__}: {exc}"
+            raise RuntimeError(f"persistent graph reservation failed: {type(exc).__name__}: {exc}") from exc
 
     _print_stage(3, 4, "prepare collection", verbose, [
         f"Collection target: {collection}",
@@ -285,12 +290,12 @@ def run_ingest(config: dict) -> None:
             vector_size=len(vectors[0]),
         )
         if graph_pipeline and collection_tombstone_manifest:
-            omitted_entries = [
+            tombstoned_entries = [
                 entry for entry in collection_tombstone_manifest.get("documents", {}).values()
                 if entry.get("status") == "tombstoned"
             ]
             controls = qdrant.write_tombstone_control_points(
-                omitted_entries,
+                tombstoned_entries,
                 collection_tombstone_manifest["tombstone_epoch"],
                 collection_tombstone_manifest["collection_operation_id"],
                 collection_tombstone_manifest["collection_fence_token"],
@@ -310,9 +315,15 @@ def run_ingest(config: dict) -> None:
             control_id = qdrant.write_document_control_point(graph_claim, len(vectors[0]))
             qdrant.verify_document_control_point(control_id)
         if ingest_mode == "replace-document":
-            qdrant.finalize_replace_document(document_id, uploaded_point_ids)
+            if graph_claim:
+                qdrant.finalize_replace_document(document_id, uploaded_point_ids, graph_claim)
+            else:
+                qdrant.finalize_replace_document(document_id, uploaded_point_ids)
         elif ingest_mode == "replace-collection":
-            qdrant.finalize_replace_collection(uploaded_point_ids)
+            if graph_claim:
+                qdrant.finalize_replace_collection(uploaded_point_ids, graph_claim)
+            else:
+                qdrant.finalize_replace_collection(uploaded_point_ids)
     except Exception as exc:
         if graph_pipeline and graph_claim:
             try:

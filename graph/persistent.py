@@ -186,6 +186,8 @@ class InMemoryObjectStore:
 
     def __init__(self):
         self.objects: dict[str, tuple[bytes, dict[str, str], str]] = {}
+        self.fencing_enforced = True
+        self.supports_conditional_cas = True
         self._lock = threading.RLock()
 
     def put(self, key: str, data: bytes, *, if_none_match: bool = False, if_match: str | None = None, metadata=None) -> str:
@@ -195,6 +197,10 @@ class InMemoryObjectStore:
                 raise FileExistsError(key)
             if if_match is not None and (current is None or current[2] != if_match):
                 raise RuntimeError("object precondition failed")
+            current_fence = int((current[1] if current else {}).get("fence_token", 0))
+            requested_fence = int((metadata or {}).get("fence_token", 0))
+            if requested_fence < current_fence:
+                raise RuntimeError("object fence token is stale")
             etag = _digest(data)
             self.objects[key] = (bytes(data), dict(metadata or {}), etag)
             return etag
@@ -222,6 +228,8 @@ class S3ObjectStore:
         self.handler = handler
         self.client = handler.client
         self.bucket = handler.bucket_name
+        self.fencing_enforced = False
+        self.supports_conditional_cas = True
 
     def put(self, key: str, data: bytes, *, if_none_match: bool = False, if_match: str | None = None, metadata=None) -> str:
         kwargs = {"Bucket": self.bucket, "Key": key, "Body": data, "Metadata": metadata or {}}
@@ -268,6 +276,10 @@ class GraphArtifactStore:
         metadata = {
             "artifact_digest": digest,
             "document_generation": str(claim["document_generation"]),
+            "source_fingerprint": str(claim["source_fingerprint"]),
+            "operation_id": str(claim.get("operation_id", "")),
+            "pending_attempt_id": str(claim.get("pending_attempt_id", "")),
+            "build_attempt_id": str(claim.get("build_attempt_id", "")),
             "backend_kind": str(backend.get("kind", "")),
             "backend_namespace": str(backend.get("namespace", "")),
         }
@@ -275,11 +287,17 @@ class GraphArtifactStore:
             self.object_store.put(key, compressed, if_none_match=True, metadata=metadata)
         except FileExistsError:
             existing, existing_metadata, _ = self.object_store.get(key)
-            if gzip.decompress(existing) != canonical_bytes or existing_metadata.get("artifact_digest") != digest:
+            if (
+                gzip.decompress(existing) != canonical_bytes
+                or existing_metadata.get("artifact_digest") != digest
+                or existing_metadata.get("document_generation") != str(claim["document_generation"])
+                or existing_metadata.get("backend_kind") != str(backend.get("kind", ""))
+                or existing_metadata.get("backend_namespace") != str(backend.get("namespace", ""))
+            ):
                 raise ValueError("immutable graph artifact key contains different bytes")
         return key, digest
 
-    def read(self, key: str, expected_digest: str | None = None, expected_backend: dict | None = None, expected_generation: int | None = None) -> bytes:
+    def read(self, key: str, expected_digest: str | None = None, expected_backend: dict | None = None, expected_generation: int | None = None, expected_source_fingerprint: str | None = None) -> bytes:
         compressed, metadata, _ = self.object_store.get(key)
         data = gzip.decompress(compressed)
         digest = _digest(data)
@@ -291,6 +309,8 @@ class GraphArtifactStore:
             raise ValueError("graph artifact metadata mismatch")
         if expected_generation is not None and metadata.get("document_generation") != str(expected_generation):
             raise ValueError("graph artifact generation mismatch")
+        if expected_source_fingerprint is not None and metadata.get("source_fingerprint") != str(expected_source_fingerprint):
+            raise ValueError("graph artifact source fingerprint mismatch")
         if expected_backend and (
             not metadata.get("backend_kind")
             or metadata.get("backend_kind") != str(expected_backend.get("kind", ""))
@@ -307,6 +327,7 @@ class ManifestSnapshot:
     manifest_revision: int
     digest: str
     manifest: dict
+    fence_token: int | None = None
 
 
 class ManifestStore:
@@ -319,6 +340,7 @@ class ManifestStore:
         self._lock = threading.RLock()
         self._fences = FenceCoordinator()
         self.manifest_key = str(PurePosixPath("graphs", collection, "manifest.json"))
+        self.lock_key = str(PurePosixPath("locks", f"{collection}.json"))
 
     def _default(self) -> dict:
         return {
@@ -353,17 +375,65 @@ class ManifestStore:
     def read_snapshot(self) -> ManifestSnapshot:
         with self._lock:
             manifest, data, etag = self._read_raw()
-            return ManifestSnapshot(data, etag, int(manifest.get("manifest_revision", 0)), _digest(data), manifest)
+            return ManifestSnapshot(
+                data,
+                etag,
+                int(manifest.get("manifest_revision", 0)),
+                _digest(data),
+                manifest,
+                self._current_fence_token(),
+            )
 
     def revalidate(self, snapshot: ManifestSnapshot) -> bool:
         current = self.read_snapshot()
-        return current.digest == snapshot.digest and current.etag == snapshot.etag
+        return (
+            current.digest == snapshot.digest
+            and current.etag == snapshot.etag
+            and current.fence_token == snapshot.fence_token
+        )
+
+    def _current_fence_token(self) -> int | None:
+        try:
+            data, _, _ = self.object_store.get(self.lock_key)
+        except FileNotFoundError:
+            return None
+        return int(json.loads(data.decode("utf-8")).get("fence_token", 0))
+
+    def _acquire_fence(self) -> int:
+        current = self._current_fence_token()
+        next_token = int(current or 0) + 1
+        lock = {"collection": self.collection, "fence_token": next_token, "updated_at": _now()}
+        data = canonical_json_bytes(lock)
+        try:
+            _, _, etag = self.object_store.get(self.lock_key)
+        except FileNotFoundError:
+            etag = None
+        kwargs = {
+            "metadata": {"fence_token": str(next_token)},
+        }
+        if etag is None:
+            kwargs["if_none_match"] = True
+        else:
+            kwargs["if_match"] = etag
+        self.object_store.put(self.lock_key, data, **kwargs)
+        return next_token
 
     def _write(self, manifest: dict, etag: str | None) -> dict:
         manifest = dict(manifest)
         manifest["manifest_revision"] = int(manifest.get("manifest_revision", 0)) + 1
         data = canonical_json_bytes(manifest)
-        kwargs = {"metadata": {"manifest_revision": str(manifest["manifest_revision"])} }
+        fence_token = self._acquire_fence()
+        if etag is None and not getattr(self.object_store, "fencing_enforced", False):
+            try:
+                self.object_store.get(self.manifest_key)
+            except FileNotFoundError:
+                pass
+            else:
+                raise RuntimeError("manifest backend cannot enforce durable fencing")
+        kwargs = {"metadata": {
+            "manifest_revision": str(manifest["manifest_revision"]),
+            "fence_token": str(fence_token),
+        }}
         if etag is None:
             kwargs["if_none_match"] = True
         else:
@@ -559,7 +629,7 @@ class ManifestStore:
             documents = dict(manifest.get("documents", {}))
             manifest["tombstone_epoch"] = int(manifest.get("tombstone_epoch", 0)) + 1
             for document_id, entry in documents.items():
-                if document_id in retained_document_ids or entry.get("status") == "tombstoned":
+                if document_id in retained_document_ids:
                     continue
                 entry = dict(entry)
                 entry.update({
@@ -601,6 +671,16 @@ class ManifestStore:
             if manifest.get("pending_tombstone_set_digest") != "pending":
                 raise RuntimeError("no pending tombstone proof")
             ordered = sorted(proofs, key=lambda item: str(item["point_id"]))
+            expected_ids = {
+                str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"graph-control:tombstone:{self.collection}:{document_id}",
+                ))
+                for document_id, entry in manifest.get("documents", {}).items()
+                if entry.get("status") == "tombstoned"
+            }
+            if {str(item["point_id"]) for item in ordered} != expected_ids:
+                raise RuntimeError("tombstone proof does not cover the committed deny set")
             digest = _digest(canonical_json_bytes(ordered))
             manifest["tombstone_set_digest"] = digest
             manifest["pending_tombstone_set_digest"] = None
@@ -738,6 +818,7 @@ class PersistentGraphReader:
             entry.get("artifact_digest"),
             entry.get("backend"),
             entry.get("document_generation"),
+            entry.get("source_fingerprint"),
         )
         artifact = deserialize_graph(data)
         if artifact.get("source_fingerprint") != entry.get("source_fingerprint"):
@@ -843,19 +924,47 @@ class PersistentGraphPipeline:
         except Exception as exc:
             try:
                 entry = self.manifests.fail(claim, f"{type(exc).__name__}: {exc}")
-            except Exception:
-                entry = {"status": "unavailable", "failure_reason": str(exc)}
+            except Exception as fail_exc:
+                raise RuntimeError("graph failure status CAS failed; claim remains fail-closed") from fail_exc
             return {"status": entry.get("status", "unavailable"), "entry": entry, "failure_reason": str(exc)}
 
     def backfill(self, chunks, embeddings, document_id, **kwargs):
         """Backfill uses payloads and stored vectors; it never re-embeds text."""
+        fingerprint = source_fingerprint(chunks, document_id)
         prior = self.manifests.get(document_id)
+        if (
+            prior
+            and prior.get("status") == "available"
+            and prior.get("source_fingerprint") == fingerprint
+            and prior.get("active_artifact_key")
+        ):
+            try:
+                self.artifacts.read(
+                    prior["active_artifact_key"],
+                    prior.get("artifact_digest"),
+                    prior.get("backend"),
+                    prior.get("document_generation"),
+                    prior.get("source_fingerprint"),
+                )
+                return {"status": "available", "entry": prior, "resumed": False}
+            except (FileNotFoundError, ValueError):
+                pass
+        operation_id = f"backfill:{self.manifests.collection}:{document_id}:{fingerprint}"
+        claim = None
+        if (
+            prior
+            and prior.get("status") == "pending"
+            and prior.get("pending_operation_id") == operation_id
+            and prior.get("pending_source_fingerprint") == fingerprint
+        ):
+            claim = prior
         return self.build_and_publish(
             chunks,
             embeddings or [],
             document_id,
             mode="replace-document" if prior else "append",
-            operation_id=f"backfill:{self.manifests.collection}:{document_id}:{source_fingerprint(chunks, document_id)}",
+            operation_id=operation_id,
+            claim=claim,
             **kwargs,
         )
 
