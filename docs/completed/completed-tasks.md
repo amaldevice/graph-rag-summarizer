@@ -3,10 +3,11 @@
 ## 2026-07-13
 
 
-- **Closed the PR #62 docs-only blocker patch for ADR 0002**
+- **Prepared the PR #62 docs-only blocker patch for ADR 0002**
   - Updated `docs/adr/0002-persistent-document-graph-at-ingest.md` to make the lifecycle claim order explicit, fence Qdrant work with the manifest-issued token, define the tombstone deny control point and legacy-scan fail-closed rules, add monotonic version ledgering, and require gzip/canonical digest integrity checks on readers and writers.
   - Updated `docs/canvas/issue-flow-architecture.html` so ADR 0002 is clearly the decision record and PR #62 still needs a separate implementation delivery issue for PR A.
   - Updated `docs/todo-in-progress.md` to remove the docs-only item from In Progress and keep the overall handoff tracking intact.
+  - PR #62 remains open pending independent review and merge.
   - Verification: `git diff --check`.
 
 - **Aligned ADR 0002 with the collection-level active manifest contract for PR #62**
