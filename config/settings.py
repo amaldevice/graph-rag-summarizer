@@ -114,3 +114,6 @@ NVIDIA_NIM_BASE_URL = os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nv
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+# --- PERSISTENT GRAPH STABLE DEFAULTS ---
+ENABLE_PERSISTENT_GRAPH = os.getenv("ENABLE_PERSISTENT_GRAPH", "True").lower() == "true"

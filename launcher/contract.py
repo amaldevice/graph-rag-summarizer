@@ -29,6 +29,12 @@ EXCLUDED_SCAN_DIRS = {
 }
 
 
+def _persistent_graph_enabled() -> bool:
+    from config import settings
+
+    return bool(settings.ENABLE_PERSISTENT_GRAPH)
+
+
 def build_chunk_uid(document_id: str, chunk_id) -> str:
     return f"{document_id}:chunk:{chunk_id}"
 
@@ -481,6 +487,7 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
         "confirm_existing_collection": confirm_existing_collection,
         "ingest_mode": ingest_mode,
         "document_id": document_id or "",
+        "enable_graph_artifact": _persistent_graph_enabled(),
     }
 
 
@@ -532,6 +539,7 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
         "confirm_existing_collection": confirm_existing_collection,
         "ingest_mode": ingest_mode,
         "document_id": document_id or "",
+        "enable_graph_artifact": _persistent_graph_enabled(),
     }
 
 
