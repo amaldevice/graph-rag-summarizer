@@ -52,14 +52,14 @@ The pointer/status contract is explicit:
 | Status | `active_version` / `active_artifact_key` | Reader authority | Generation / fingerprint match | Reader behavior |
 | --- | --- | --- | --- | --- |
 | `available` | Non-null | Authoritative | Must match current `document_generation` and `source_fingerprint` | Use the manifest entry |
-| `partial` | Non-null | Not authoritative | May match current `document_generation` and `source_fingerprint`, but still requires compatibility fallback | Fallback |
+| `partial` | Non-null | Not authoritative | May match current `document_generation` and `source_fingerprint`, but is visible only for diagnostics / optional inspection | Compatibility fallback |
 | `pending` | Null | Not authoritative | Not yet published against current Qdrant data | Fallback |
 | `stale` | Null | Not authoritative | Current Qdrant data no longer matches the in-flight or superseded graph | Fallback |
 | `unavailable` | Null | Not authoritative | No usable active artifact exists | Fallback |
 
-`pending` is written before Qdrant advances, and while `pending` readers must fall back to the compatibility path.
+`pending` is written before Qdrant advances, with the active pointer null and the old pointer retained only in `previous_pointer`; while `pending` readers must fall back to the compatibility path.
 
-`document_generation` is always a positive integer. All chunks for one ingest share the same generation. A new append starts at generation `1`; a replace increments the previous generation. Backfill with a valid `document_id` and no existing generation derives generation `1` from one consistent source fingerprint and writes it once; inconsistent or malformed payloads are unavailable/rebuild-required and are never guessed. `available` must match the current `document_generation` and `source_fingerprint`; `partial` may carry a non-null pointer but remains compatibility fallback; `pending`, `stale`, and `unavailable` always use compatibility fallback. If Qdrant has already been replaced but graph activation fails, the old pointer remains only as audit/recovery history in `previous_pointer`; the entry becomes `stale` or `unavailable`, the active pointer is cleared, and it must never remain falsely `available`.
+`document_generation` is always a positive integer. All chunks for one ingest share the same generation. A new append starts at generation `1`; a replace increments the previous generation. Backfill with a valid `document_id` and no existing generation derives generation `1` from one consistent source fingerprint and writes it once; inconsistent or malformed payloads are unavailable/rebuild-required and are never guessed. `available` must match the current `document_generation` and `source_fingerprint`; `partial` may carry a non-null pointer but remains compatibility fallback and diagnostic-only; `pending`, `stale`, and `unavailable` always use compatibility fallback. If Qdrant has already been replaced but graph activation fails, the old pointer remains only as immutable/recoverable bytes in `previous_pointer`; the entry becomes `stale` or `unavailable`, the active pointer is cleared, and it must never remain falsely `available`.
 
 The artifact key is exact and versioned:
 
@@ -68,16 +68,16 @@ The artifact key is exact and versioned:
 Replacement semantics are:
 
 - `append` — create generation `1` for a new document; reject duplicate appends for an already-tracked `document_id`; publish only after validation succeeds.
-- `replace-document` — CAS the manifest entry to `pending` with the new generation and null active pointer before any vector or artifact work, write the new artifact, then publish `available` or `partial` only after validation succeeds.
+- `replace-document` — CAS the manifest entry to `pending` with the new generation, null active pointer, and the prior pointer retained only in `previous_pointer` before any vector or artifact work, write the new artifact, then publish `available` or `partial` only after validation succeeds.
 - `replace-collection` — apply the same document-level rules to each document; a failure for one document must not overwrite that document's prior active pointer.
 
 Activation safety is:
 
 - the manifest update must be atomic from the perspective of readers;
 - stale writers must not overwrite a newer manifest pointer;
-- immediately before publish, reread the Qdrant document metadata for the same `document_id` and verify that the expected `document_generation` and `source_fingerprint` still match; if they do not, reject publish, mark the entry `stale`, clear the active pointer, and keep the old pointer only in `previous_pointer`;
-- if replacement fails after Qdrant advances, mark the entry `stale` or `unavailable`, set `failure_reason`, clear the active pointer, and keep the old pointer only in `previous_pointer`;
-- the older validated artifact stays active until a newer validated manifest is successfully published.
+- immediately before publish, reread the Qdrant document metadata for the same `document_id` and verify that the expected `document_generation` and `source_fingerprint` still match; if they do not, reject publish, mark the entry `stale`, clear the active pointer, and keep the prior pointer only in `previous_pointer`;
+- if replacement fails after Qdrant advances, mark the entry `stale` or `unavailable`, set `failure_reason`, clear the active pointer, and keep the prior pointer only in `previous_pointer`; the prior bytes remain immutable and recoverable through `previous_pointer`, but are not reader-active;
+- the older validated artifact bytes remain immutable and recoverable through `previous_pointer` until a newer validated manifest is successfully published, but they are not reader-active while the entry is pending, stale, or unavailable.
 
 Raw relation evidence and the active graph are separate conceptual layers. Weak, rejected, or unverified candidates remain auditable without being allowed to dominate the active graph.
 
@@ -105,7 +105,7 @@ Costs and constraints:
 
 - Ingest becomes more expensive and may require bounded entity and relation processing.
 - Graph artifacts need versioning, manifest lifecycle, status reporting, stale-write protection, and backfill tooling.
-- Query-time code must continue to handle missing or stale graph artifacts through the existing compatibility fallback path; `partial` artifacts may be used authoritatively for the current generation.
+- Query-time code must continue to handle missing or stale graph artifacts through the existing compatibility fallback path; `partial` artifacts remain diagnostic-only and are never authoritative.
 - A collection spanning multiple documents still requires temporary in-memory graph composition for cross-document queries; no persistent cross-document graph is introduced here.
 
 ## Related work
