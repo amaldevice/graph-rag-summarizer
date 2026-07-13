@@ -55,6 +55,10 @@ def test_canonical_graph_bytes_and_source_fingerprint_are_stable():
     assert deserialize_graph(first)["document_id"] == "paper"
 
 
+def test_canonical_json_normalizes_ecmascript_number_ranges():
+    assert canonical_json_bytes({"small": 1e-6, "large": 1e20}) == b'{"large":100000000000000000000,"small":0.000001}'
+
+
 def test_manifest_reserves_versions_and_publishes_only_validated_artifact():
     objects = InMemoryObjectStore()
     manifests = ManifestStore(objects, collection="papers", backend={"kind": "memory", "namespace": "test"})

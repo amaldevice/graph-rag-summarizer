@@ -337,8 +337,8 @@ def run_ingest(config: dict) -> None:
         if graph_pipeline and graph_claim:
             try:
                 graph_pipeline.manifests.fail(graph_claim, f"Qdrant ingest failed: {exc}")
-            except Exception:
-                pass
+            except Exception as fail_exc:
+                raise RuntimeError("Qdrant failure status CAS failed; graph claim remains fail-closed") from fail_exc
         if isinstance(exc, ValueError):
             raise SystemExit(f"Error: {exc}") from exc
         raise
