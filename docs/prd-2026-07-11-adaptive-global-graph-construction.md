@@ -70,7 +70,7 @@ The existing launcher and operator contract, including Query-Only behavior, rema
 40. As a maintainer, I want local algorithm tests only where behavior is combinatorial, so that tests do not overfit orchestration internals.
 41. As a maintainer, I want the current embedding runtime reused for graph and clustering diagnostics, so that this feature does not introduce a second embedding contract.
 42. As a maintainer, I want the current graph and clustering dependencies reused first, so that no mandatory dependency is added without evidence.
-43. As a maintainer, I want Query-Only and the external launcher/operator contract unchanged, while the internal optional ingest graph-artifact stage stays available under ADR 0002, so that adaptive graph work stays inside the Full-Pipeline Run.
+43. As a maintainer, I want Query-Only and the external launcher/operator contract unchanged, with the optional ingest graph-artifact stage allowed internally under ADR 0002 and query-time adaptive selection still remaining Full-Pipeline, so that adaptive graph work stays inside the Full-Pipeline Run.
 44. As a maintainer, I want the existing Shared LLM Session, Sticky Failover, hierarchical reduction, evaluation, and bounded feedback behavior preserved, so that graph improvements do not regress downstream reliability.
 45. As a maintainer, I want extraction availability and malformed-output handling to remain owned by #39, so that this PRD does not duplicate the extraction reliability slice.
 46. As a maintainer, I want explicit path-candidate enumeration and reranking to remain owned by #40, so that this PRD does not duplicate PathRAG-grade scoring.
@@ -79,7 +79,7 @@ The existing launcher and operator contract, including Query-Only behavior, rema
 
 ## Implementation Decisions
 
-- Preserve the profile-driven single launcher ADR. Adaptive graph behavior remains internal to the existing Full-Pipeline Run and uses Stable Defaults or existing run configuration rather than a new Launcher Mode.
+- Preserve the profile-driven single launcher ADR. The internal optional ingest graph-artifact stage is owned by ADR 0002, while query-time adaptive graph/context behavior remains inside the existing Full-Pipeline Run; introduce no new Launcher Mode.
 - Treat PR #32 as the baseline. Hierarchy metadata, mention edges, path-aware plumbing, RAPTOR-style reduction, grounded evaluation contracts, and bounded reruns are prerequisites rather than new scope.
 - Keep extraction availability, spaCy-only fallback reporting, malformed local relation validation, and provider-mode observability in issue #39. Global graph verification will consume that validated availability seam instead of recreating it.
 - Keep explicit path-candidate enumeration, path-quality scoring, selected path identifiers, and rejected-path reasons in issue #40. Adaptive context allocation may consume a normalized path signal when available but must work without it.
@@ -102,7 +102,7 @@ The existing launcher and operator contract, including Query-Only behavior, rema
 - Select chunks by normalized relevance, graph support, relation support, optional path signal, and novelty. Use an MMR-like marginal-gain rule to reduce redundancy and stop when the budget is exhausted or gain falls below the resolved cutoff.
 - Preserve query-protected chunks even when relation evidence is weak. Every selected and rejected chunk records per-signal values and an inclusion or rejection reason.
 - Produce auditable artifacts for entity canonicalization, relation candidates, relation verification, graph support and edge diagnostics, orphan recovery, community candidates, community selection, embedding-cluster comparison, adaptive context budgets, and enhanced pruned context.
-- Keep artifacts attempt-scoped under the existing Full-Pipeline artifact directory so retrieval-triggered feedback reruns remain comparable. Do not create a second artifact root or a new run lifecycle.
+- Keep Full-Pipeline attempt diagnostics in the existing run directory so retrieval-triggered feedback reruns remain comparable. Persistent document graph artifacts use ADR 0002's object-storage path; do not create a second artifact root or a new operator-facing run lifecycle.
 - Reuse existing graph, Leiden, embedding, and scikit-learn dependencies first. Any future dependency addition requires a separate evidence-backed decision.
 - Prefer small contracts at existing graph, community, context-selection, and Full-Pipeline seams. Do not introduce a generic graph workflow framework.
 
