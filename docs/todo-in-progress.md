@@ -1,8 +1,7 @@
 # Todo / In Progress
 
 ## Planned / Backlog
-- Add persistent graph construction during ingest after the document-safe collection contract is complete.
 
 ## In Progress
 
-_None_
+- Fix PR #62 docs review by narrowing ADR 0002 to the ingest-stage graph artifact lifecycle and reconciling the PRD wording.
