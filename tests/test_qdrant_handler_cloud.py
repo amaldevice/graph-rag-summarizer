@@ -127,6 +127,38 @@ def test_upsert_chunks_uses_document_safe_point_identity_and_payload() -> None:
     assert point.payload["chunk_id"] == 7
 
 
+def test_graph_claim_uses_attempt_points_and_readback_control_proof() -> None:
+    objects = {}
+
+    class FakeClient:
+        def upsert(self, collection_name, points) -> None:
+            for point in points:
+                objects[str(point.id)] = point
+
+        def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+            return [objects[str(point_id)] for point_id in ids if str(point_id) in objects]
+
+    from graph.persistent import InMemoryObjectStore, ManifestStore
+
+    manifest = ManifestStore(
+        InMemoryObjectStore(),
+        collection="papers",
+        backend={"kind": "memory", "namespace": "test"},
+    )
+    claim = manifest.reserve("paper-a", "op-1", "fp-1")
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+    handler.set_graph_claim(manifest, claim)
+    point_ids = handler.upsert_chunks(
+        [{"chunk_id": 1, "document_id": "paper-a", "chunk_uid": "paper-a:chunk:1", "text": "hello"}],
+        [[0.1, 0.2]],
+    )
+    control_id = handler.write_document_control_point(claim, 2)
+    handler.verify_document_control_point(control_id)
+
+    assert point_ids[0] != stable_point_id("paper-a", 1)
+    assert objects[control_id].payload["point_count"] == 1
+
+
 def test_search_as_chunks_preserves_document_identity() -> None:
     class FakeResult:
         id = stable_point_id("paper-a", 7)

@@ -25,6 +25,7 @@ class GraphBuilder:
             G.add_node(
                 f"chunk_{i}",
                 type="chunk",
+                chunk_uid=chunk_key,
                 level=chunk.get("level", "paragraph"),
                 text=chunk["text"][:120]
             )

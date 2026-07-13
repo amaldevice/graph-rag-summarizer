@@ -5,6 +5,8 @@
 # ============================================================
 
 import os
+import hashlib
+from uuid import NAMESPACE_URL, uuid5
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -78,6 +80,35 @@ class QdrantHandler:
                 raise ValueError(f"Unsupported Qdrant backend: {qdrant_backend}")
 
         self.collection_name = collection_name
+        self._mutation_guard = None
+        self._graph_claim = None
+        self._collection_claim = None
+        self._denied_document_ids = set()
+
+    def set_graph_claim(self, manifests, claim: dict) -> None:
+        """Require a current manifest claim before graph-stage Qdrant writes."""
+        self._graph_claim = dict(claim)
+
+        def guard(operation):
+            result = manifests.mutate_claim(self._graph_claim, operation)
+            manifests.assert_claim_current(self._graph_claim)
+            return result
+
+        self._mutation_guard = guard
+
+    def set_collection_claim(self, manifests, operation_id: str, fence_token: int) -> None:
+        self._collection_claim = (manifests, operation_id, int(fence_token))
+
+        def guard(operation):
+            return manifests.mutate_collection(operation_id, int(fence_token), operation)
+
+        self._mutation_guard = guard
+
+    def _mutate(self, operation):
+        return self._mutation_guard(operation) if self._mutation_guard else operation()
+
+    def set_denied_document_ids(self, document_ids) -> None:
+        self._denied_document_ids = {str(document_id) for document_id in document_ids}
 
     # ========================================================
     # CREATE COLLECTION
@@ -85,13 +116,13 @@ class QdrantHandler:
     # ========================================================
     def create_collection_if_not_exists(self, vector_size: int | None = None):
         if not self.collection_exists():
-            self.client.create_collection(
+            self._mutate(lambda: self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
                     size=vector_size or EMBEDDING_DIM,
                     distance=Distance.COSINE,
                 ),
-            )
+            ))
             print(f"✅ Collection '{self.collection_name}' berhasil dibuat")
         else:
             print(f"✅ Collection '{self.collection_name}' sudah ada")
@@ -119,11 +150,11 @@ class QdrantHandler:
             info = get_collection(self.collection_name)
             if "document_id" in (getattr(info, "payload_schema", None) or {}):
                 return
-        create_index(
+        self._mutate(lambda: create_index(
             collection_name=self.collection_name,
             field_name="document_id",
             field_schema=PayloadSchemaType.KEYWORD,
-        )
+        ))
 
     def document_exists(self, document_id: str) -> bool:
         self._ensure_document_id_index()
@@ -140,31 +171,45 @@ class QdrantHandler:
         if scroll is None:
             raise RuntimeError("Qdrant client cannot verify legacy document metadata")
         self._ensure_document_id_index()
-        points, _ = scroll(
-            collection_name=self.collection_name,
-            scroll_filter=Filter(
-                must=[
-                    IsEmptyCondition(
-                        is_empty=PayloadField(key="document_id"),
-                    )
-                ]
-            ),
-            limit=256,
-            with_payload=["document_id"],
-            with_vectors=False,
-        )
-        return any(
-            not isinstance((point.payload or {}).get("document_id"), str)
-            or not (point.payload or {}).get("document_id", "").strip()
-            for point in points
-        )
+        offset = None
+        seen_offsets = set()
+        while True:
+            points, next_offset = scroll(
+                collection_name=self.collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        IsEmptyCondition(
+                            is_empty=PayloadField(key="document_id"),
+                        )
+                    ]
+                ),
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            if points is None:
+                raise RuntimeError("Qdrant legacy scan returned no page")
+            for point in points:
+                payload = point.payload or {}
+                if payload.get("graph_control_point"):
+                    continue
+                if not isinstance(payload.get("document_id"), str) or not payload["document_id"].strip():
+                    return True
+            if next_offset is None:
+                return False
+            marker = str(next_offset)
+            if marker in seen_offsets:
+                raise RuntimeError("Qdrant legacy scan returned a repeated offset")
+            seen_offsets.add(marker)
+            offset = next_offset
 
     def delete_document(self, document_id: str) -> None:
-        self.client.delete(
+        self._mutate(lambda: self.client.delete(
             collection_name=self.collection_name,
             points_selector=self._document_filter(document_id),
             wait=True,
-        )
+        ))
 
     def prepare_ingest(self, ingest_mode: str, document_id: str, vector_size: int) -> None:
         """Apply one explicit collection lifecycle operation before upload."""
@@ -238,6 +283,10 @@ class QdrantHandler:
         }
         if payload.get("document_id") is not None:
             normalized["document_id"] = payload["document_id"]
+        if payload.get("document_generation") is not None:
+            normalized["document_generation"] = payload["document_generation"]
+        if payload.get("vector_point") is not None:
+            normalized["vector_point"] = payload["vector_point"]
         if payload.get("chunk_uid") is not None:
             normalized["chunk_uid"] = payload["chunk_uid"]
         elif payload.get("document_id") is not None:
@@ -273,10 +322,25 @@ class QdrantHandler:
             "page_no": page_no,
             "page": page_no,
             "image_url": image_url,
+            "vector_point": True,
+            "document_generation": int(chunk.get("document_generation", 1)),
         }
         if document_id:
             payload["document_id"] = document_id
             payload["chunk_uid"] = chunk_uid
+        if self._graph_claim and document_id:
+            source_point_id = point_id
+            point_id = str(uuid5(
+                NAMESPACE_URL,
+                f"ingest-point:{self.collection_name}:{document_id}:{self._graph_claim['document_generation']}:{self._graph_claim['pending_attempt_id']}:{chunk_uid}",
+            ))
+            payload.update({
+                "source_point_id": source_point_id,
+                "source_fingerprint": self._graph_claim["source_fingerprint"],
+                "document_attempt_id": self._graph_claim["pending_attempt_id"],
+                "document_fence_token": self._graph_claim["document_fence_token"],
+                "collection_fence_token": self._graph_claim["collection_fence_token"],
+            })
         if chunk.get("context_only"):
             payload["context_only"] = True
         if image_url:
@@ -304,17 +368,109 @@ class QdrantHandler:
             )
             points.append(point)
 
+        self._last_graph_points = [(str(point.id), dict(point.payload or {})) for point in points]
+
         total_batches = (len(points) + batch_size - 1) // batch_size
         for batch_number, start in enumerate(range(0, len(points), batch_size), start=1):
             batch = points[start:start + batch_size]
             if total_batches > 1:
                 print(f"⬆️ Upload batch {batch_number}/{total_batches}: {len(batch)} points")
-            self.client.upsert(
+            self._mutate(lambda: self.client.upsert(
                 collection_name=self.collection_name,
                 points=batch,
-            )
+            ))
         print(f"✅ Berhasil upload {len(points)} points ke Qdrant ({total_batches} batch)")
         return [point.id for point in points]
+
+    def write_document_control_point(self, claim: dict, vector_size: int) -> str:
+        if not self._graph_claim or self._graph_claim["pending_attempt_id"] != claim["pending_attempt_id"]:
+            raise RuntimeError("graph claim is not attached to Qdrant")
+        from graph.persistent import canonical_json_bytes
+
+        items = [
+            {"point_id": point_id, "payload": payload}
+            for point_id, payload in sorted(self._last_graph_points, key=lambda item: item[0])
+        ]
+        point_set_digest = hashlib.sha256(canonical_json_bytes(items)).hexdigest()
+        control_id = str(uuid5(
+            NAMESPACE_URL,
+            f"graph-control:document:{self.collection_name}:{claim['document_id']}:{claim['document_generation']}:{claim['pending_attempt_id']}",
+        ))
+        payload = {
+            "graph_control_point": "document",
+            "document_id": claim["document_id"],
+            "document_complete": True,
+            "document_generation": claim["document_generation"],
+            "source_fingerprint": claim["source_fingerprint"],
+            "document_attempt_id": claim["pending_attempt_id"],
+            "document_fence_token": claim["document_fence_token"],
+            "point_count": len(items),
+            "point_set_digest": point_set_digest,
+        }
+        self._last_control_payload = payload
+        self._last_control_id = control_id
+        self._mutate(lambda: self.client.upsert(
+            collection_name=self.collection_name,
+            points=[PointStruct(id=control_id, vector=[0.0] * int(vector_size), payload=payload)],
+        ))
+        return control_id
+
+    def verify_document_control_point(self, control_id: str) -> None:
+        retrieve = getattr(self.client, "retrieve", None)
+        if retrieve is None:
+            raise RuntimeError("Qdrant cannot read back the document control point")
+        points = retrieve(
+            collection_name=self.collection_name,
+            ids=[control_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if len(points) != 1 or (points[0].payload or {}) != self._last_control_payload:
+            raise RuntimeError("document control point proof mismatch")
+
+    def write_tombstone_control_points(
+        self,
+        entries: list[dict],
+        epoch: int,
+        operation_id: str,
+        fence_token: int,
+        vector_size: int,
+    ) -> list[dict]:
+        controls = []
+        for entry in sorted(entries, key=lambda item: str(item.get("document_id"))):
+            document_id = str(entry["document_id"])
+            control_id = str(uuid5(NAMESPACE_URL, f"graph-control:tombstone:{self.collection_name}:{document_id}"))
+            payload = {
+                "graph_control_point": "tombstone",
+                "graph_tombstoned": True,
+                "document_id": document_id,
+                "document_generation": entry.get("document_generation"),
+                "tombstone_epoch": int(epoch),
+                "tombstone_operation_id": operation_id,
+                "tombstone_attempt_id": entry.get("tombstone_attempt_id"),
+                "tombstone_fence_token": int(fence_token),
+            }
+            self._mutate(lambda control_id=control_id, payload=payload: self.client.upsert(
+                collection_name=self.collection_name,
+                points=[PointStruct(id=control_id, vector=[0.0] * int(vector_size), payload=payload)],
+            ))
+            controls.append({"point_id": control_id, "payload": payload})
+        self._tombstone_controls = controls
+        return controls
+
+    def verify_tombstone_control_points(self, controls: list[dict]) -> None:
+        retrieve = getattr(self.client, "retrieve", None)
+        if retrieve is None:
+            raise RuntimeError("Qdrant cannot read back tombstone control points")
+        for control in controls:
+            points = retrieve(
+                collection_name=self.collection_name,
+                ids=[control["point_id"]],
+                with_payload=True,
+                with_vectors=False,
+            )
+            if len(points) != 1 or (points[0].payload or {}) != control["payload"]:
+                raise RuntimeError("tombstone control point proof mismatch")
 
     def finalize_replace_collection(self, keep_point_ids: list) -> None:
         """Remove pre-existing points after a replacement upload has completed."""
@@ -322,11 +478,11 @@ class QdrantHandler:
         stale_ids = [point_id for point_id in self._scroll_point_ids() if str(point_id) not in keep]
 
         if stale_ids:
-            self.client.delete(
+            self._mutate(lambda: self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=PointIdsList(points=stale_ids),
                 wait=True,
-            )
+            ))
         print(f"✅ Replace-collection selesai; {len(stale_ids)} legacy points dihapus")
 
     def finalize_replace_document(self, document_id: str, keep_point_ids: list) -> None:
@@ -339,11 +495,11 @@ class QdrantHandler:
         ]
 
         if stale_ids:
-            self.client.delete(
+            self._mutate(lambda: self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=PointIdsList(points=stale_ids),
                 wait=True,
-            )
+            ))
         print(f"✅ Replace-document selesai; {len(stale_ids)} stale points dihapus")
 
     def _scroll_point_ids(self, scroll_filter: Filter | None = None) -> list:
@@ -355,10 +511,13 @@ class QdrantHandler:
                 scroll_filter=scroll_filter,
                 limit=256,
                 offset=scroll_offset,
-                with_payload=False,
+                with_payload=True,
                 with_vectors=False,
             )
-            point_ids.extend(point.id for point in points)
+            point_ids.extend(
+                point.id for point in points
+                if not (point.payload or {}).get("graph_control_point")
+            )
             if scroll_offset is None:
                 break
         return point_ids
@@ -368,10 +527,18 @@ class QdrantHandler:
     # Cari chunk paling relevan dari query vector
     # ========================================================
     def search(self, query_vector: list, limit: int = 5):
+        denied = [
+            FieldCondition(key="document_id", match=MatchValue(value=document_id))
+            for document_id in sorted(self._denied_document_ids)
+        ]
         results = self.client.search(
             collection_name=self.collection_name,
             query_vector=query_vector,
             limit=limit,
+            query_filter=Filter(
+                must=[IsEmptyCondition(is_empty=PayloadField(key="graph_control_point"))],
+                must_not=denied,
+            ),
             with_payload=True,
             with_vectors=False,
         )
@@ -397,6 +564,48 @@ class QdrantHandler:
             )
 
         return retrieved_chunks
+
+    def scroll_document_chunks(self, document_id: str | None = None, limit: int = 256, include_vectors: bool = False) -> list[dict]:
+        """Read payloads for graph backfill without fetching vectors."""
+        scroll = getattr(self.client, "scroll", None)
+        if scroll is None:
+            raise RuntimeError("Qdrant client cannot scroll payloads for backfill")
+        scroll_filter = self._document_filter(document_id) if document_id else None
+        offset = None
+        seen_offsets = set()
+        chunks = []
+        while True:
+            points, offset = scroll(
+                collection_name=self.collection_name,
+                scroll_filter=scroll_filter,
+                limit=limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=include_vectors,
+            )
+            if points is None:
+                raise RuntimeError("Qdrant backfill scan returned no page")
+            for point in points:
+                payload = point.payload or {}
+                if payload.get("graph_control_point"):
+                    continue
+                if not payload.get("document_id"):
+                    raise ValueError("legacy point without document_id cannot be backfilled")
+                chunk = self._normalize_chunk_payload(payload, fallback_chunk_id=point.id)
+                if include_vectors and getattr(point, "vector", None) is not None:
+                    chunk["_embedding"] = point.vector
+                chunks.append(chunk)
+            if offset is None:
+                break
+            marker = str(offset)
+            if marker in seen_offsets:
+                raise RuntimeError("Qdrant backfill scan returned a repeated offset")
+            seen_offsets.add(marker)
+        return chunks
+
+    # Explicit alias keeps the backfill seam discoverable without changing the
+    # existing search/upsert API.
+    list_document_chunks = scroll_document_chunks
 
     def expand_parent_context(self, chunks: list[dict[str, Any]], max_depth: int = 2) -> list[dict[str, Any]]:
         """Attach bounded hierarchy parents without adding them to the graph input."""

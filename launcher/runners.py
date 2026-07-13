@@ -41,6 +41,103 @@ def _stamp_document_identity(chunks: list, document_id: str) -> list:
     return chunks
 
 
+def _write_json_artifact(path: str, value: dict) -> str:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    return str(out)
+
+
+def _build_ingest_graph_artifact(config, collection, document_id, chunks, vectors, ingest_mode):
+    """Build the baseline graph after vector upload; vectors survive graph failure."""
+    status_path = _artifact_path(config.get("artifact_dir") or "output", "graph_artifact_status.json")
+    try:
+        from graph.persistent import PersistentGraphPipeline
+
+        pipeline = config.get("graph_pipeline") or PersistentGraphPipeline(
+            collection, object_store=config.get("graph_object_store")
+        )
+        result = pipeline.build_and_publish(
+            chunks,
+            vectors,
+            document_id,
+            mode=ingest_mode,
+            claim=config.get("graph_claim"),
+        )
+    except Exception as exc:
+        result = {"status": "unavailable", "failure_reason": f"{type(exc).__name__}: {exc}"}
+    if config.get("graph_reservation_error") and result.get("status") == "unavailable":
+        result["failure_reason"] = config["graph_reservation_error"]
+    _write_json_artifact(status_path, {
+        "collection": collection,
+        "document_id": document_id,
+        "ingest_mode": ingest_mode,
+        "status": result.get("status", "unavailable"),
+        "artifact_key": result.get("artifact_key"),
+        "artifact_digest": result.get("artifact_digest"),
+        "failure_reason": result.get("failure_reason"),
+        "counts": (result.get("details") or {}).get("diagnostics", {}),
+    })
+    return result
+
+
+def _persistent_graph_view(collection, chunks, object_store=None):
+    """Load namespaced persisted document graphs; return None for compatibility fallback."""
+    from graph.persistent import PersistentGraphReader, default_graph_services
+    import networkx as nx
+
+    document_ids = sorted({chunk.get("document_id") for chunk in chunks if chunk.get("document_id")})
+    if not document_ids:
+        return None
+    manifests, artifacts = default_graph_services(collection, object_store)
+    reader = PersistentGraphReader(manifests, artifacts)
+    merged = nx.Graph()
+    found = False
+    for document_id in document_ids:
+        document_chunks = [chunk for chunk in chunks if chunk.get("document_id") == document_id]
+        if not manifests.preflight(document_id)["allowed"]:
+            for chunk in document_chunks:
+                chunk["graph_denied"] = True
+            continue
+        graph = reader.load(document_id, document_chunks)
+        if graph is None:
+            continue
+        found = True
+        mapping = {}
+        for node, attrs in graph.nodes(data=True):
+            if attrs.get("type") == "chunk":
+                local_index = next((i for i, chunk in enumerate(chunks) if chunk.get("chunk_uid") == attrs.get("chunk_uid")), None)
+                if local_index is not None:
+                    mapping[node] = f"chunk_{local_index}"
+            else:
+                mapping[node] = f"{document_id}::{node}"
+        merged = nx.compose(merged, nx.relabel_nodes(graph, mapping, copy=True))
+    if not found:
+        return None
+    communities = {}
+    community_map = {}
+    for node, attrs in merged.nodes(data=True):
+        community = attrs.get("community", -1)
+        community_map[node] = community
+        communities.setdefault(community, []).append(node)
+    return merged, communities, community_map, float(merged.graph.get("modularity", 0.0))
+
+
+def _configure_query_denial(qdrant, collection, object_store=None):
+    from graph.persistent import default_graph_services
+
+    manifests, _ = default_graph_services(collection, object_store)
+    snapshot = manifests.read_snapshot()
+    if snapshot.manifest.get("pending_tombstone_set_digest") is not None:
+        raise RuntimeError("tombstone proof is pending; query denied")
+    denied = [
+        document_id
+        for document_id, entry in snapshot.manifest.get("documents", {}).items()
+        if entry.get("status") == "tombstoned"
+    ]
+    qdrant.set_denied_document_ids(denied)
+
+
 def run_query_only(config: dict) -> None:
     """Execute a Query-Only Run: retrieve ranked chunks without the full pipeline."""
     from embedding.embedder import TextEmbedder
@@ -62,6 +159,8 @@ def run_query_only(config: dict) -> None:
         f"JSON artifact: {json_output or '(disabled)'}",
     ])
     qdrant = QdrantHandler(collection_name=collection)
+    if config.get("enable_graph_artifact", False):
+        _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
     embedder = TextEmbedder()
     query_vector = embedder.embed_text(query)
 
@@ -144,33 +243,97 @@ def run_ingest(config: dict) -> None:
     embedder = TextEmbedder()
     vectors = embedder.embed_chunks(chunks)
 
+    graph_pipeline = None
+    graph_claim = None
+    collection_tombstone_manifest = None
+    if config.get("enable_graph_artifact", False):
+        try:
+            from graph.persistent import PersistentGraphPipeline
+
+            graph_pipeline = PersistentGraphPipeline(
+                collection, object_store=config.get("graph_object_store")
+            )
+            config["graph_pipeline"] = graph_pipeline
+            if ingest_mode != "replace-collection":
+                graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
+                config["graph_claim"] = graph_claim
+        except Exception as exc:
+            config["graph_reservation_error"] = f"{type(exc).__name__}: {exc}"
+
     _print_stage(3, 4, "prepare collection", verbose, [
         f"Collection target: {collection}",
         f"Operation: {ingest_mode}",
         f"Document ID: {document_id}",
     ])
     qdrant = QdrantHandler(collection_name=collection)
+    if graph_pipeline and ingest_mode == "replace-collection":
+        collection_operation_id = f"replace-collection:{collection}:{document_id}"
+        collection_tombstone_manifest = graph_pipeline.manifests.tombstone_documents(
+            {document_id}, collection_operation_id
+        )
+        qdrant.set_collection_claim(
+            graph_pipeline.manifests,
+            collection_operation_id,
+            collection_tombstone_manifest["collection_fence_token"],
+        )
+    if graph_pipeline and graph_claim:
+        qdrant.set_graph_claim(graph_pipeline.manifests, graph_claim)
     try:
         qdrant.prepare_ingest(
             ingest_mode=ingest_mode,
             document_id=document_id,
             vector_size=len(vectors[0]),
         )
-    except ValueError as exc:
-        raise SystemExit(f"Error: {exc}") from exc
+        if graph_pipeline and collection_tombstone_manifest:
+            omitted_entries = [
+                entry for entry in collection_tombstone_manifest.get("documents", {}).values()
+                if entry.get("status") == "tombstoned"
+            ]
+            controls = qdrant.write_tombstone_control_points(
+                omitted_entries,
+                collection_tombstone_manifest["tombstone_epoch"],
+                collection_tombstone_manifest["collection_operation_id"],
+                collection_tombstone_manifest["collection_fence_token"],
+                len(vectors[0]),
+            )
+            qdrant.verify_tombstone_control_points(controls)
+            graph_pipeline.manifests.commit_tombstone_proof(controls)
+            graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
+            config["graph_claim"] = graph_claim
+            qdrant.set_graph_claim(graph_pipeline.manifests, graph_claim)
+        _print_stage(4, 4, "upload chunks", verbose, [
+            f"Chunk count: {len(chunks)}",
+            f"Vector size: {len(vectors[0])}",
+        ])
+        uploaded_point_ids = qdrant.upsert_chunks(chunks, vectors) or []
+        if graph_pipeline and graph_claim:
+            control_id = qdrant.write_document_control_point(graph_claim, len(vectors[0]))
+            qdrant.verify_document_control_point(control_id)
+        if ingest_mode == "replace-document":
+            qdrant.finalize_replace_document(document_id, uploaded_point_ids)
+        elif ingest_mode == "replace-collection":
+            qdrant.finalize_replace_collection(uploaded_point_ids)
+    except Exception as exc:
+        if graph_pipeline and graph_claim:
+            try:
+                graph_pipeline.manifests.fail(graph_claim, f"Qdrant ingest failed: {exc}")
+            except Exception:
+                pass
+        if isinstance(exc, ValueError):
+            raise SystemExit(f"Error: {exc}") from exc
+        raise
 
-    _print_stage(4, 4, "upload chunks", verbose, [
-        f"Chunk count: {len(chunks)}",
-        f"Vector size: {len(vectors[0])}",
-    ])
-    uploaded_point_ids = qdrant.upsert_chunks(chunks, vectors) or []
-    if ingest_mode == "replace-document":
-        qdrant.finalize_replace_document(document_id, uploaded_point_ids)
-    elif ingest_mode == "replace-collection":
-        qdrant.finalize_replace_collection(uploaded_point_ids)
+    graph_result = None
+    if config.get("enable_graph_artifact", False):
+        print("  Building persistent document graph (optional stage)...")
+        graph_result = _build_ingest_graph_artifact(
+            config, collection, document_id, chunks, vectors, ingest_mode
+        )
 
     print(f"\n  Total chunks uploaded : {len(chunks)}")
     print(f"  Collection            : {collection}")
+    if graph_result:
+        print(f"  Graph artifact status : {graph_result.get('status', 'unavailable')}")
     print("  Ingest complete.")
 
 
@@ -214,6 +377,8 @@ def run_full_pipeline(config: dict) -> None:
 
     embedder = TextEmbedder()
     qdrant = QdrantHandler(collection_name=collection)
+    if config.get("enable_graph_artifact", False):
+        _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
     extractor = EntityExtractor()
     graph_builder = GraphBuilder()
     detector = CommunityDetector()
@@ -269,25 +434,50 @@ def run_full_pipeline(config: dict) -> None:
             print(f"\n  Retrieved chunks: {len(retrieved_chunks)}")
             retrieved_chunks = _maybe_render_images(retrieved_chunks, pdf_path)
 
-            _print_stage(2, 8, "extract entities and relations", verbose, f"Chunk count: {len(retrieved_chunks)}")
-            entity_map, all_entities = extractor.extract_entities(retrieved_chunks)
-            all_relations = []
-            for chunk in retrieved_chunks:
-                rels = extractor.extract_relations_llm(
-                    chunk["text"],
-                    entity_map.get(chunk.get("chunk_uid", chunk["chunk_id"]), []),
-                )
-                all_relations.extend(rels)
+            persistent_view = None
+            persistent_graph_read_failed = False
+            if config.get("enable_graph_artifact", False):
+                try:
+                    persistent_view = _persistent_graph_view(
+                        collection, retrieved_chunks, config.get("graph_object_store")
+                    )
+                except Exception as exc:
+                    _write_json_artifact(_artifact_path(current_dir, "persistent_graph_read.json"), {
+                        "status": "unavailable",
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    })
+                    persistent_graph_read_failed = True
+                    for chunk in retrieved_chunks:
+                        chunk["graph_denied"] = True
+            retrieved_chunks = [chunk for chunk in retrieved_chunks if not chunk.get("graph_denied")]
+            if persistent_graph_read_failed:
+                raise RuntimeError("persistent graph preflight failed; compatibility fallback denied")
 
-            _print_stage(3, 8, "build graph", verbose, [
-                f"Entities: {len(all_entities)}",
-                f"Relations: {len(all_relations)}",
-            ])
-            chunk_embeddings = [embedder.embed_text(c["text"]) for c in retrieved_chunks]
-            G = graph_builder.build_graph(retrieved_chunks, chunk_embeddings, all_entities, all_relations)
+            if persistent_view is None:
+                _print_stage(2, 8, "extract entities and relations", verbose, f"Chunk count: {len(retrieved_chunks)}")
+                entity_map, all_entities = extractor.extract_entities(retrieved_chunks)
+                all_relations = []
+                for chunk in retrieved_chunks:
+                    rels = extractor.extract_relations_llm(
+                        chunk["text"],
+                        entity_map.get(chunk.get("chunk_uid", chunk["chunk_id"]), []),
+                    )
+                    all_relations.extend(rels)
 
-            _print_stage(4, 8, "detect communities", verbose)
-            G, communities, community_map, modularity = detector.detect(G)
+                _print_stage(3, 8, "build graph", verbose, [
+                    f"Entities: {len(all_entities)}",
+                    f"Relations: {len(all_relations)}",
+                ])
+                chunk_embeddings = [embedder.embed_text(c["text"]) for c in retrieved_chunks]
+                G = graph_builder.build_graph(retrieved_chunks, chunk_embeddings, all_entities, all_relations)
+
+                _print_stage(4, 8, "detect communities", verbose)
+                G, communities, community_map, modularity = detector.detect(G)
+            else:
+                _print_stage(2, 8, "load persistent graph artifact", verbose)
+                G, communities, community_map, modularity = persistent_view
+                _print_stage(3, 8, "reuse persisted graph", verbose, f"Communities: {len(communities)}")
+                _print_stage(4, 8, "use persisted communities", verbose)
 
             _print_stage(5, 8, "rank graph and prune context", verbose, [
                 f"Communities: {len(communities)}",
