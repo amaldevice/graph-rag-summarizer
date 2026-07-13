@@ -62,6 +62,37 @@ def test_canonical_json_normalizes_ecmascript_number_ranges():
     )
 
 
+def test_artifact_retry_accepts_a_cloud_conditional_conflict_when_bytes_match():
+    class ConditionalConflict(Exception):
+        response = {"Error": {"Code": "PreconditionFailed"}, "ResponseMetadata": {"HTTPStatusCode": 412}}
+
+    class ConflictStore(InMemoryObjectStore):
+        def put(self, key, data, **kwargs):
+            if kwargs.get("if_none_match") and key in self.objects:
+                raise ConditionalConflict()
+            return super().put(key, data, **kwargs)
+
+        @staticmethod
+        def is_conditional_conflict(exc):
+            return isinstance(exc, ConditionalConflict)
+
+    objects = ConflictStore()
+    artifacts = GraphArtifactStore(objects, collection="papers")
+    claim = {
+        "document_id": "../paper/a",
+        "pending_version": 1,
+        "document_generation": 1,
+        "source_fingerprint": "fingerprint",
+        "operation_id": "op",
+        "pending_attempt_id": "attempt",
+        "build_attempt_id": "build",
+        "pending_backend": {"kind": "memory", "namespace": "test"},
+    }
+    first = artifacts.write(claim, b'{"document_id":"paper"}')
+    assert artifacts.write(claim, b'{"document_id":"paper"}') == first
+    assert artifacts.key("../paper/a", 1) == "graphs/papers/..%2Fpaper%2Fa/v1/graph.json.gz"
+
+
 def test_manifest_reserves_versions_and_publishes_only_validated_artifact():
     objects = InMemoryObjectStore()
     manifests = ManifestStore(objects, collection="papers", backend={"kind": "memory", "namespace": "test"})
