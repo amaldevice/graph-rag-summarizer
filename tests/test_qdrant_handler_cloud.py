@@ -160,6 +160,7 @@ def test_graph_claim_uses_attempt_points_and_readback_control_proof() -> None:
     handler.verify_document_control_point(control_id)
 
     assert point_ids[0] != stable_point_id("paper-a", 1)
+    assert objects[point_ids[0]].payload["document_generation"] == claim["document_generation"]
     assert objects[control_id].payload["point_count"] == 1
 
 
@@ -197,7 +198,7 @@ def test_tombstone_proof_enumerates_the_complete_qdrant_deny_set() -> None:
         handler.verify_tombstone_control_points(controls)
 
 
-def test_qdrant_search_pushes_active_generation_and_attempt_filters_server_side() -> None:
+def test_qdrant_search_pushes_active_generation_and_plane_filters_server_side() -> None:
     captured = {}
 
     class FakeClient:
@@ -207,14 +208,13 @@ def test_qdrant_search_pushes_active_generation_and_attempt_filters_server_side(
 
     handler = QdrantHandler(client=FakeClient(), collection_name="papers")
     handler.set_denied_document_ids(["gone"])
-    handler.set_active_vector_generations({"paper-a": 2}, {"paper-a": "attempt-2"})
+    handler.set_active_vector_generations({"paper-a": 2})
     handler.search([0.1, 0.2], limit=3)
 
     query_filter = captured["query_filter"].model_dump(exclude_none=True)
     assert captured["limit"] == 3
     serialized = str(query_filter)
     assert "document_generation" in serialized
-    assert "attempt-2" in serialized
     assert "graph_point" in serialized
     assert "gone" in serialized
 

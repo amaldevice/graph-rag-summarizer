@@ -245,6 +245,7 @@ class S3ObjectStore:
         self.supports_conditional_cas = True
 
     def put(self, key: str, data: bytes, *, if_none_match: bool = False, if_match: str | None = None, metadata=None) -> str:
+        # ponytail: ETag If-Match is the atomic CAS; the metadata check rejects stale tokens early.
         metadata = dict(metadata or {})
         requested_fence = int(metadata.get("fence_token", 0))
         try:
@@ -373,6 +374,7 @@ class ManifestStore:
         self.object_store = object_store
         self.collection = collection
         self.backend = backend or {"kind": "unknown", "namespace": ""}
+        # ponytail: this lock only reduces same-process duplicate reads; object-store CAS is authority.
         self._lock = threading.RLock()
         self.manifest_key = str(PurePosixPath("graphs", collection, "manifest.json"))
 
@@ -389,6 +391,7 @@ class ManifestStore:
             "manifest_backend": self.backend,
             "tombstone_set_digest": _digest(canonical_json_bytes([])),
             "pending_tombstone_set_digest": None,
+            "pending_tombstone_cleanup_ids": [],
             "documents": {},
         }
 
@@ -662,9 +665,25 @@ class ManifestStore:
                     raise RuntimeError("collection has an active tombstone operation")
                 return manifest
             documents = dict(manifest.get("documents", {}))
+            cleanup_ids = []
             manifest["tombstone_epoch"] = int(manifest.get("tombstone_epoch", 0)) + 1
             for document_id, entry in documents.items():
                 if document_id in retained_document_ids:
+                    if entry.get("status") == "tombstoned":
+                        entry = dict(entry)
+                        cleanup_ids.append(str(uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"graph-control:tombstone:{self.collection}:{document_id}",
+                        )))
+                        entry.update({
+                            "status": "pending",
+                            "tombstone_operation_id": None,
+                            "tombstone_attempt_id": None,
+                            "tombstone_fence_token": None,
+                            "failure_reason": None,
+                            "updated_at": _now(),
+                        })
+                        documents[document_id] = entry
                     continue
                 entry = dict(entry)
                 prior_active_version = entry.get("active_version")
@@ -680,7 +699,7 @@ class ManifestStore:
                 entry.update({
                     "status": "tombstoned",
                     "tombstone_operation_id": operation_id,
-                    "tombstone_attempt_id": f"{operation_id}:{document_id}",
+                    "tombstone_attempt_id": f"{operation_id}:{uuid.uuid4()}",
                     "tombstone_fence_token": int(manifest.get("collection_fence_token", 0)) + 1,
                     "active_version": None,
                     "active_artifact_key": None,
@@ -707,8 +726,9 @@ class ManifestStore:
             manifest["documents"] = documents
             manifest["collection_fence_token"] = int(manifest.get("collection_fence_token", 0)) + 1
             manifest["collection_operation_id"] = operation_id
-            manifest["collection_attempt_id"] = f"{operation_id}:tombstone"
-            manifest["pending_tombstone_set_digest"] = self._tombstone_proof_digest(manifest)
+            manifest["collection_attempt_id"] = f"{operation_id}:{uuid.uuid4()}"
+            manifest["pending_tombstone_cleanup_ids"] = sorted(cleanup_ids)
+            manifest["pending_tombstone_set_digest"] = "pending"
             self._write(manifest, snapshot)
             return manifest
 
@@ -723,7 +743,7 @@ class ManifestStore:
             if item.get("version") == active_version:
                 item.update({"state": "tombstoned", "updated_at": _now()})
             elif item.get("version") == pending_version and item.get("state") == "reserved":
-                item.update({"state": "aborted", "updated_at": _now()})
+                item.update({"state": "burned", "updated_at": _now()})
 
     def tombstone_controls(self, manifest: dict | None = None) -> list[dict]:
         manifest = manifest or self.read_snapshot().manifest
@@ -752,7 +772,7 @@ class ManifestStore:
             })
         return sorted(controls, key=lambda item: item["point_id"])
 
-    def _tombstone_proof_digest(self, manifest: dict) -> str:
+    def tombstone_proof_digest(self, manifest: dict) -> str:
         return _digest(canonical_json_bytes(self.tombstone_controls(manifest)))
 
     def commit_tombstone_proof(self, proofs: list[dict]) -> dict:
@@ -760,13 +780,27 @@ class ManifestStore:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
             expected = self.tombstone_controls(manifest)
-            if manifest.get("pending_tombstone_set_digest") != self._tombstone_proof_digest(manifest):
+            if manifest.get("pending_tombstone_set_digest") != "pending":
                 raise RuntimeError("no pending tombstone proof")
             ordered = sorted(proofs, key=lambda item: str(item["point_id"]))
             if ordered != expected:
                 raise RuntimeError("tombstone proof does not cover the committed deny set")
-            manifest["tombstone_set_digest"] = manifest["pending_tombstone_set_digest"]
+            manifest["tombstone_set_digest"] = self.tombstone_proof_digest(manifest)
             manifest["pending_tombstone_set_digest"] = None
+            self._write(manifest, snapshot)
+            return manifest
+
+    def finalize_tombstone_cleanup(self, operation_id: str, fence_token: int) -> dict:
+        with self._lock:
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
+            if (
+                manifest.get("collection_operation_id") != operation_id
+                or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
+                or manifest.get("pending_tombstone_set_digest") is not None
+            ):
+                raise RuntimeError("stale tombstone cleanup cannot finalize")
+            manifest["pending_tombstone_cleanup_ids"] = []
             self._write(manifest, snapshot)
             return manifest
 
@@ -984,7 +1018,7 @@ class PersistentGraphPipeline:
         operation_id = operation_id or f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
         return self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
 
-    def build_and_publish(self, chunks, embeddings, document_id, *, mode="append", operation_id=None, claim=None, **kwargs):
+    def build_and_publish(self, chunks, embeddings, document_id, *, mode="append", operation_id=None, claim=None, qdrant=None, **kwargs):
         fingerprint = source_fingerprint(chunks, document_id)
         prior = self.manifests.get(document_id)
         generation = claim.get("document_generation") if claim else (int(prior.get("document_generation", 0)) + 1 if prior else 1)
@@ -1003,12 +1037,25 @@ class PersistentGraphPipeline:
                 claim["document_generation"],
                 claim["source_fingerprint"],
             )
+            if qdrant is not None:
+                qdrant.verify_graph_claim_current(claim)
+                self.manifests.assert_claim_current(claim)
             self.manifests.bind_artifact(claim, artifact_key, digest)
+            if qdrant is not None:
+                qdrant.verify_graph_claim_current(claim)
+                self.manifests.assert_claim_current(claim)
             entry = self.manifests.publish(claim, artifact_key, digest)
             return {"status": entry["status"], "entry": entry, "artifact_key": artifact_key, "artifact_digest": digest, "details": details}
         except Exception as exc:
             try:
-                entry = self.manifests.fail(claim, f"{type(exc).__name__}: {exc}")
+                failure_reason = f"{type(exc).__name__}: {exc}"
+                if qdrant is not None:
+                    try:
+                        qdrant.verify_graph_claim_current(claim)
+                    except Exception as qdrant_exc:
+                        failure_reason = f"{failure_reason}; Qdrant validation: {qdrant_exc}"
+                self.manifests.assert_claim_current(claim)
+                entry = self.manifests.fail(claim, failure_reason)
             except Exception as fail_exc:
                 raise RuntimeError("graph failure status CAS failed; claim remains fail-closed") from fail_exc
             return {"status": entry.get("status", "unavailable"), "entry": entry, "failure_reason": str(exc)}

@@ -86,7 +86,6 @@ class QdrantHandler:
         self._collection_claim = None
         self._denied_document_ids = set()
         self._active_vector_generations = {}
-        self._active_vector_attempts = {}
 
     def set_graph_claim(self, manifests, claim: dict) -> None:
         """Require a current manifest claim before graph-stage Qdrant writes."""
@@ -113,13 +112,8 @@ class QdrantHandler:
     def set_denied_document_ids(self, document_ids) -> None:
         self._denied_document_ids = {str(document_id) for document_id in document_ids}
 
-    def set_active_vector_generations(self, generations: dict[str, int], attempts: dict[str, str] | None = None) -> None:
+    def set_active_vector_generations(self, generations: dict[str, int]) -> None:
         self._active_vector_generations = {str(key): int(value) for key, value in generations.items()}
-        self._active_vector_attempts = {
-            str(key): str(value)
-            for key, value in (attempts or {}).items()
-            if value is not None
-        }
 
     # ========================================================
     # CREATE COLLECTION
@@ -327,6 +321,9 @@ class QdrantHandler:
             if image_urls:
                 image_url = image_urls[0]
 
+        generation = int(chunk.get("document_generation", 1))
+        if self._graph_claim and document_id:
+            generation = int(self._graph_claim["document_generation"])
         payload = {
             "chunk_id": chunk_id,
             "text": chunk.get("text", ""),
@@ -339,7 +336,7 @@ class QdrantHandler:
             "image_url": image_url,
             "vector_point": True,
             "graph_point": False,
-            "document_generation": int(chunk.get("document_generation", 1)),
+            "document_generation": generation,
         }
         if document_id:
             payload["document_id"] = document_id
@@ -459,8 +456,27 @@ class QdrantHandler:
         ]
         actual_digest = hashlib.sha256(canonical_json_bytes(actual)).hexdigest()
         expected = self._last_control_payload
+        for item in actual:
+            payload = item["payload"]
+            if (
+                payload.get("document_id") != claim["document_id"]
+                or payload.get("document_generation") != claim["document_generation"]
+                or payload.get("document_attempt_id") != claim["pending_attempt_id"]
+                or payload.get("source_fingerprint") != claim["source_fingerprint"]
+                or payload.get("document_fence_token") != claim["document_fence_token"]
+                or not payload.get("vector_point")
+                or payload.get("graph_point")
+            ):
+                raise RuntimeError("document point provenance proof mismatch")
         if len(actual) != expected["point_count"] or actual_digest != expected["point_set_digest"]:
             raise RuntimeError("document point-set proof mismatch")
+
+    def verify_graph_claim_current(self, claim: dict) -> None:
+        if not self._graph_claim or self._graph_claim["pending_attempt_id"] != claim["pending_attempt_id"]:
+            raise RuntimeError("graph claim is not attached to Qdrant")
+        if not getattr(self, "_last_control_id", None):
+            raise RuntimeError("document control proof is missing")
+        self.verify_document_control_point(self._last_control_id)
 
     def write_tombstone_control_points(
         self,
@@ -494,14 +510,23 @@ class QdrantHandler:
         self._tombstone_controls = controls
         return controls
 
-    def verify_tombstone_control_points(self, controls: list[dict], expected_digest: str | None = None) -> None:
+    def verify_tombstone_control_points(
+        self,
+        controls: list[dict],
+        expected_digest: str | None = None,
+        allow_stale_control_ids: set[str] | None = None,
+    ) -> None:
         from graph.persistent import canonical_json_bytes
 
         expected = sorted(controls, key=lambda item: str(item["point_id"]))
         actual = self._enumerate_tombstone_controls()
-        if actual != expected:
+        expected_ids = {str(item["point_id"]) for item in expected}
+        allowed_stale = {str(point_id) for point_id in (allow_stale_control_ids or set())}
+        actual_expected = [item for item in actual if item["point_id"] in expected_ids]
+        actual_stale = {item["point_id"] for item in actual if item["point_id"] not in expected_ids}
+        if actual_stale - allowed_stale or actual_expected != expected:
             raise RuntimeError("tombstone control point proof mismatch")
-        digest = hashlib.sha256(canonical_json_bytes(actual)).hexdigest()
+        digest = hashlib.sha256(canonical_json_bytes(actual_expected)).hexdigest()
         if expected_digest is not None and digest != expected_digest:
             raise RuntimeError("tombstone control point digest mismatch")
 
@@ -625,9 +650,6 @@ class QdrantHandler:
                     FieldCondition(key="document_generation", match=MatchValue(value=generation)),
                     FieldCondition(key="vector_point", match=MatchValue(value=True)),
                 ]
-                attempt_id = self._active_vector_attempts.get(document_id)
-                if attempt_id is not None:
-                    conditions.append(FieldCondition(key="document_attempt_id", match=MatchValue(value=attempt_id)))
                 active_documents.append(Filter(must=conditions))
             must.append(Filter(should=active_documents))
         results = self.client.search(
@@ -648,9 +670,6 @@ class QdrantHandler:
                 if payload.get("document_generation") != self._active_vector_generations.get(document_id):
                     continue
                 if not payload.get("vector_point") or payload.get("graph_point"):
-                    continue
-                active_attempt = self._active_vector_attempts.get(document_id)
-                if active_attempt is not None and payload.get("document_attempt_id") != active_attempt:
                     continue
                 filtered.append(result)
             results = filtered

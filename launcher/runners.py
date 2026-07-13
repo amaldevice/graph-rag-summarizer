@@ -63,6 +63,7 @@ def _build_ingest_graph_artifact(config, collection, document_id, chunks, vector
             document_id,
             mode=ingest_mode,
             claim=config.get("graph_claim"),
+            qdrant=config.get("qdrant"),
         )
     except Exception as exc:
         result = {"status": "unavailable", "failure_reason": f"{type(exc).__name__}: {exc}"}
@@ -150,10 +151,6 @@ def _configure_query_denial(qdrant, collection, object_store=None):
         document_id: entry["document_generation"]
         for document_id, entry in snapshot.manifest.get("documents", {}).items()
         if entry.get("status") != "tombstoned" and entry.get("document_generation") is not None
-    }, {
-        document_id: entry["document_attempt_id"]
-        for document_id, entry in snapshot.manifest.get("documents", {}).items()
-        if entry.get("status") != "tombstoned" and entry.get("document_attempt_id") is not None
     })
 
 
@@ -178,6 +175,7 @@ def run_query_only(config: dict) -> None:
         f"JSON artifact: {json_output or '(disabled)'}",
     ])
     qdrant = QdrantHandler(collection_name=collection)
+    config["qdrant"] = qdrant
     if config.get("enable_graph_artifact", False):
         _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
     embedder = TextEmbedder()
@@ -311,6 +309,7 @@ def run_ingest(config: dict) -> None:
             controls = graph_pipeline.manifests.tombstone_controls(collection_tombstone_manifest)
             pending_digest = collection_tombstone_manifest.get("pending_tombstone_set_digest")
             if pending_digest is not None:
+                expected_digest = graph_pipeline.manifests.tombstone_proof_digest(collection_tombstone_manifest)
                 controls = qdrant.write_tombstone_control_points(
                     tombstoned_entries,
                     collection_tombstone_manifest["tombstone_epoch"],
@@ -318,8 +317,12 @@ def run_ingest(config: dict) -> None:
                     collection_tombstone_manifest["collection_fence_token"],
                     len(vectors[0]),
                 )
-                qdrant.verify_tombstone_control_points(controls, expected_digest=pending_digest)
-                graph_pipeline.manifests.commit_tombstone_proof(controls)
+                qdrant.verify_tombstone_control_points(
+                    controls,
+                    expected_digest=expected_digest,
+                    allow_stale_control_ids=set(collection_tombstone_manifest.get("pending_tombstone_cleanup_ids", [])),
+                )
+                collection_tombstone_manifest = graph_pipeline.manifests.commit_tombstone_proof(controls)
             else:
                 qdrant.verify_tombstone_control_points(
                     controls,
@@ -351,6 +354,14 @@ def run_ingest(config: dict) -> None:
                 qdrant.finalize_replace_collection(
                     uploaded_point_ids,
                     keep_control_ids={control["point_id"] for control in controls},
+                )
+                qdrant.verify_tombstone_control_points(
+                    controls,
+                    expected_digest=collection_tombstone_manifest["tombstone_set_digest"],
+                )
+                graph_pipeline.manifests.finalize_tombstone_cleanup(
+                    collection_tombstone_manifest["collection_operation_id"],
+                    collection_tombstone_manifest["collection_fence_token"],
                 )
                 graph_pipeline.manifests.release_collection_fence(
                     collection_tombstone_manifest["collection_operation_id"],

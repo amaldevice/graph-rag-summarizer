@@ -138,7 +138,7 @@ def test_tombstone_proof_burns_versions_and_commits_control_digest():
     tombstone = manifests.tombstone_documents(set(), "replace-1")
 
     states = {item["version"]: item["state"] for item in tombstone["documents"]["paper"]["version_ledger"]}
-    assert states == {1: "tombstoned", 2: "aborted"}
+    assert states == {1: "tombstoned", 2: "burned"}
     assert tombstone["documents"]["paper"]["active_version"] is None
     assert tombstone["documents"]["paper"]["pending_version"] is None
     controls = manifests.tombstone_controls(tombstone)
@@ -160,6 +160,24 @@ def test_tombstone_proof_rejects_modified_payload():
 
     with pytest.raises(RuntimeError, match="tombstone proof"):
         manifests.commit_tombstone_proof(controls)
+
+
+def test_tombstoned_document_reintroduction_stages_deny_cleanup():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve("paper", "op-1", "fingerprint")
+    manifests.bind_artifact(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
+    manifests.publish(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
+    tombstone = manifests.tombstone_documents(set(), "replace-1")
+    controls = manifests.tombstone_controls(tombstone)
+    manifests.commit_tombstone_proof(controls)
+    manifests.release_collection_fence("replace-1", tombstone["collection_fence_token"])
+
+    reintroduction = manifests.tombstone_documents({"paper"}, "replace-2")
+    assert reintroduction["documents"]["paper"]["status"] == "pending"
+    assert reintroduction["pending_tombstone_cleanup_ids"] == [controls[0]["point_id"]]
+    assert manifests.tombstone_controls(reintroduction) == []
+    fresh_claim = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-collection")
+    assert fresh_claim["document_generation"] == 2
 
 
 def test_artifact_read_rejects_noncanonical_json_body():
