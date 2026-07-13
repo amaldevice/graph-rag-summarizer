@@ -195,7 +195,7 @@
         <h2>Dari ingest yang collision-prone ke graph pipeline yang auditable.</h2>
         <p class="lede">Canvas ini menjelaskan bagaimana issue yang sudah delivered, issue yang sedang aktif, dan issue graph setelah #45 saling menyusun ulang flow project — dari PDF masuk, retrieval, graph construction, community discovery, sampai context selection.</p>
         <div class="meta">
-          <span class="pill open">19 open issues in scope</span>
+          <span class="pill open">17 open issues in scope</span>
           <span class="pill info">5 active docs PRs: <a href="https://github.com/amaldevice/graph-rag-summarizer/pull/62">#62–#66</a></span>
           <span class="pill done">PR #53 + #54 merged into main</span>
           <span class="pill">Last checked: 2026-07-13</span>
@@ -284,8 +284,8 @@
               <tr class="issue-row" data-state="closed" data-kind="parent"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/33">#33</a></td><td><span class="pill done">CLOSED</span><br>parent tracking</td><td>Qdrant write boundary</td><td>one oversized request → bounded batches via #34</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/35">#35</a> / <a href="https://github.com/amaldevice/graph-rag-summarizer/issues/43">#43</a></td><td><span class="pill open">OPEN</span><br>evaluation follow-ups</td><td>quality gate</td><td>metric slots → lightweight first, heavy optional adapters later</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/36">#36</a></td><td><span class="pill open">OPEN</span><br>table/figure evidence</td><td>preprocess → retrieval</td><td>layout metadata → first-class visual/table evidence</td></tr>
-              <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/37">#37</a></td><td><span class="pill open">OPEN</span><br>hierarchy expansion</td><td>ingest → context</td><td>flat hierarchy fields → parent/child context recovery</td></tr>
-              <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/38">#38</a></td><td><span class="pill open">OPEN</span><br>tiny sentence filter</td><td>pruning</td><td>short noisy chunks → cleaner selected context</td></tr>
+              <tr class="issue-row" data-state="closed"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/37">#37</a></td><td><span class="pill done">CLOSED</span><br>hierarchy expansion delivered</td><td>ingest → context</td><td>flat hierarchy fields → parent/child context recovery</td></tr>
+              <tr class="issue-row" data-state="closed"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/38">#38</a></td><td><span class="pill done">CLOSED</span><br>tiny sentence filter delivered</td><td>pruning</td><td>short noisy chunks → cleaner selected context</td></tr>
               <tr class="issue-row" data-state="open" data-kind="graph"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/39">#39</a></td><td><span class="pill open">OPEN</span><br>graph prerequisite</td><td>entity/relation extraction</td><td>provider-dependent relation path → explicit availability + safe fallback</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/40">#40</a></td><td><span class="pill open">OPEN</span><br>optional graph signal</td><td>path-aware pruning</td><td>heuristic paths → scored candidates and rejection reasons</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/41">#41</a></td><td><span class="pill open">OPEN</span><br>reduction follow-up</td><td>RAPTOR reduction</td><td>fixed summary batches → embedding-similar groups</td></tr>
@@ -314,8 +314,8 @@
           <details>
             <summary>2. Retrieval and evidence preparation</summary>
             <div class="detail-body">
-              <p><strong>Delivered baseline:</strong> #26 preserves hierarchy/layout metadata, #27 adds path-aware selection, and #36–#38 target the remaining evidence/context gaps.</p>
-              <p><strong>Open direction:</strong> #37 would let a child sentence recover parent paragraph/section context; #38 would remove tiny noisy sentences; #36 would make tables and figures first-class evidence. #40 adds a richer optional path signal.</p>
+              <p><strong>Delivered baseline:</strong> #26 preserves hierarchy/layout metadata, #27 adds path-aware selection, and #37–#38 now deliver bounded parent context and tiny-sentence filtering.</p>
+              <p><strong>Open direction:</strong> #36 would make tables and figures first-class evidence. #40 adds a richer optional path signal.</p>
               <p><strong>Architecture effect:</strong> selection moves from “top similar chunks” to structure-aware evidence with explicit reasons, without changing Query-Only or Ingest launcher modes.</p>
             </div>
           </details>
