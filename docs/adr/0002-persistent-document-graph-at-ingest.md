@@ -24,23 +24,37 @@ Add an internal optional graph-artifact stage to Ingest Runs without changing th
 
 The collection manifest is authoritative and stores one entry per document. Readers resolve the entry for a given `document_id` from `graphs/{collection}/manifest.json`, then follow that entry's active pointer.
 
+The manifest includes collection-level concurrency metadata:
+
+- `manifest_revision` — monotonically increasing manifest revision for writers.
+- `manifest_etag` — conditional-write token or equivalent compare-and-swap guard.
+
+Readers ignore the revision metadata. Writers must read the current manifest, preserve all existing document entries, increment `manifest_revision`, and publish the new manifest with CAS/`If-Match` semantics. If the backend does not provide conditional put, writers must use a collection-scoped lock or lease around the read-modify-write sequence. Stale writers must retry or abort; they must never overwrite a newer entry.
+
 Each manifest entry contains:
 
 - `document_id` — document identifier.
+- `document_generation` — the generation currently bound to the entry.
+- `source_fingerprint` — fingerprint for the source input that produced the bound graph.
 - `active_version` — the published artifact version; null only when `status` is `unavailable`.
 - `active_artifact_key` — the published artifact pointer; null only when `status` is `unavailable`.
 - `status` — the current artifact state.
 - `backend` — the storage backend that owns the artifact bytes; null only before the first successful publish.
 - `previous_pointer` — the prior active pointer for this document; null when no prior active artifact exists.
 - `updated_at` — last manifest update timestamp.
+- `failure_reason` — optional diagnostic metadata for failures and rebuilds.
 
 The active pointer pair in each entry is the only authoritative reader reference to the active artifact for that document. If either `active_version` or `active_artifact_key` is null, readers must treat the artifact as unavailable and fall back to the existing compatibility path; `previous_pointer` is audit history only.
 
 The artifact status values are:
 
-- `available` — the artifact validated successfully and the active manifest entry matches that validated artifact version. Readers may use it normally.
+- `pending` — a new Qdrant generation is being prepared; readers must fall back to the existing compatibility path.
+- `available` — the artifact validated successfully and the active manifest entry matches the current document generation. Readers may use it normally.
 - `partial` — the artifact exists, but one or more graph sub-stages or validations are incomplete; keep the artifact visible, but readers must fall back to the existing compatibility path for authoritative behavior.
+- `stale` — the manifest entry points at an older generation or a graph replaced by a newer Qdrant generation; readers must fall back to the existing compatibility path.
 - `unavailable` — no usable active artifact exists for the document version; readers must fall back to the existing compatibility path.
+
+`available` and `partial` must match the current `document_generation`. `pending`, `stale`, and `unavailable` always use compatibility fallback. If Qdrant has already been replaced but graph activation fails, the old pointer remains only as audit/recovery history and must be marked non-authoritative with `stale` or `unavailable`; it must never remain falsely `available`.
 
 The artifact key is exact and versioned:
 
@@ -61,7 +75,7 @@ Activation safety is:
 
 Raw relation evidence and the active graph are separate conceptual layers. Weak, rejected, or unverified candidates remain auditable without being allowed to dominate the active graph.
 
-Existing collections can be backfilled from Qdrant payloads without re-embedding. Backfill ownership belongs to this ingest-stage lifecycle. Backfill is idempotent per document and resumable after interruption: reruns may continue from the latest stable version without duplicating the active pointer. Legacy points without `document_id` must be rebuilt or re-ingested because document ownership is never guessed.
+Existing collections can be backfilled from Qdrant payloads without re-embedding. Backfill ownership belongs to this ingest-stage lifecycle. Backfill uses deterministic operation ids of the form `backfill:{collection}:{document_id}:{source_fingerprint}` and per-document versioning of `max(existing_versions)+1`. Safe reuse is allowed only when the exact artifact digest and operation have already completed. Missing or malformed manifest entries are treated as unavailable and rebuilt; document ownership is never guessed. Reruns resume per document and preserve already active matching entries. Legacy points without `document_id` must be rebuilt or re-ingested because document ownership is never guessed.
 
 ## Alternatives rejected
 
