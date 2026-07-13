@@ -29,10 +29,26 @@
   - Referenced the adaptive graph PRD, ADR stack, Wayfinder map/decisions, and implementation issues without duplicating their canonical content.
   - Verification: handoff structure/reference check and `git diff --check`.
 
+- **Recorded the accepted query-time adaptive context allocation policy**
+  - Added `docs/adr/0005-query-time-adaptive-context-allocation.md` covering character budgets, community importance, minimum/maximum allocation, novelty selection, query protection, compatibility fallback, temporary multi-document views, and optional path signals.
+  - Linked the decision to Wayfinder ticket #61 and the adaptive graph issue chain without changing runtime behavior.
+  - Verification: ADR structure/reference check and `git diff --check`.
+
+- **Recorded the accepted adaptive topology and stable community selection policy**
+  - Added `docs/adr/0004-adaptive-topology-and-stable-community-selection.md` covering adaptive mutual-kNN topology, per-document graph-shape guardrails, multiresolution Leiden selection, ARI/NMI stability, and diagnostic-only embedding clustering.
+  - Linked the decision to Wayfinder ticket #60 and the adaptive graph issue chain without changing runtime behavior.
+  - Verification: ADR structure/reference check and `git diff --check`.
+
+
 - **Recorded the accepted persistent document-scoped graph architecture**
   - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` covering lifecycle/storage/fencing/backfill authority for the persistent document-scoped graph artifact, versioned object-storage artifacts, manifest activation, raw versus active relation evidence, stable ingest-time communities, failure handling, and legacy backfill boundaries. Adaptive query behavior stays with later work.
   - Kept PR #62 delivery split from the decision record so the implementation issue remains separate.
   - Confirmed the existing adaptive graph PRD and Wayfinder map/tickets remain the implementation planning surfaces; no duplicate spec or ticket set was created.
+  - Verification: ADR structure/reference check and `git diff --check`.
+
+- **Recorded the accepted bounded global relation recovery policy**
+  - Added `docs/adr/0003-bounded-global-relation-recovery.md` covering document-scoped neighborhood candidates, bounded evidence-window verification, provider fallback, raw versus active edges, orphan diagnostics, and stable operational caps.
+  - Linked the decision to Wayfinder ticket #59 and the existing adaptive graph issue chain without duplicating the PRD or tickets.
   - Verification: ADR structure/reference check and `git diff --check`.
 
 - **Implemented issue #37 parent-child context expansion and issue #38 tiny sentence filtering**
