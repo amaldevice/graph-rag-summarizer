@@ -352,7 +352,7 @@
           <div class="card"><h4>Qdrant remains the vector seam</h4><p>Document-safe point IDs and payload metadata are enough for #12. No Neo4j is required for the current flow.</p></div>
           <div class="card"><h4>No Microsoft GraphRAG import</h4><p>#44 builds bounded local contracts and artifacts on existing NetworkX/Leiden/embedding seams; it does not reproduce a second framework.</p></div>
           <div class="card"><h4>Artifact-first observability</h4><p>Adaptive decisions should write attempt-scoped JSON artifacts: evidence, candidates, verification, topology, communities, and context budget.</p></div>
-          <div class="card"><h4>Ingest graph is a separate next step</h4><p>#44 explicitly keeps Ingest Run unchanged. Persistent graph-at-ingest, including R2/Parquet artifact lifecycle, needs its own issue after #12 delivery.</p></div>
+          <div class="card"><h4>Persistent graph-at-ingest is next delivery</h4><p>ADR 0002 and PR #62 accept persistent graph-at-ingest as the next delivery. The current runtime remains pre-implementation, and the R2 manifest/artifact contract is planned delivery rather than a separate unplanned issue.</p></div>
         </div>
         <div class="callout good" style="margin-top:14px"><strong>Practical order</strong><p>Merge active PR #53 to deliver the planning record and staged #12 changes to <code>main</code>. Then start the independent frontier #45 and #49. Do not wait for #41 before #51: both reuse embeddings, but their pipeline stages are different.</p></div>
       </section>

@@ -69,7 +69,7 @@ Replacement semantics are:
 
 - `append` — create generation `1` for a new document; reject duplicate appends for an already-tracked `document_id`; publish only after validation succeeds.
 - `replace-document` — CAS the manifest entry to `pending` with the new generation, null active pointer, and the prior pointer retained only in `previous_pointer` before any vector or artifact work, write the new artifact, then publish `available` or `partial` only after validation succeeds.
-- `replace-collection` — apply the same document-level rules to each document; a failure for one document must not overwrite that document's prior active pointer.
+- `replace-collection` — apply the same document-level rules to each document; a failure for one document must preserve that document's prior artifact bytes and previous_pointer metadata, without treating the pointer as active.
 
 Activation safety is:
 

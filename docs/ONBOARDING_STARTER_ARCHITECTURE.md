@@ -159,7 +159,7 @@ Do not run live ingest/full-pipeline against a real collection without explicit 
 ## 9. Important boundaries
 
 - **Not Microsoft GraphRAG:** there is no GraphRAG package contract, persistent GraphRAG parquet index, or Neo4j requirement in the current flow.
-- **Not ingest-time graph persistence:** reusable graph construction during ingest is a planned follow-up; current graph artifacts are derived per Full-Pipeline Run.
+- **Not yet in runtime:** ingest-time graph persistence is accepted by ADR 0002, but the runtime does not implement it yet; current graph artifacts are still derived per Full-Pipeline Run.
 - **Qdrant is not a graph database:** it stores vectors and payload metadata; graph topology is assembled in Python.
 - **Images are optional enrichment:** PDF access and embedding inference remain local to the machine running the launcher, even in `cloud` profile.
 - **LLM is required only for Full-Pipeline:** Query-Only and Ingest can operate without a configured provider.
