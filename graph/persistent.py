@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 import networkx as nx
 
@@ -85,6 +86,11 @@ def _digest(value: bytes) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _key_component(value: str) -> str:
+    """Keep caller-controlled identifiers inside their object-store prefix."""
+    return quote(str(value), safe="-_.~")
 
 
 def _json_safe(value: Any) -> Any:
@@ -252,6 +258,14 @@ class S3ObjectStore:
         self.supports_conditional_cas = bool(explicit_capability)
         self.fencing_enforced = self.supports_conditional_cas
 
+    @staticmethod
+    def is_conditional_conflict(exc: Exception) -> bool:
+        response = getattr(exc, "response", {}) or {}
+        error = response.get("Error", {}) if isinstance(response, dict) else {}
+        code = str(error.get("Code", ""))
+        status = str((response.get("ResponseMetadata", {}) if isinstance(response, dict) else {}).get("HTTPStatusCode", ""))
+        return code in {"PreconditionFailed", "ConditionalRequestConflict", "412"} or status == "412"
+
     def put(self, key: str, data: bytes, *, if_none_match: bool = False, if_match: str | None = None, metadata=None) -> str:
         # ponytail: ETag If-Match is the atomic CAS; the metadata check rejects stale tokens early.
         metadata = dict(metadata or {})
@@ -299,7 +313,7 @@ class GraphArtifactStore:
         self.collection = collection
 
     def key(self, document_id: str, version: int) -> str:
-        return str(PurePosixPath("graphs", self.collection, document_id, f"v{int(version)}", "graph.json.gz"))
+        return str(PurePosixPath("graphs", _key_component(self.collection), _key_component(document_id), f"v{int(version)}", "graph.json.gz"))
 
     def write(self, claim: dict, canonical_bytes: bytes) -> tuple[str, str]:
         if not isinstance(canonical_bytes, bytes):
@@ -320,7 +334,12 @@ class GraphArtifactStore:
         }
         try:
             self.object_store.put(key, compressed, if_none_match=True, metadata=metadata)
-        except FileExistsError:
+        except Exception as exc:
+            is_conflict = isinstance(exc, FileExistsError) or bool(
+                getattr(self.object_store, "is_conditional_conflict", lambda error: False)(exc)
+            )
+            if not is_conflict:
+                raise
             existing, existing_metadata, _ = self.object_store.get(key)
             if (
                 gzip.decompress(existing) != canonical_bytes
@@ -384,7 +403,7 @@ class ManifestStore:
         self.backend = backend or {"kind": "unknown", "namespace": ""}
         # ponytail: this lock only reduces same-process duplicate reads; object-store CAS is authority.
         self._lock = threading.RLock()
-        self.manifest_key = str(PurePosixPath("graphs", collection, "manifest.json"))
+        self.manifest_key = str(PurePosixPath("graphs", _key_component(collection), "manifest.json"))
 
     def _default(self) -> dict:
         return {
@@ -491,16 +510,25 @@ class ManifestStore:
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
             return operation()
 
-    def mutate_collection(self, operation_id: str, fence_token: int, operation):
+    def mutate_collection(self, operation_id: str, fence_token: int, operation, attempt_id: str | None = None):
         with self._lock:
             manifest, _ = self._read()
-            if (
-                manifest.get("collection_operation_id") != operation_id
-                or manifest.get("pending_tombstone_set_digest") not in {"pending", None}
-                or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
-            ):
+            if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id):
                 raise RuntimeError("stale collection fence cannot mutate Qdrant")
-            return operation()
+            result = operation()
+            manifest, _ = self._read()
+            if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id):
+                raise RuntimeError("collection fence changed during Qdrant mutation")
+            return result
+
+    @staticmethod
+    def _collection_fence_matches(manifest: dict, operation_id: str, fence_token: int, attempt_id: str | None) -> bool:
+        return bool(
+            manifest.get("collection_operation_id") == operation_id
+            and (attempt_id is None or manifest.get("collection_attempt_id") == attempt_id)
+            and manifest.get("pending_tombstone_set_digest") in {"pending", None}
+            and int(manifest.get("collection_fence_token", 0)) == int(fence_token)
+        )
 
     def reserve(self, document_id: str, operation_id: str, source_fingerprint_value: str, *, mode: str = "append") -> dict:
         with self._lock:
@@ -559,6 +587,7 @@ class ManifestStore:
                 "tombstone_fence_token": None,
                 "document_fence_token": int(prior.get("document_fence_token", 0)) + 1 if prior else 1,
                 "collection_fence_token": int(manifest.get("collection_fence_token", 0)),
+                "collection_attempt_id": manifest.get("collection_attempt_id"),
                 "version_ledger": ledger + [{
                     "version": next_version,
                     "artifact_key": None,
@@ -592,6 +621,7 @@ class ManifestStore:
             "pending_attempt_id",
             "build_attempt_id",
             "collection_fence_token",
+            "collection_attempt_id",
             "document_fence_token",
             "pending_backend",
         )
@@ -784,6 +814,7 @@ class ManifestStore:
                     "tombstone_attempt_id": entry.get("tombstone_attempt_id"),
                     "tombstone_fence_token": int(entry.get("tombstone_fence_token", 0)),
                     "collection_fence_token": int(manifest.get("collection_fence_token", 0)),
+                    "collection_attempt_id": manifest.get("collection_attempt_id"),
                 },
             })
         return sorted(controls, key=lambda item: item["point_id"])
@@ -1034,6 +1065,10 @@ def build_document_graph(chunks, embeddings, document_id, *, entity_extractor=No
     }
 
 
+class GraphLifecycleError(RuntimeError):
+    """A graph claim could not reach a durable terminal state."""
+
+
 class PersistentGraphPipeline:
     def __init__(self, collection: str, object_store=None, manifests=None, artifacts=None):
         if manifests is None or artifacts is None:
@@ -1087,7 +1122,7 @@ class PersistentGraphPipeline:
                 self.manifests.assert_claim_current(claim)
                 entry = self.manifests.fail(claim, failure_reason)
             except Exception as fail_exc:
-                raise RuntimeError("graph failure status CAS failed; claim remains fail-closed") from fail_exc
+                raise GraphLifecycleError("graph failure status CAS failed; claim remains fail-closed") from fail_exc
             return {"status": entry.get("status", "unavailable"), "entry": entry, "failure_reason": str(exc)}
 
     def backfill(self, chunks, embeddings, document_id, **kwargs):

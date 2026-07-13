@@ -219,6 +219,53 @@ def test_qdrant_search_pushes_active_generation_and_plane_filters_server_side() 
     assert "gone" in serialized
 
 
+def test_qdrant_search_fails_closed_when_manifest_has_no_active_vectors() -> None:
+    class FakeClient:
+        def search(self, **kwargs):
+            raise AssertionError("backend search must not run without active generations")
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+    handler.set_active_vector_generations({})
+
+    assert handler.search([0.1, 0.2], limit=3) == []
+
+
+def test_replace_collection_baseline_does_not_delete_graph_controls_unless_explicitly_cleaned():
+    calls = []
+
+    class FakeClient:
+        def scroll(self, **kwargs):
+            del kwargs
+            return [
+                SimpleNamespace(id="old-vector", payload={"document_id": "paper-a", "vector_point": True}),
+                SimpleNamespace(id="old-document-control", payload={"graph_control_point": "document", "document_id": "paper-a"}),
+                SimpleNamespace(id="old-tombstone", payload={
+                    "graph_control_point": "tombstone",
+                    "document_id": "paper-old",
+                    "document_generation": 1,
+                    "tombstone_epoch": 2,
+                    "tombstone_operation_id": "replace-old",
+                    "tombstone_attempt_id": "attempt-old",
+                    "tombstone_fence_token": 3,
+                    "collection_fence_token": 3,
+                }),
+            ], None
+
+        def delete(self, **kwargs):
+            calls.append(kwargs)
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+    handler.capture_collection_baseline()
+    handler.finalize_replace_collection(
+        ["new-vector", "new-document-control"],
+        keep_control_ids={"new-document-control"},
+        remove_control_ids={"old-tombstone"},
+    )
+
+    assert calls[0]["points_selector"].points == ["old-vector"]
+    assert calls[1]["points_selector"].must[0].has_id == ["old-tombstone"]
+
+
 def test_scroll_point_records_rejects_repeated_offset() -> None:
     class FakeClient:
         calls = 0

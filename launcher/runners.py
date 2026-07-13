@@ -51,8 +51,9 @@ def _write_json_artifact(path: str, value: dict) -> str:
 def _build_ingest_graph_artifact(config, collection, document_id, chunks, vectors, ingest_mode):
     """Build the baseline graph after vector upload; vectors survive graph failure."""
     status_path = _artifact_path(config.get("artifact_dir") or "output", "graph_artifact_status.json")
+    lifecycle_error = None
     try:
-        from graph.persistent import PersistentGraphPipeline
+        from graph.persistent import GraphLifecycleError, PersistentGraphPipeline
 
         pipeline = config.get("graph_pipeline") or PersistentGraphPipeline(
             collection, object_store=config.get("graph_object_store")
@@ -65,6 +66,9 @@ def _build_ingest_graph_artifact(config, collection, document_id, chunks, vector
             claim=config.get("graph_claim"),
             qdrant=config.get("qdrant"),
         )
+    except GraphLifecycleError as exc:
+        lifecycle_error = exc
+        result = {"status": "unavailable", "failure_reason": f"{type(exc).__name__}: {exc}"}
     except Exception as exc:
         result = {"status": "unavailable", "failure_reason": f"{type(exc).__name__}: {exc}"}
     if config.get("graph_reservation_error") and result.get("status") == "unavailable":
@@ -79,6 +83,8 @@ def _build_ingest_graph_artifact(config, collection, document_id, chunks, vector
         "failure_reason": result.get("failure_reason"),
         "counts": (result.get("details") or {}).get("diagnostics", {}),
     })
+    if lifecycle_error is not None:
+        raise lifecycle_error
     return result
 
 
@@ -299,6 +305,7 @@ def run_ingest(config: dict) -> None:
         f"Document ID: {document_id}",
     ])
     qdrant = QdrantHandler(collection_name=collection)
+    config["qdrant"] = qdrant
     if graph_pipeline and ingest_mode == "replace-collection":
         collection_operation_id = f"replace-collection:{collection}:{document_id}"
         collection_tombstone_manifest = graph_pipeline.manifests.tombstone_documents(
@@ -308,6 +315,7 @@ def run_ingest(config: dict) -> None:
             graph_pipeline.manifests,
             collection_operation_id,
             collection_tombstone_manifest["collection_fence_token"],
+            collection_tombstone_manifest["collection_attempt_id"],
         )
     if graph_pipeline and graph_claim:
         qdrant.set_graph_claim(graph_pipeline.manifests, graph_claim)
@@ -317,6 +325,8 @@ def run_ingest(config: dict) -> None:
             document_id=document_id,
             vector_size=len(vectors[0]),
         )
+        if ingest_mode == "replace-collection":
+            qdrant.capture_collection_baseline()
         if graph_pipeline and collection_tombstone_manifest:
             tombstoned_entries = [
                 entry for entry in collection_tombstone_manifest.get("documents", {}).values()
@@ -332,6 +342,7 @@ def run_ingest(config: dict) -> None:
                     collection_tombstone_manifest["collection_operation_id"],
                     collection_tombstone_manifest["collection_fence_token"],
                     len(vectors[0]),
+                    collection_tombstone_manifest["collection_attempt_id"],
                 )
                 qdrant.verify_tombstone_control_points(
                     controls,
@@ -366,15 +377,20 @@ def run_ingest(config: dict) -> None:
                     graph_pipeline.manifests,
                     collection_tombstone_manifest["collection_operation_id"],
                     collection_tombstone_manifest["collection_fence_token"],
+                    collection_tombstone_manifest["collection_attempt_id"],
                 )
                 qdrant.finalize_replace_collection(
                     uploaded_point_ids,
-                    keep_control_ids={control["point_id"] for control in controls},
+                    keep_control_ids={control["point_id"] for control in controls} | {control_id},
+                    remove_control_ids=set(collection_tombstone_manifest.get("pending_tombstone_cleanup_ids", [])),
                 )
+                current_collection_manifest = graph_pipeline.manifests.read_snapshot().manifest
+                current_controls = graph_pipeline.manifests.tombstone_controls(current_collection_manifest)
                 qdrant.verify_tombstone_control_points(
-                    controls,
-                    expected_digest=collection_tombstone_manifest["tombstone_set_digest"],
+                    current_controls,
+                    expected_digest=graph_pipeline.manifests.tombstone_proof_digest(current_collection_manifest),
                 )
+                collection_tombstone_manifest = current_collection_manifest
                 graph_pipeline.manifests.finalize_tombstone_cleanup(
                     collection_tombstone_manifest["collection_operation_id"],
                     collection_tombstone_manifest["collection_fence_token"],

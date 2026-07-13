@@ -16,6 +16,7 @@ from qdrant_client.models import (
     Condition,
     FieldCondition,
     Filter,
+    HasIdCondition,
     IsEmptyCondition,
     MatchValue,
     PayloadSchemaType,
@@ -85,7 +86,7 @@ class QdrantHandler:
         self._graph_claim = None
         self._collection_claim = None
         self._denied_document_ids = set()
-        self._active_vector_generations = {}
+        self._active_vector_generations = None
         self._active_graph_selectors = {}
 
     def set_graph_claim(self, manifests, claim: dict) -> None:
@@ -99,11 +100,11 @@ class QdrantHandler:
 
         self._mutation_guard = guard
 
-    def set_collection_claim(self, manifests, operation_id: str, fence_token: int) -> None:
-        self._collection_claim = (manifests, operation_id, int(fence_token))
+    def set_collection_claim(self, manifests, operation_id: str, fence_token: int, attempt_id: str | None = None) -> None:
+        self._collection_claim = (manifests, operation_id, int(fence_token), attempt_id)
 
         def guard(operation):
-            return manifests.mutate_collection(operation_id, int(fence_token), operation)
+            return manifests.mutate_collection(operation_id, int(fence_token), operation, attempt_id)
 
         self._mutation_guard = guard
 
@@ -115,6 +116,10 @@ class QdrantHandler:
 
     def set_active_vector_generations(self, generations: dict[str, int]) -> None:
         self._active_vector_generations = {str(key): int(value) for key, value in generations.items()}
+
+    def capture_collection_baseline(self) -> None:
+        """Record pre-existing ids so stale cleanup cannot delete newer attempts."""
+        self._collection_baseline_records = self._scroll_point_records(include_control_points=True)
 
     def set_active_graph_selectors(self, selectors: dict[str, dict]) -> None:
         self._active_graph_selectors = {
@@ -388,6 +393,7 @@ class QdrantHandler:
                 "document_attempt_id": self._graph_claim["pending_attempt_id"],
                 "document_fence_token": self._graph_claim["document_fence_token"],
                 "collection_fence_token": self._graph_claim["collection_fence_token"],
+                "collection_attempt_id": self._graph_claim.get("collection_attempt_id"),
             })
         if chunk.get("context_only"):
             payload["context_only"] = True
@@ -453,6 +459,8 @@ class QdrantHandler:
             "source_fingerprint": claim["source_fingerprint"],
             "document_attempt_id": claim["pending_attempt_id"],
             "document_fence_token": claim["document_fence_token"],
+            "collection_fence_token": claim["collection_fence_token"],
+            "collection_attempt_id": claim.get("collection_attempt_id"),
             "point_count": len(items),
             "point_set_digest": point_set_digest,
         }
@@ -501,6 +509,7 @@ class QdrantHandler:
                 or payload.get("source_fingerprint") != claim["source_fingerprint"]
                 or payload.get("document_fence_token") != claim["document_fence_token"]
                 or payload.get("collection_fence_token") != claim["collection_fence_token"]
+                or payload.get("collection_attempt_id") != claim.get("collection_attempt_id")
                 or not payload.get("vector_point")
                 or payload.get("graph_point")
             ):
@@ -522,6 +531,7 @@ class QdrantHandler:
         operation_id: str,
         fence_token: int,
         vector_size: int,
+        attempt_id: str | None = None,
     ) -> list[dict]:
         controls = []
         for entry in sorted(entries, key=lambda item: str(item.get("document_id"))):
@@ -539,6 +549,7 @@ class QdrantHandler:
                 "tombstone_attempt_id": entry.get("tombstone_attempt_id"),
                 "tombstone_fence_token": int(fence_token),
                 "collection_fence_token": int(fence_token),
+                "collection_attempt_id": attempt_id,
             }
             self._mutate(lambda control_id=control_id, payload=payload: self.client.upsert(
                 collection_name=self.collection_name,
@@ -583,10 +594,31 @@ class QdrantHandler:
         keep_point_ids: list,
         claim: dict | None = None,
         keep_control_ids: set[str] | None = None,
+        remove_control_ids: set[str] | None = None,
     ) -> None:
         """Remove pre-existing points after a replacement upload has completed."""
         keep = {str(point_id) for point_id in keep_point_ids}
-        if claim:
+        remove_controls = {str(point_id) for point_id in (remove_control_ids or set())}
+        baseline = getattr(self, "_collection_baseline_records", None)
+        stale_tombstone_records = []
+        if baseline is not None:
+            records = baseline
+            stale_ids = [
+                point_id for point_id, payload in records
+                if str(point_id) not in keep
+                and not payload.get("graph_control_point")
+            ]
+            stale_ids.extend(
+                point_id for point_id, payload in records
+                if str(point_id) in remove_controls and payload.get("graph_control_point") == "tombstone"
+            )
+            stale_tombstone_records = [
+                (point_id, payload)
+                for point_id, payload in records
+                if str(point_id) in remove_controls and payload.get("graph_control_point") == "tombstone"
+            ]
+            stale_ids = [point_id for point_id in stale_ids if not any(point_id == item[0] for item in stale_tombstone_records)]
+        elif claim:
             records = self._scroll_point_records(include_control_points=keep_control_ids is not None)
             stale_ids = [
                 point_id for point_id, payload in records
@@ -601,11 +633,36 @@ class QdrantHandler:
             stale_ids = [point_id for point_id in self._scroll_point_ids() if str(point_id) not in keep]
 
         if stale_ids:
+            stale_ids = list(dict.fromkeys(stale_ids))
             self._mutate(lambda: self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=PointIdsList(points=stale_ids),
                 wait=True,
             ))
+        if stale_tombstone_records:
+            def delete_stale_tombstones():
+                for point_id, payload in stale_tombstone_records:
+                    conditions: list[Condition] = [HasIdCondition(has_id=[str(point_id)])]
+                    for key in (
+                        "graph_control_point",
+                        "document_id",
+                        "document_generation",
+                        "tombstone_epoch",
+                        "tombstone_operation_id",
+                        "tombstone_attempt_id",
+                        "tombstone_fence_token",
+                        "collection_fence_token",
+                        "collection_attempt_id",
+                    ):
+                        if payload.get(key) is not None:
+                            conditions.append(FieldCondition(key=key, match=MatchValue(value=payload[key])))
+                    self.client.delete(
+                        collection_name=self.collection_name,
+                        points_selector=Filter(must=conditions),
+                        wait=True,
+                    )
+
+            self._mutate(delete_stale_tombstones)
         print(f"✅ Replace-collection selesai; {len(stale_ids)} legacy points dihapus")
 
     def finalize_replace_document(self, document_id: str, keep_point_ids: list, claim: dict | None = None) -> None:
@@ -680,7 +737,9 @@ class QdrantHandler:
         ]
         must: list[Condition] = [IsEmptyCondition(is_empty=PayloadField(key="graph_control_point"))]
         must_not: list[Condition] = denied + [FieldCondition(key="graph_point", match=MatchValue(value=True))]
-        if self._active_vector_generations:
+        if self._active_vector_generations is not None and not self._active_vector_generations:
+            return []
+        if self._active_vector_generations is not None:
             active_documents: list[Filter] = []
             for document_id, generation in sorted(self._active_vector_generations.items()):
                 conditions: list[Condition] = [
@@ -698,7 +757,7 @@ class QdrantHandler:
             with_payload=True,
             with_vectors=False,
         )
-        if self._active_vector_generations:
+        if self._active_vector_generations is not None:
             filtered = []
             for result in results:
                 payload = result.payload or {}
