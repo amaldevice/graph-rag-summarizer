@@ -137,7 +137,7 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/52
 - [ ] Optional normalized path scores from #40 can be consumed without implementing path candidates or path reranking here.
 - [ ] Enhanced context artifacts contain allocations, per-signal values, selected/rejected chunks, and inclusion/rejection reasons.
 - [ ] Seam-focused runner tests keep the context allocator real while faking unrelated stages, plus one compact tiny-fixture regression proves the graph-to-community-to-context handoff.
-- [ ] Regression tests preserve Query-Only and Ingest Runs plus Full-Pipeline provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retries.
+- [ ] Regression tests preserve Query-Only, the external launcher/operator contract, and Qdrant document-safe identity/payload behavior, while covering the internal optional ingest graph-artifact stage from ADR 0002 plus Full-Pipeline provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retries.
 
 ## Dependency graph
 

@@ -170,7 +170,7 @@
   <div class="shell">
     <aside>
       <div class="brand">
-        <div class="brand-mark">Docs Canvas / 2026-07-12</div>
+        <div class="brand-mark">Docs Canvas / 2026-07-13</div>
         <h1>Issue Graph × Flow</h1>
         <p>Hubungan issue aktif dan dampak arsitekturnya.</p>
       </div>
@@ -185,7 +185,7 @@
       </nav>
       <div class="side-note">
         <strong>Scope</strong><br>
-        Fokus issue, bukan file diff. Status diambil dari GitHub pada 12 Juli 2026. PR aktif saat ini: <a href="https://github.com/amaldevice/graph-rag-summarizer/pull/53">#53</a>.
+        Fokus issue, bukan file diff. Status diambil dari GitHub pada 13 Juli 2026. PR #53 dan #54 sudah merge; stack docs aktif saat ini adalah PR #62–#66.
       </div>
     </aside>
 
@@ -195,16 +195,16 @@
         <h2>Dari ingest yang collision-prone ke graph pipeline yang auditable.</h2>
         <p class="lede">Canvas ini menjelaskan bagaimana issue yang sudah delivered, issue yang sedang aktif, dan issue graph setelah #45 saling menyusun ulang flow project — dari PDF masuk, retrieval, graph construction, community discovery, sampai context selection.</p>
         <div class="meta">
-          <span class="pill open">19 open issues in scope</span>
-          <span class="pill info">1 active PR: <a href="https://github.com/amaldevice/graph-rag-summarizer/pull/53">#53</a></span>
-          <span class="pill done">PR #54 merged into #53 base</span>
-          <span class="pill">Last checked: 2026-07-12</span>
+          <span class="pill open">17 open issues in scope</span>
+          <span class="pill info">5 active docs PRs: <a href="https://github.com/amaldevice/graph-rag-summarizer/pull/62">#62–#66</a></span>
+          <span class="pill done">PR #53 + #54 merged into main</span>
+          <span class="pill">Last checked: 2026-07-13</span>
         </div>
       </header>
 
       <section class="section">
         <div class="grid three">
-          <div class="card"><div class="metric">#12</div><div class="metric-label">Safe ingest implementation staged in the #53 branch; issue remains open until delivery reaches main.</div></div>
+          <div class="card"><div class="metric">#12</div><div class="metric-label">Safe ingest implementation landed via PR #54 → #53 → main; issue remains open pending explicit tracker closure.</div></div>
           <div class="card"><div class="metric">#25 / #33</div><div class="metric-label">Parent PRDs closed; their implementation slices are in merged PR #32.</div></div>
           <div class="card"><div class="metric">#45 → #52</div><div class="metric-label">Adaptive global graph program; #45 and #49 are the initial execution frontier.</div></div>
         </div>
@@ -236,7 +236,7 @@
         </div>
         <div class="callout warn" style="margin-top:14px">
           <strong>State boundary penting</strong>
-          <p>#34 sudah masuk <code>main</code>. Implementasi #12 sudah merge ke branch `docs/issue-44-adaptive-global-graph-prd` melalui PR #54, tetapi PR #53 masih open menuju <code>main</code>. Jadi label “after” untuk #12 berarti <em>staged in active PR chain</em>, bukan sudah production/main.</p>
+          <p>#34 sudah masuk <code>main</code>. Implementasi #12 sudah merge melalui PR #54 → #53 → <code>main</code>; issue #12 masih open hanya karena tracker belum ditutup eksplisit. Label “after” untuk #12 berarti sudah tersedia di branch utama.</p>
         </div>
       </section>
 
@@ -279,13 +279,13 @@
           <table>
             <thead><tr><th>Issue</th><th>Status / role</th><th>Flow impact</th><th>Before → after</th></tr></thead>
             <tbody>
-              <tr class="issue-row" data-state="open" data-kind="parent"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/12">#12</a></td><td><span class="pill open">OPEN</span><br>ingest PRD; implementation staged via #54</td><td>PDF → Qdrant</td><td>one-document safety → document-safe append/replace IDs</td></tr>
+              <tr class="issue-row" data-state="open" data-kind="parent"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/12">#12</a></td><td><span class="pill open">OPEN</span><br>ingest PRD; implementation landed via #54 → #53 → main</td><td>PDF → Qdrant</td><td>one-document safety → document-safe append/replace IDs</td></tr>
               <tr class="issue-row" data-state="closed" data-kind="parent"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/25">#25</a></td><td><span class="pill done">CLOSED</span><br>parent tracking</td><td>Full-Pipeline baseline</td><td>flowchart gap → delivered slices #26–#31 / PR #32</td></tr>
               <tr class="issue-row" data-state="closed" data-kind="parent"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/33">#33</a></td><td><span class="pill done">CLOSED</span><br>parent tracking</td><td>Qdrant write boundary</td><td>one oversized request → bounded batches via #34</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/35">#35</a> / <a href="https://github.com/amaldevice/graph-rag-summarizer/issues/43">#43</a></td><td><span class="pill open">OPEN</span><br>evaluation follow-ups</td><td>quality gate</td><td>metric slots → lightweight first, heavy optional adapters later</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/36">#36</a></td><td><span class="pill open">OPEN</span><br>table/figure evidence</td><td>preprocess → retrieval</td><td>layout metadata → first-class visual/table evidence</td></tr>
-              <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/37">#37</a></td><td><span class="pill open">OPEN</span><br>hierarchy expansion</td><td>ingest → context</td><td>flat hierarchy fields → parent/child context recovery</td></tr>
-              <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/38">#38</a></td><td><span class="pill open">OPEN</span><br>tiny sentence filter</td><td>pruning</td><td>short noisy chunks → cleaner selected context</td></tr>
+              <tr class="issue-row" data-state="closed"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/37">#37</a></td><td><span class="pill done">CLOSED</span><br>hierarchy expansion delivered</td><td>ingest → context</td><td>flat hierarchy fields → parent/child context recovery</td></tr>
+              <tr class="issue-row" data-state="closed"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/38">#38</a></td><td><span class="pill done">CLOSED</span><br>tiny sentence filter delivered</td><td>pruning</td><td>short noisy chunks → cleaner selected context</td></tr>
               <tr class="issue-row" data-state="open" data-kind="graph"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/39">#39</a></td><td><span class="pill open">OPEN</span><br>graph prerequisite</td><td>entity/relation extraction</td><td>provider-dependent relation path → explicit availability + safe fallback</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/40">#40</a></td><td><span class="pill open">OPEN</span><br>optional graph signal</td><td>path-aware pruning</td><td>heuristic paths → scored candidates and rejection reasons</td></tr>
               <tr class="issue-row" data-state="open"><td><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/41">#41</a></td><td><span class="pill open">OPEN</span><br>reduction follow-up</td><td>RAPTOR reduction</td><td>fixed summary batches → embedding-similar groups</td></tr>
@@ -314,8 +314,8 @@
           <details>
             <summary>2. Retrieval and evidence preparation</summary>
             <div class="detail-body">
-              <p><strong>Delivered baseline:</strong> #26 preserves hierarchy/layout metadata, #27 adds path-aware selection, and #36–#38 target the remaining evidence/context gaps.</p>
-              <p><strong>Open direction:</strong> #37 would let a child sentence recover parent paragraph/section context; #38 would remove tiny noisy sentences; #36 would make tables and figures first-class evidence. #40 adds a richer optional path signal.</p>
+              <p><strong>Delivered baseline:</strong> #26 preserves hierarchy/layout metadata, #27 adds path-aware selection, and #37–#38 now deliver bounded parent context and tiny-sentence filtering.</p>
+              <p><strong>Open direction:</strong> #36 would make tables and figures first-class evidence. #40 adds a richer optional path signal.</p>
               <p><strong>Architecture effect:</strong> selection moves from “top similar chunks” to structure-aware evidence with explicit reasons, without changing Query-Only or Ingest launcher modes.</p>
             </div>
           </details>
@@ -352,9 +352,9 @@
           <div class="card"><h4>Qdrant remains the vector seam</h4><p>Document-safe point IDs and payload metadata are enough for #12. No Neo4j is required for the current flow.</p></div>
           <div class="card"><h4>No Microsoft GraphRAG import</h4><p>#44 builds bounded local contracts and artifacts on existing NetworkX/Leiden/embedding seams; it does not reproduce a second framework.</p></div>
           <div class="card"><h4>Artifact-first observability</h4><p>Adaptive decisions should write attempt-scoped JSON artifacts: evidence, candidates, verification, topology, communities, and context budget.</p></div>
-          <div class="card"><h4>Ingest graph is a separate next step</h4><p>#44 explicitly keeps Ingest Run unchanged. Persistent graph-at-ingest, including R2/Parquet artifact lifecycle, needs its own issue after #12 delivery.</p></div>
+          <div class="card"><h4>Persistent graph-at-ingest is next delivery</h4><p>ADR 0002 is the decision record for persistent graph-at-ingest. PR #62 still needs a separate implementation delivery issue for PR A, and the R2 manifest/artifact contract is planned delivery rather than a standalone unplanned issue.</p></div>
         </div>
-        <div class="callout good" style="margin-top:14px"><strong>Practical order</strong><p>Merge active PR #53 to deliver the planning record and staged #12 changes to <code>main</code>. Then start the independent frontier #45 and #49. Do not wait for #41 before #51: both reuse embeddings, but their pipeline stages are different.</p></div>
+        <div class="callout good" style="margin-top:14px"><strong>Practical order</strong><p>Review and merge the active docs stack #62 → #63 → #64 → #65, plus #66, into <code>main</code>. Then create the separate PR A delivery issue for persistent ingest graph work, followed by bounded frontiers #45 and #49. Do not wait for #41 before #51: both reuse embeddings, but their pipeline stages are different.</p></div>
       </section>
 
       <section class="section" id="references">
@@ -363,7 +363,7 @@
           <div class="card">
             <h4>Active GitHub work</h4>
             <ul>
-              <li><a href="https://github.com/amaldevice/graph-rag-summarizer/pull/53">PR #53 — Issue #44 planning record</a></li>
+              <li><a href="https://github.com/amaldevice/graph-rag-summarizer/pull/62">PR #62–#66 — ADR and implementation handoff stack</a></li>
               <li><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/12">Issue #12 — safe PDF ingest</a></li>
               <li><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/44">Issue #44 — adaptive global graph parent</a></li>
               <li><a href="https://github.com/amaldevice/graph-rag-summarizer/issues/45">Issue #45–#52 — adaptive graph slices</a></li>
@@ -381,7 +381,7 @@
         </div>
       </section>
 
-      <footer class="footer">Generated as a static docs canvas. Status snapshot: GitHub checked 2026-07-12. Use the issue links for the latest state; this page is explanatory, not the source of truth.</footer>
+      <footer class="footer">Generated as a static docs canvas. Status snapshot: GitHub checked 2026-07-13. Use the issue links for the latest state; this page is explanatory, not the source of truth.</footer>
     </main>
   </div>
   <script>
