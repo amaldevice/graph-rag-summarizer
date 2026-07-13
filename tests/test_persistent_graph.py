@@ -3,6 +3,7 @@ import hashlib
 import json
 
 import networkx as nx
+import pytest
 
 from graph.persistent import (
     GraphArtifactStore,
@@ -67,6 +68,7 @@ def test_manifest_reserves_versions_and_publishes_only_validated_artifact():
     claim = manifests.reserve("paper", "op-1", "fingerprint-1", mode="append")
     assert claim["pending_version"] == 1
     key, digest = artifacts.write(claim, b'{"document_id":"paper"}')
+    manifests.bind_artifact(claim, key, digest)
     published = manifests.publish(claim, key, digest)
     assert published["status"] == "available"
     assert published["active_version"] == 1
@@ -74,6 +76,7 @@ def test_manifest_reserves_versions_and_publishes_only_validated_artifact():
     replacement = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-document")
     assert replacement["pending_version"] == 2
     assert manifests.get("paper")["status"] == "pending"
+    manifests.bind_artifact(replacement, "graphs/papers/paper/v2/graph.json.gz", "digest-2")
     assert manifests.publish(replacement, "graphs/papers/paper/v2/graph.json.gz", "digest-2")["active_version"] == 2
     assert manifests.get("paper")["previous_pointer"]["version"] == 1
 
@@ -98,6 +101,84 @@ def test_manifest_snapshot_hashes_exact_stored_bytes():
 
     assert snapshot.data == raw
     assert snapshot.digest == hashlib.sha256(raw).hexdigest()
+
+
+def test_manifest_full_snapshot_cas_rejects_stale_writer():
+    objects = InMemoryObjectStore()
+    first = ManifestStore(objects, collection="papers")
+    second = ManifestStore(objects, collection="papers")
+    snapshot = first.read_snapshot()
+
+    candidate = dict(snapshot.manifest)
+    candidate["collection_attempt_id"] = "writer-a"
+    first._write(candidate, snapshot)
+
+    stale_candidate = dict(snapshot.manifest)
+    stale_candidate["collection_attempt_id"] = "writer-b"
+    with pytest.raises(RuntimeError, match="snapshot changed"):
+        second._write(stale_candidate, snapshot)
+
+
+def test_reserve_same_operation_resumes_exact_claim():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    first = manifests.reserve("paper", "op-1", "fingerprint", mode="replace-document")
+    resumed = manifests.reserve("paper", "op-1", "fingerprint", mode="replace-document")
+
+    assert resumed["pending_version"] == first["pending_version"]
+    assert resumed["pending_attempt_id"] == first["pending_attempt_id"]
+    assert resumed["build_attempt_id"] == first["build_attempt_id"]
+
+
+def test_tombstone_proof_burns_versions_and_commits_control_digest():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    first = manifests.reserve("paper", "op-1", "fingerprint-1")
+    manifests.bind_artifact(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
+    manifests.publish(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
+    pending = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-document")
+    tombstone = manifests.tombstone_documents(set(), "replace-1")
+
+    states = {item["version"]: item["state"] for item in tombstone["documents"]["paper"]["version_ledger"]}
+    assert states == {1: "tombstoned", 2: "aborted"}
+    assert tombstone["documents"]["paper"]["active_version"] is None
+    assert tombstone["documents"]["paper"]["pending_version"] is None
+    controls = manifests.tombstone_controls(tombstone)
+    committed = manifests.commit_tombstone_proof(controls)
+
+    assert committed["pending_tombstone_set_digest"] is None
+    assert committed["tombstone_set_digest"] == hashlib.sha256(canonical_json_bytes(controls)).hexdigest()
+    assert pending["pending_version"] == 2
+
+
+def test_tombstone_proof_rejects_modified_payload():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve("paper", "op-1", "fingerprint")
+    manifests.bind_artifact(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
+    manifests.publish(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
+    tombstone = manifests.tombstone_documents(set(), "replace-1")
+    controls = manifests.tombstone_controls(tombstone)
+    controls[0]["payload"]["tombstone_operation_id"] = "wrong"
+
+    with pytest.raises(RuntimeError, match="tombstone proof"):
+        manifests.commit_tombstone_proof(controls)
+
+
+def test_artifact_read_rejects_noncanonical_json_body():
+    objects = InMemoryObjectStore()
+    artifacts = GraphArtifactStore(objects, collection="papers")
+    claim = {
+        "document_id": "paper",
+        "pending_version": 1,
+        "document_generation": 1,
+        "source_fingerprint": "fingerprint",
+        "operation_id": "op",
+        "pending_attempt_id": "attempt",
+        "build_attempt_id": "build",
+        "pending_backend": {"kind": "memory", "namespace": "test"},
+    }
+    key, digest = artifacts.write(claim, b'{"b":1,"a":2}')
+
+    with pytest.raises(ValueError, match="canonical"):
+        artifacts.read(key, digest)
 
 
 def test_pipeline_publishes_graph_and_reader_returns_temporary_view():
@@ -130,6 +211,7 @@ def test_replace_collection_tombstones_omitted_documents():
     objects = InMemoryObjectStore()
     manifests = ManifestStore(objects, collection="papers")
     claim = manifests.reserve("paper-a", "op-a", "fp-a")
+    manifests.bind_artifact(claim, "graphs/papers/paper-a/v1/graph.json.gz", "a")
     manifests.publish(claim, "graphs/papers/paper-a/v1/graph.json.gz", "a")
     manifests.tombstone_documents({"paper-b"}, "replace-1")
     assert manifests.get("paper-a")["status"] == "tombstoned"

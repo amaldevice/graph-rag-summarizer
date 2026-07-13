@@ -13,6 +13,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import ApiException, ResponseHandlingException, UnexpectedResponse
 from qdrant_client.models import (
     Distance,
+    Condition,
     FieldCondition,
     Filter,
     IsEmptyCondition,
@@ -85,6 +86,7 @@ class QdrantHandler:
         self._collection_claim = None
         self._denied_document_ids = set()
         self._active_vector_generations = {}
+        self._active_vector_attempts = {}
 
     def set_graph_claim(self, manifests, claim: dict) -> None:
         """Require a current manifest claim before graph-stage Qdrant writes."""
@@ -111,8 +113,13 @@ class QdrantHandler:
     def set_denied_document_ids(self, document_ids) -> None:
         self._denied_document_ids = {str(document_id) for document_id in document_ids}
 
-    def set_active_vector_generations(self, generations: dict[str, int]) -> None:
+    def set_active_vector_generations(self, generations: dict[str, int], attempts: dict[str, str] | None = None) -> None:
         self._active_vector_generations = {str(key): int(value) for key, value in generations.items()}
+        self._active_vector_attempts = {
+            str(key): str(value)
+            for key, value in (attempts or {}).items()
+            if value is not None
+        }
 
     # ========================================================
     # CREATE COLLECTION
@@ -289,8 +296,12 @@ class QdrantHandler:
             normalized["document_id"] = payload["document_id"]
         if payload.get("document_generation") is not None:
             normalized["document_generation"] = payload["document_generation"]
+        if payload.get("document_attempt_id") is not None:
+            normalized["document_attempt_id"] = payload["document_attempt_id"]
         if payload.get("vector_point") is not None:
             normalized["vector_point"] = payload["vector_point"]
+        if payload.get("graph_point") is not None:
+            normalized["graph_point"] = payload["graph_point"]
         if payload.get("chunk_uid") is not None:
             normalized["chunk_uid"] = payload["chunk_uid"]
         elif payload.get("document_id") is not None:
@@ -327,6 +338,7 @@ class QdrantHandler:
             "page": page_no,
             "image_url": image_url,
             "vector_point": True,
+            "graph_point": False,
             "document_generation": int(chunk.get("document_generation", 1)),
         }
         if document_id:
@@ -482,27 +494,45 @@ class QdrantHandler:
         self._tombstone_controls = controls
         return controls
 
-    def verify_tombstone_control_points(self, controls: list[dict]) -> None:
-        retrieve = getattr(self.client, "retrieve", None)
-        if retrieve is None:
-            raise RuntimeError("Qdrant cannot read back tombstone control points")
-        for control in controls:
-            points = retrieve(
-                collection_name=self.collection_name,
-                ids=[control["point_id"]],
-                with_payload=True,
-                with_vectors=False,
-            )
-            if len(points) != 1 or (points[0].payload or {}) != control["payload"]:
-                raise RuntimeError("tombstone control point proof mismatch")
+    def verify_tombstone_control_points(self, controls: list[dict], expected_digest: str | None = None) -> None:
+        from graph.persistent import canonical_json_bytes
 
-    def finalize_replace_collection(self, keep_point_ids: list, claim: dict | None = None) -> None:
+        expected = sorted(controls, key=lambda item: str(item["point_id"]))
+        actual = self._enumerate_tombstone_controls()
+        if actual != expected:
+            raise RuntimeError("tombstone control point proof mismatch")
+        digest = hashlib.sha256(canonical_json_bytes(actual)).hexdigest()
+        if expected_digest is not None and digest != expected_digest:
+            raise RuntimeError("tombstone control point digest mismatch")
+
+    def _enumerate_tombstone_controls(self) -> list[dict]:
+        controls = [
+            {"point_id": str(point_id), "payload": payload}
+            for point_id, payload in self._scroll_point_records(
+                Filter(must=[FieldCondition(key="graph_control_point", match=MatchValue(value="tombstone"))]),
+                include_control_points=True,
+            )
+        ]
+        return sorted(controls, key=lambda item: item["point_id"])
+
+    def finalize_replace_collection(
+        self,
+        keep_point_ids: list,
+        claim: dict | None = None,
+        keep_control_ids: set[str] | None = None,
+    ) -> None:
         """Remove pre-existing points after a replacement upload has completed."""
         keep = {str(point_id) for point_id in keep_point_ids}
         if claim:
+            records = self._scroll_point_records(include_control_points=keep_control_ids is not None)
             stale_ids = [
-                point_id for point_id, payload in self._scroll_point_records()
-                if str(point_id) not in keep and not payload.get("graph_control_point")
+                point_id for point_id, payload in records
+                if str(point_id) not in keep
+                and (
+                    not payload.get("graph_control_point")
+                    or keep_control_ids is None
+                    or str(point_id) not in keep_control_ids
+                )
             ]
         else:
             stale_ids = [point_id for point_id in self._scroll_point_ids() if str(point_id) not in keep]
@@ -543,11 +573,17 @@ class QdrantHandler:
     def _scroll_point_ids(self, scroll_filter: Filter | None = None) -> list:
         return [point_id for point_id, _ in self._scroll_point_records(scroll_filter)]
 
-    def _scroll_point_records(self, scroll_filter: Filter | None = None) -> list[tuple[str | int, dict]]:
+    def _scroll_point_records(
+        self,
+        scroll_filter: Filter | None = None,
+        *,
+        include_control_points: bool = False,
+    ) -> list[tuple[str | int, dict]]:
         scroll_offset = None
+        seen_offsets = set()
         points_with_payload = []
         while True:
-            points, scroll_offset = self.client.scroll(
+            points, next_offset = self.client.scroll(
                 collection_name=self.collection_name,
                 scroll_filter=scroll_filter,
                 limit=256,
@@ -555,12 +591,19 @@ class QdrantHandler:
                 with_payload=True,
                 with_vectors=False,
             )
+            if points is None:
+                raise RuntimeError("Qdrant point scan returned no page")
             points_with_payload.extend(
                 (point.id, point.payload or {}) for point in points
-                if not (point.payload or {}).get("graph_control_point")
+                if include_control_points or not (point.payload or {}).get("graph_control_point")
             )
-            if scroll_offset is None:
+            if next_offset is None:
                 break
+            marker = str(next_offset)
+            if marker in seen_offsets:
+                raise RuntimeError("Qdrant point scan returned a repeated offset")
+            seen_offsets.add(marker)
+            scroll_offset = next_offset
         return points_with_payload
 
     # ========================================================
@@ -568,28 +611,49 @@ class QdrantHandler:
     # Cari chunk paling relevan dari query vector
     # ========================================================
     def search(self, query_vector: list, limit: int = 5):
-        denied = [
+        denied: list[Condition] = [
             FieldCondition(key="document_id", match=MatchValue(value=document_id))
             for document_id in sorted(self._denied_document_ids)
         ]
+        must: list[Condition] = [IsEmptyCondition(is_empty=PayloadField(key="graph_control_point"))]
+        must_not: list[Condition] = denied + [FieldCondition(key="graph_point", match=MatchValue(value=True))]
+        if self._active_vector_generations:
+            active_documents: list[Filter] = []
+            for document_id, generation in sorted(self._active_vector_generations.items()):
+                conditions: list[Condition] = [
+                    FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+                    FieldCondition(key="document_generation", match=MatchValue(value=generation)),
+                    FieldCondition(key="vector_point", match=MatchValue(value=True)),
+                ]
+                attempt_id = self._active_vector_attempts.get(document_id)
+                if attempt_id is not None:
+                    conditions.append(FieldCondition(key="document_attempt_id", match=MatchValue(value=attempt_id)))
+                active_documents.append(Filter(must=conditions))
+            must.append(Filter(should=active_documents))
         results = self.client.search(
             collection_name=self.collection_name,
             query_vector=query_vector,
             limit=limit,
-            query_filter=Filter(
-                must=[IsEmptyCondition(is_empty=PayloadField(key="graph_control_point"))],
-                must_not=denied,
-            ),
+            query_filter=Filter(must=must, must_not=must_not),
             with_payload=True,
             with_vectors=False,
         )
         if self._active_vector_generations:
-            results = [
-                result for result in results
-                if (result.payload or {}).get("document_id") in self._active_vector_generations
-                and (result.payload or {}).get("document_generation") == self._active_vector_generations[(result.payload or {}).get("document_id")]
-                and (result.payload or {}).get("vector_point", True)
-            ]
+            filtered = []
+            for result in results:
+                payload = result.payload or {}
+                document_id = payload.get("document_id")
+                if not isinstance(document_id, str):
+                    continue
+                if payload.get("document_generation") != self._active_vector_generations.get(document_id):
+                    continue
+                if not payload.get("vector_point") or payload.get("graph_point"):
+                    continue
+                active_attempt = self._active_vector_attempts.get(document_id)
+                if active_attempt is not None and payload.get("document_attempt_id") != active_attempt:
+                    continue
+                filtered.append(result)
+            results = filtered
         return results
 
     # ========================================================

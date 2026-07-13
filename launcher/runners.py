@@ -128,8 +128,18 @@ def _configure_query_denial(qdrant, collection, object_store=None):
 
     manifests, _ = default_graph_services(collection, object_store)
     snapshot = manifests.read_snapshot()
-    if snapshot.manifest.get("pending_tombstone_set_digest") is not None:
+    if (
+        snapshot.manifest.get("pending_tombstone_set_digest") is not None
+        or snapshot.manifest.get("collection_operation_id") is not None
+    ):
         raise RuntimeError("tombstone proof is pending; query denied")
+    manifests_tombstones = manifests.tombstone_controls(snapshot.manifest)
+    qdrant.verify_tombstone_control_points(
+        manifests_tombstones,
+        expected_digest=snapshot.manifest.get("tombstone_set_digest"),
+    )
+    if not manifests.revalidate(snapshot):
+        raise RuntimeError("manifest changed during tombstone preflight")
     denied = [
         document_id
         for document_id, entry in snapshot.manifest.get("documents", {}).items()
@@ -140,6 +150,10 @@ def _configure_query_denial(qdrant, collection, object_store=None):
         document_id: entry["document_generation"]
         for document_id, entry in snapshot.manifest.get("documents", {}).items()
         if entry.get("status") != "tombstoned" and entry.get("document_generation") is not None
+    }, {
+        document_id: entry["document_attempt_id"]
+        for document_id, entry in snapshot.manifest.get("documents", {}).items()
+        if entry.get("status") != "tombstoned" and entry.get("document_attempt_id") is not None
     })
 
 
@@ -294,15 +308,23 @@ def run_ingest(config: dict) -> None:
                 entry for entry in collection_tombstone_manifest.get("documents", {}).values()
                 if entry.get("status") == "tombstoned"
             ]
-            controls = qdrant.write_tombstone_control_points(
-                tombstoned_entries,
-                collection_tombstone_manifest["tombstone_epoch"],
-                collection_tombstone_manifest["collection_operation_id"],
-                collection_tombstone_manifest["collection_fence_token"],
-                len(vectors[0]),
-            )
-            qdrant.verify_tombstone_control_points(controls)
-            graph_pipeline.manifests.commit_tombstone_proof(controls)
+            controls = graph_pipeline.manifests.tombstone_controls(collection_tombstone_manifest)
+            pending_digest = collection_tombstone_manifest.get("pending_tombstone_set_digest")
+            if pending_digest is not None:
+                controls = qdrant.write_tombstone_control_points(
+                    tombstoned_entries,
+                    collection_tombstone_manifest["tombstone_epoch"],
+                    collection_tombstone_manifest["collection_operation_id"],
+                    collection_tombstone_manifest["collection_fence_token"],
+                    len(vectors[0]),
+                )
+                qdrant.verify_tombstone_control_points(controls, expected_digest=pending_digest)
+                graph_pipeline.manifests.commit_tombstone_proof(controls)
+            else:
+                qdrant.verify_tombstone_control_points(
+                    controls,
+                    expected_digest=collection_tombstone_manifest["tombstone_set_digest"],
+                )
             graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
             config["graph_claim"] = graph_claim
             qdrant.set_graph_claim(graph_pipeline.manifests, graph_claim)
@@ -326,7 +348,10 @@ def run_ingest(config: dict) -> None:
                     collection_tombstone_manifest["collection_operation_id"],
                     collection_tombstone_manifest["collection_fence_token"],
                 )
-                qdrant.finalize_replace_collection(uploaded_point_ids)
+                qdrant.finalize_replace_collection(
+                    uploaded_point_ids,
+                    keep_control_ids={control["point_id"] for control in controls},
+                )
                 graph_pipeline.manifests.release_collection_fence(
                     collection_tombstone_manifest["collection_operation_id"],
                     collection_tombstone_manifest["collection_fence_token"],

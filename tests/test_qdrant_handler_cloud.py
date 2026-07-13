@@ -163,6 +163,79 @@ def test_graph_claim_uses_attempt_points_and_readback_control_proof() -> None:
     assert objects[control_id].payload["point_count"] == 1
 
 
+def test_tombstone_proof_enumerates_the_complete_qdrant_deny_set() -> None:
+    objects = {}
+
+    class FakeClient:
+        def upsert(self, collection_name, points) -> None:
+            del collection_name
+            for point in points:
+                objects[str(point.id)] = point
+
+        def scroll(self, **kwargs):
+            del kwargs
+            return list(objects.values()), None
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+    controls = handler.write_tombstone_control_points(
+        [{"document_id": "paper-a", "document_generation": 1, "tombstone_attempt_id": "op:paper-a"}],
+        epoch=1,
+        operation_id="op",
+        fence_token=4,
+        vector_size=2,
+    )
+    objects["extra"] = SimpleNamespace(
+        id="extra",
+        payload={
+            "graph_control_point": "tombstone",
+            "graph_tombstoned": True,
+            "tombstone_complete": True,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="tombstone"):
+        handler.verify_tombstone_control_points(controls)
+
+
+def test_qdrant_search_pushes_active_generation_and_attempt_filters_server_side() -> None:
+    captured = {}
+
+    class FakeClient:
+        def search(self, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+    handler.set_denied_document_ids(["gone"])
+    handler.set_active_vector_generations({"paper-a": 2}, {"paper-a": "attempt-2"})
+    handler.search([0.1, 0.2], limit=3)
+
+    query_filter = captured["query_filter"].model_dump(exclude_none=True)
+    assert captured["limit"] == 3
+    serialized = str(query_filter)
+    assert "document_generation" in serialized
+    assert "attempt-2" in serialized
+    assert "graph_point" in serialized
+    assert "gone" in serialized
+
+
+def test_scroll_point_records_rejects_repeated_offset() -> None:
+    class FakeClient:
+        calls = 0
+
+        def scroll(self, **kwargs):
+            del kwargs
+            self.calls += 1
+            if self.calls == 1:
+                return [SimpleNamespace(id="p1", payload={"document_id": "paper-a"})], "cursor"
+            return [], "cursor"
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+
+    with pytest.raises(RuntimeError, match="repeated offset"):
+        handler._scroll_point_records()
+
+
 def test_search_as_chunks_preserves_document_identity() -> None:
     class FakeResult:
         id = stable_point_id("paper-a", 7)
