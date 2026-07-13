@@ -57,7 +57,9 @@ def test_canonical_graph_bytes_and_source_fingerprint_are_stable():
 
 
 def test_canonical_json_normalizes_ecmascript_number_ranges():
-    assert canonical_json_bytes({"small": 1e-6, "large": 1e20}) == b'{"large":100000000000000000000,"small":0.000001}'
+    assert canonical_json_bytes({"small": 1e-6, "large": 1e20, "huge": 1e21, "whole": 1.0}) == (
+        b'{"huge":1e+21,"large":100000000000000000000,"small":0.000001,"whole":1}'
+    )
 
 
 def test_manifest_reserves_versions_and_publishes_only_validated_artifact():
@@ -69,6 +71,7 @@ def test_manifest_reserves_versions_and_publishes_only_validated_artifact():
     assert claim["pending_version"] == 1
     key, digest = artifacts.write(claim, b'{"document_id":"paper"}')
     manifests.bind_artifact(claim, key, digest)
+    assert manifests.get("paper")["version_ledger"][0]["artifact_digest"] == digest
     published = manifests.publish(claim, key, digest)
     assert published["status"] == "available"
     assert published["active_version"] == 1
@@ -178,6 +181,11 @@ def test_tombstoned_document_reintroduction_stages_deny_cleanup():
     assert manifests.tombstone_controls(reintroduction) == []
     fresh_claim = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-collection")
     assert fresh_claim["document_generation"] == 2
+    committed = manifests.commit_tombstone_proof([])
+    assert committed["pending_tombstone_set_digest"] == "pending"
+    finalized = manifests.finalize_tombstone_cleanup("replace-2", reintroduction["collection_fence_token"])
+    assert finalized["pending_tombstone_set_digest"] is None
+    assert finalized["tombstone_set_digest"] == manifests.tombstone_proof_digest(finalized)
 
 
 def test_artifact_read_rejects_noncanonical_json_body():

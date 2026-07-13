@@ -86,6 +86,7 @@ class QdrantHandler:
         self._collection_claim = None
         self._denied_document_ids = set()
         self._active_vector_generations = {}
+        self._active_graph_selectors = {}
 
     def set_graph_claim(self, manifests, claim: dict) -> None:
         """Require a current manifest claim before graph-stage Qdrant writes."""
@@ -114,6 +115,40 @@ class QdrantHandler:
 
     def set_active_vector_generations(self, generations: dict[str, int]) -> None:
         self._active_vector_generations = {str(key): int(value) for key, value in generations.items()}
+
+    def set_active_graph_selectors(self, selectors: dict[str, dict]) -> None:
+        self._active_graph_selectors = {
+            str(document_id): {
+                "document_generation": int(selector["document_generation"]),
+                "document_attempt_id": str(selector["document_attempt_id"]),
+            }
+            for document_id, selector in selectors.items()
+        }
+
+    def active_graph_filter(self) -> Filter:
+        branches: list[Filter] = []
+        for document_id, selector in sorted(self._active_graph_selectors.items()):
+            branches.append(Filter(must=[
+                FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+                FieldCondition(key="document_generation", match=MatchValue(value=selector["document_generation"])),
+                FieldCondition(key="document_attempt_id", match=MatchValue(value=selector["document_attempt_id"])),
+                FieldCondition(key="graph_point", match=MatchValue(value=True)),
+            ]))
+        must: list[Condition] = [Filter(should=branches)] if branches else []
+        return Filter(
+            must=must,
+            must_not=[
+                FieldCondition(key="graph_control_point", match=MatchValue(value="document")),
+                FieldCondition(key="graph_control_point", match=MatchValue(value="tombstone")),
+                *[
+                    FieldCondition(key="document_id", match=MatchValue(value=document_id))
+                    for document_id in sorted(self._denied_document_ids)
+                ],
+            ],
+        )
+
+    def scroll_active_graph_points(self) -> list[tuple[str | int, dict]]:
+        return self._scroll_point_records(self.active_graph_filter())
 
     # ========================================================
     # CREATE COLLECTION
@@ -411,6 +446,7 @@ class QdrantHandler:
         ))
         payload = {
             "graph_control_point": "document",
+            "graph_point": True,
             "document_id": claim["document_id"],
             "document_complete": True,
             "document_generation": claim["document_generation"],
@@ -464,6 +500,7 @@ class QdrantHandler:
                 or payload.get("document_attempt_id") != claim["pending_attempt_id"]
                 or payload.get("source_fingerprint") != claim["source_fingerprint"]
                 or payload.get("document_fence_token") != claim["document_fence_token"]
+                or payload.get("collection_fence_token") != claim["collection_fence_token"]
                 or not payload.get("vector_point")
                 or payload.get("graph_point")
             ):
@@ -492,6 +529,7 @@ class QdrantHandler:
             control_id = str(uuid5(NAMESPACE_URL, f"graph-control:tombstone:{self.collection_name}:{document_id}"))
             payload = {
                 "graph_control_point": "tombstone",
+                "graph_point": True,
                 "graph_tombstoned": True,
                 "tombstone_complete": True,
                 "document_id": document_id,

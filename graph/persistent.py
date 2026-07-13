@@ -43,7 +43,7 @@ def _jcs_encode(value: Any) -> str:
             return "0"
         text = repr(value).lower()
         if "e" not in text:
-            return text
+            return text[:-2] if text.endswith(".0") else text
         mantissa, exponent = text.split("e")
         exponent_value = int(exponent)
         if -6 <= exponent_value < 21:
@@ -75,7 +75,7 @@ def _canonical_value(value: Any) -> Any:
     if isinstance(value, float):
         if value != value or value in {float("inf"), float("-inf")}:
             raise ValueError("non-finite numbers are not valid canonical JSON")
-        return int(value) if value.is_integer() else value
+        return value
     return value
 
 
@@ -241,8 +241,16 @@ class S3ObjectStore:
             "kind": handler.__class__.__name__.replace("Handler", "").lower(),
             "namespace": f"{endpoint}|{self.bucket}",
         }
-        self.fencing_enforced = True
-        self.supports_conditional_cas = True
+        explicit_capability = getattr(handler, "supports_conditional_cas", None)
+        if explicit_capability is None:
+            service_model = getattr(getattr(self.client, "meta", None), "service_model", None)
+            try:
+                members = service_model.operation_model("PutObject").input_shape.members
+            except AttributeError:
+                members = set()
+            explicit_capability = {"IfMatch", "IfNoneMatch"}.issubset(members)
+        self.supports_conditional_cas = bool(explicit_capability)
+        self.fencing_enforced = self.supports_conditional_cas
 
     def put(self, key: str, data: bytes, *, if_none_match: bool = False, if_match: str | None = None, metadata=None) -> str:
         # ponytail: ETag If-Match is the atomic CAS; the metadata check rejects stale tokens early.
@@ -650,6 +658,13 @@ class ManifestStore:
             current = dict(current)
             current["pending_artifact_key"] = artifact_key
             current["pending_artifact_digest"] = artifact_digest
+            for item in current.get("version_ledger", []):
+                if item.get("version") == claim.get("pending_version"):
+                    item.update({
+                        "artifact_key": artifact_key,
+                        "artifact_digest": artifact_digest,
+                        "updated_at": _now(),
+                    })
             manifest["documents"][claim["document_id"]] = current
             self._write(manifest, snapshot)
             return current
@@ -759,6 +774,7 @@ class ManifestStore:
                 "point_id": point_id,
                 "payload": {
                     "graph_control_point": "tombstone",
+                    "graph_point": True,
                     "graph_tombstoned": True,
                     "tombstone_complete": True,
                     "document_id": document_id,
@@ -785,8 +801,11 @@ class ManifestStore:
             ordered = sorted(proofs, key=lambda item: str(item["point_id"]))
             if ordered != expected:
                 raise RuntimeError("tombstone proof does not cover the committed deny set")
-            manifest["tombstone_set_digest"] = self.tombstone_proof_digest(manifest)
-            manifest["pending_tombstone_set_digest"] = None
+            if manifest.get("pending_tombstone_cleanup_ids"):
+                manifest["pending_tombstone_set_digest"] = "pending"
+            else:
+                manifest["tombstone_set_digest"] = self.tombstone_proof_digest(manifest)
+                manifest["pending_tombstone_set_digest"] = None
             self._write(manifest, snapshot)
             return manifest
 
@@ -797,9 +816,18 @@ class ManifestStore:
             if (
                 manifest.get("collection_operation_id") != operation_id
                 or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
-                or manifest.get("pending_tombstone_set_digest") is not None
+                or (
+                    manifest.get("pending_tombstone_cleanup_ids")
+                    and manifest.get("pending_tombstone_set_digest") != "pending"
+                )
+                or (
+                    not manifest.get("pending_tombstone_cleanup_ids")
+                    and manifest.get("pending_tombstone_set_digest") is not None
+                )
             ):
                 raise RuntimeError("stale tombstone cleanup cannot finalize")
+            manifest["tombstone_set_digest"] = self.tombstone_proof_digest(manifest)
+            manifest["pending_tombstone_set_digest"] = None
             manifest["pending_tombstone_cleanup_ids"] = []
             self._write(manifest, snapshot)
             return manifest
@@ -869,6 +897,8 @@ class ActiveSelectorFilter:
 
     def matches(self, payload: dict) -> bool:
         if _is_denied_payload(payload):
+            return False
+        if not payload.get("graph_point") or payload.get("graph_control_point"):
             return False
         return any(
             payload.get("document_id") == entry.get("document_id")

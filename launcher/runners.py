@@ -152,6 +152,16 @@ def _configure_query_denial(qdrant, collection, object_store=None):
         for document_id, entry in snapshot.manifest.get("documents", {}).items()
         if entry.get("status") != "tombstoned" and entry.get("document_generation") is not None
     })
+    qdrant.set_active_graph_selectors({
+        document_id: {
+            "document_generation": entry["document_generation"],
+            "document_attempt_id": entry["document_attempt_id"],
+        }
+        for document_id, entry in snapshot.manifest.get("documents", {}).items()
+        if entry.get("status") in {"available", "partial"}
+        and entry.get("document_generation") is not None
+        and entry.get("document_attempt_id") is not None
+    })
 
 
 def run_query_only(config: dict) -> None:
@@ -275,7 +285,13 @@ def run_ingest(config: dict) -> None:
                 graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
                 config["graph_claim"] = graph_claim
         except Exception as exc:
-            raise RuntimeError(f"persistent graph reservation failed: {type(exc).__name__}: {exc}") from exc
+            config["graph_reservation_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            graph_pipeline = None
+            graph_claim = None
+            config.pop("graph_pipeline", None)
+            config.pop("graph_claim", None)
 
     _print_stage(3, 4, "prepare collection", verbose, [
         f"Collection target: {collection}",
@@ -326,7 +342,7 @@ def run_ingest(config: dict) -> None:
             else:
                 qdrant.verify_tombstone_control_points(
                     controls,
-                    expected_digest=collection_tombstone_manifest["tombstone_set_digest"],
+                    expected_digest=graph_pipeline.manifests.tombstone_proof_digest(collection_tombstone_manifest),
                 )
             graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
             config["graph_claim"] = graph_claim
