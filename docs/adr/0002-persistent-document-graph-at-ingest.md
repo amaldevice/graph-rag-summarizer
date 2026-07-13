@@ -7,7 +7,7 @@
 
 Ingest Runs need one reusable, document-scoped graph-artifact lifecycle. The current Full-Pipeline Run still builds graph state after query retrieval, which repeats entity and relation extraction for every query and keeps persistence coupled to query-time execution.
 
-This ADR owns only the persistent graph artifact, storage path, manifest lifecycle, status reporting, replacement safety, and backfill behavior. Adaptive topology belongs to ADR 0004, and query-time allocation/selection belongs to ADR 0005.
+This ADR owns only the persistent graph artifact, storage path, manifest lifecycle, status reporting, replacement safety, and backfill behavior. Adaptive topology and query-time context allocation are owned by stacked follow-on PRs #64/#65 and planning issues #60/#61.
 
 This is an internal, optional stage of Ingest. The external launcher/operator contract, Query-Only behavior, and downstream behavior remain unchanged.
 
@@ -28,36 +28,38 @@ The manifest includes collection-level concurrency metadata:
 
 - `manifest_revision` — monotonically increasing manifest revision for writers.
 
-`manifest_revision` is persisted in JSON. The object-store ETag is out-of-band storage metadata, not persisted JSON; readers and writers obtain the manifest bytes plus ETag from storage, writers publish with CAS/`If-Match`, and if ETag support is unavailable they fall back to a collection-scoped lock or lease around the read-modify-write sequence. Stale writers must retry or abort; they must never overwrite a newer entry.
+`manifest_revision` is persisted in JSON. The object-store ETag is out-of-band storage metadata, not persisted JSON; readers and writers obtain the manifest bytes plus ETag from storage. Existing manifests publish with CAS/`If-Match`. When the manifest does not yet exist, writers create it with `If-None-Match:*`; if ETag support is unavailable they fall back to a collection-scoped lock or lease around the read-modify-write sequence. Stale writers must retry or abort; they must never overwrite a newer entry.
 
 Each manifest entry contains:
 
 - `document_id` — document identifier.
 - `document_generation` — positive integer generation persisted in the Qdrant document payload and manifest entry.
 - `source_fingerprint` — fingerprint for the source input that produced the bound graph.
-- `artifact_digest` — SHA-256 digest of the canonical compressed artifact bytes.
+- `artifact_digest` — SHA-256 digest of the canonical compressed artifact bytes; it may be null when no active artifact exists.
 - `operation_id` — durable ingest operation identifier for the artifact build or backfill.
-- `active_version` — the published artifact version; null only when `status` is `unavailable`.
-- `active_artifact_key` — the published artifact pointer; null only when `status` is `unavailable`.
+- `active_version` — the published artifact version; null when there is no active artifact.
+- `active_artifact_key` — the published artifact pointer; null when there is no active artifact.
 - `status` — the current artifact state.
-- `backend` — the storage backend that owns the artifact bytes; null only before the first successful publish.
-- `previous_pointer` — the prior active pointer for this document; null when no prior active artifact exists.
+- `backend` — the storage backend that owns the artifact bytes; it may be null when no active artifact exists.
+- `previous_pointer` — the prior active pointer for this document; audit/recovery only and null when no prior active artifact exists.
 - `updated_at` — last manifest update timestamp.
 - `failure_reason` — optional diagnostic metadata for failures and rebuilds.
 
 The artifact blob metadata carries the same `document_generation`, `source_fingerprint`, `artifact_digest`, and `operation_id`, and the manifest entry must match the artifact metadata exactly.
 
-The active pointer pair in each entry is the only authoritative reader reference to the active artifact for that document. If either `active_version` or `active_artifact_key` is null, readers must treat the artifact as unavailable and fall back to the existing compatibility path; `previous_pointer` is audit history only.
+The pointer/status contract is explicit:
 
-The artifact status values are:
+| Status | `active_version` / `active_artifact_key` | Reader authority | Generation / fingerprint match | Reader behavior |
+| --- | --- | --- | --- | --- |
+| `available` | Non-null | Authoritative | Must match current `document_generation` and `source_fingerprint` | Use the manifest entry |
+| `partial` | Non-null | Not authoritative | May match current `document_generation` and `source_fingerprint`, but still requires compatibility fallback | Fallback |
+| `pending` | Null | Not authoritative | Not yet published against current Qdrant data | Fallback |
+| `stale` | Null | Not authoritative | Current Qdrant data no longer matches the in-flight or superseded graph | Fallback |
+| `unavailable` | Null | Not authoritative | No usable active artifact exists | Fallback |
 
-- `pending` — a replacement is in flight; readers fall back.
-- `available` — the graph validated successfully and is authoritative for the current generation.
-- `partial` — the graph published successfully but is only partially validated; readers may use it as authoritative for the current generation.
-- `stale` — the artifact was superseded or the replacement failed after Qdrant advanced; readers fall back.
-- `unavailable` — no usable active artifact exists for the document version; readers fall back.
+`pending` is written before Qdrant advances, and while `pending` readers must fall back to the compatibility path.
 
-`document_generation` is always a positive integer. All chunks for one ingest share the same generation. A new append starts at generation `1`; a replace increments the previous generation. Backfill with a valid `document_id` and no existing generation derives generation `1` from one consistent source fingerprint and writes it once; inconsistent or malformed payloads are unavailable/rebuild-required and are never guessed. `available` and `partial` must match the current `document_generation` and `source_fingerprint`; `pending`, `stale`, and `unavailable` always use compatibility fallback. If Qdrant has already been replaced but graph activation fails, the old pointer remains only as audit/recovery history and must be marked non-authoritative with `stale` or `unavailable`; it must never remain falsely `available`.
+`document_generation` is always a positive integer. All chunks for one ingest share the same generation. A new append starts at generation `1`; a replace increments the previous generation. Backfill with a valid `document_id` and no existing generation derives generation `1` from one consistent source fingerprint and writes it once; inconsistent or malformed payloads are unavailable/rebuild-required and are never guessed. `available` must match the current `document_generation` and `source_fingerprint`; `partial` may carry a non-null pointer but remains compatibility fallback; `pending`, `stale`, and `unavailable` always use compatibility fallback. If Qdrant has already been replaced but graph activation fails, the old pointer remains only as audit/recovery history in `previous_pointer`; the entry becomes `stale` or `unavailable`, the active pointer is cleared, and it must never remain falsely `available`.
 
 The artifact key is exact and versioned:
 
@@ -66,19 +68,20 @@ The artifact key is exact and versioned:
 Replacement semantics are:
 
 - `append` — create generation `1` for a new document; reject duplicate appends for an already-tracked `document_id`; publish only after validation succeeds.
-- `replace-document` — CAS the manifest entry to `pending` with the new generation and null active pointer, write the new artifact, then publish `available` or `partial` only after validation succeeds.
+- `replace-document` — CAS the manifest entry to `pending` with the new generation and null active pointer before any vector or artifact work, write the new artifact, then publish `available` or `partial` only after validation succeeds.
 - `replace-collection` — apply the same document-level rules to each document; a failure for one document must not overwrite that document's prior active pointer.
 
 Activation safety is:
 
 - the manifest update must be atomic from the perspective of readers;
 - stale writers must not overwrite a newer manifest pointer;
+- immediately before publish, reread the Qdrant document metadata for the same `document_id` and verify that the expected `document_generation` and `source_fingerprint` still match; if they do not, reject publish, mark the entry `stale`, clear the active pointer, and keep the old pointer only in `previous_pointer`;
 - if replacement fails after Qdrant advances, mark the entry `stale` or `unavailable`, set `failure_reason`, clear the active pointer, and keep the old pointer only in `previous_pointer`;
 - the older validated artifact stays active until a newer validated manifest is successfully published.
 
 Raw relation evidence and the active graph are separate conceptual layers. Weak, rejected, or unverified candidates remain auditable without being allowed to dominate the active graph.
 
-Existing collections can be backfilled from Qdrant payloads without re-embedding. Backfill ownership belongs to this ingest-stage lifecycle. Backfill uses deterministic operation ids of the form `backfill:{collection}:{document_id}:{source_fingerprint}`. An entry with matching `operation_id`, `document_generation`, `artifact_digest`, and terminal status is already complete. If an artifact upload was interrupted, resume only when the digest is an exact match; otherwise allocate `max(existing_versions)+1`. Missing, inconsistent, or malformed payloads are unavailable/rebuild-required and are never guessed. Reruns resume per document and preserve already active matching entries. Legacy points without `document_id` must be rebuilt or re-ingested because document ownership is never guessed.
+Existing collections can be backfilled from Qdrant payloads without re-embedding. Backfill ownership belongs to this ingest-stage lifecycle. Normal ingest uses deterministic operation ids of the form `ingest:{collection}:{document_id}:{document_generation}:{source_fingerprint}` and writes the pending manifest entry before vector or artifact work starts. Backfill keeps its deterministic operation ids of the form `backfill:{collection}:{document_id}:{source_fingerprint}`. An entry with matching terminal `operation_id`, `document_generation`, and `artifact_digest` is already complete. If an artifact upload was interrupted, resume only when the digest is an exact match; otherwise allocate `max(existing_versions)+1`. Missing, inconsistent, or malformed payloads are unavailable/rebuild-required and are never guessed. Reruns resume per document and preserve already active matching entries. Legacy points without `document_id` must be rebuilt or re-ingested because document ownership is never guessed.
 
 ## Alternatives rejected
 
@@ -87,7 +90,7 @@ Existing collections can be backfilled from Qdrant payloads without re-embedding
 - **Use Neo4j as a required graph store:** adds operational and dependency cost before graph scale requires it.
 - **Add Parquet/`pyarrow` immediately:** adds a dependency and format decision before artifact size is measured; compressed JSON is sufficient for the first version.
 - **Fail vector ingest when graph construction fails:** reduces data availability and makes optional LLM/storage failures destructive to the ingest path.
-- **Bundle adaptive topology or query-time context allocation into this ADR:** those decisions belong to ADR 0004 and ADR 0005.
+- **Bundle adaptive topology or query-time context allocation into this ADR:** those decisions are owned by stacked follow-on PRs #64/#65 and planning issues #60/#61, not this document.
 
 ## Consequences
 
