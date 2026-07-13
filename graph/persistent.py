@@ -499,16 +499,23 @@ class ManifestStore:
 
     def assert_claim_current(self, claim: dict) -> None:
         with self._lock:
-            current = self.get(claim["document_id"])
-            if not self._claim_matches(current, claim):
+            manifest, _ = self._read()
+            current = manifest.get("documents", {}).get(claim["document_id"])
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
 
     def mutate_claim(self, claim: dict, operation):
         with self._lock:
-            current = self.get(claim["document_id"])
-            if not self._claim_matches(current, claim):
+            manifest, _ = self._read()
+            current = manifest.get("documents", {}).get(claim["document_id"])
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
-            return operation()
+            result = operation()
+            manifest, _ = self._read()
+            current = manifest.get("documents", {}).get(claim["document_id"])
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
+                raise RuntimeError("graph claim changed during Qdrant mutation")
+            return result
 
     def mutate_collection(self, operation_id: str, fence_token: int, operation, attempt_id: str | None = None):
         with self._lock:
@@ -630,12 +637,19 @@ class ManifestStore:
             and all(current.get(field) == claim.get(field) for field in fields)
         )
 
+    @staticmethod
+    def _claim_matches_collection(manifest: dict, claim: dict) -> bool:
+        return (
+            int(manifest.get("collection_fence_token", 0)) == int(claim.get("collection_fence_token", 0))
+            and manifest.get("collection_attempt_id") == claim.get("collection_attempt_id")
+        )
+
     def publish(self, claim: dict, artifact_key: str, artifact_digest: str) -> dict:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
             current = manifest.get("documents", {}).get(claim["document_id"])
-            if not self._claim_matches(current, claim):
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot publish")
             if (
                 current.get("pending_artifact_key") != artifact_key
@@ -674,6 +688,10 @@ class ManifestStore:
                 elif item["version"] == prior_active_version and item.get("state") == "published_available":
                     item["state"] = "retired"
             manifest["documents"][claim["document_id"]] = current
+            if manifest.get("pending_tombstone_cleanup_ids"):
+                manifest["tombstone_set_digest"] = self.tombstone_proof_digest(manifest)
+                manifest["pending_tombstone_set_digest"] = None
+                manifest["pending_tombstone_cleanup_ids"] = []
             self._write(manifest, snapshot)
             return current
 
@@ -683,7 +701,7 @@ class ManifestStore:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
             current = manifest.get("documents", {}).get(claim["document_id"])
-            if not self._claim_matches(current, claim):
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot bind artifact")
             current = dict(current)
             current["pending_artifact_key"] = artifact_key
@@ -893,7 +911,7 @@ class ManifestStore:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
             current = manifest.get("documents", {}).get(claim["document_id"])
-            if not self._claim_matches(current, claim):
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot fail")
             current = dict(current)
             current.update({
@@ -1109,6 +1127,9 @@ class PersistentGraphPipeline:
             if qdrant is not None:
                 qdrant.verify_graph_claim_current(claim)
                 self.manifests.assert_claim_current(claim)
+                verify_tombstones = getattr(qdrant, "verify_collection_tombstone_proof", None)
+                if callable(verify_tombstones):
+                    verify_tombstones(self.manifests)
             entry = self.manifests.publish(claim, artifact_key, digest)
             return {"status": entry["status"], "entry": entry, "artifact_key": artifact_key, "artifact_digest": digest, "details": details}
         except Exception as exc:

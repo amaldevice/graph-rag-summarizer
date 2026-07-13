@@ -5,6 +5,7 @@
 
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -141,9 +142,12 @@ def _configure_query_denial(qdrant, collection, object_store=None):
     ):
         raise RuntimeError("tombstone proof is pending; query denied")
     manifests_tombstones = manifests.tombstone_controls(snapshot.manifest)
+    expected_digest = snapshot.manifest.get("tombstone_set_digest")
+    if not isinstance(expected_digest, str) or not expected_digest:
+        raise RuntimeError("manifest tombstone digest is missing; query denied")
     qdrant.verify_tombstone_control_points(
         manifests_tombstones,
-        expected_digest=snapshot.manifest.get("tombstone_set_digest"),
+        expected_digest=expected_digest,
     )
     if not manifests.revalidate(snapshot):
         raise RuntimeError("manifest changed during tombstone preflight")
@@ -153,10 +157,12 @@ def _configure_query_denial(qdrant, collection, object_store=None):
         if entry.get("status") == "tombstoned"
     ]
     qdrant.set_denied_document_ids(denied)
+    qdrant.set_query_authorization(manifests, snapshot)
     qdrant.set_active_vector_generations({
         document_id: entry["document_generation"]
         for document_id, entry in snapshot.manifest.get("documents", {}).items()
         if entry.get("status") != "tombstoned" and entry.get("document_generation") is not None
+        and entry.get("status") in {"available", "partial"}
     })
     qdrant.set_active_graph_selectors({
         document_id: {
@@ -199,6 +205,8 @@ def run_query_only(config: dict) -> None:
 
     _print_stage(2, 3, "retrieve chunks", verbose, f"Retrieval limit: {retrieval_limit}")
     chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
+    if config.get("enable_graph_artifact", False):
+        qdrant.revalidate_query_authorization()
 
     print(f"\n  Retrieved chunks: {len(chunks)}")
 
@@ -291,13 +299,9 @@ def run_ingest(config: dict) -> None:
                 graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
                 config["graph_claim"] = graph_claim
         except Exception as exc:
-            config["graph_reservation_error"] = (
-                f"{type(exc).__name__}: {exc}"
-            )
-            graph_pipeline = None
-            graph_claim = None
-            config.pop("graph_pipeline", None)
-            config.pop("graph_claim", None)
+            raise RuntimeError(
+                f"persistent graph reservation failed before vector mutation: {type(exc).__name__}: {exc}"
+            ) from exc
 
     _print_stage(3, 4, "prepare collection", verbose, [
         f"Collection target: {collection}",
@@ -307,7 +311,9 @@ def run_ingest(config: dict) -> None:
     qdrant = QdrantHandler(collection_name=collection)
     config["qdrant"] = qdrant
     if graph_pipeline and ingest_mode == "replace-collection":
-        collection_operation_id = f"replace-collection:{collection}:{document_id}"
+        collection_operation_id = config.get("collection_operation_id") or (
+            f"replace-collection:{collection}:{document_id}:{uuid.uuid4()}"
+        )
         collection_tombstone_manifest = graph_pipeline.manifests.tombstone_documents(
             {document_id}, collection_operation_id
         )
@@ -391,14 +397,6 @@ def run_ingest(config: dict) -> None:
                     expected_digest=graph_pipeline.manifests.tombstone_proof_digest(current_collection_manifest),
                 )
                 collection_tombstone_manifest = current_collection_manifest
-                graph_pipeline.manifests.finalize_tombstone_cleanup(
-                    collection_tombstone_manifest["collection_operation_id"],
-                    collection_tombstone_manifest["collection_fence_token"],
-                )
-                graph_pipeline.manifests.release_collection_fence(
-                    collection_tombstone_manifest["collection_operation_id"],
-                    collection_tombstone_manifest["collection_fence_token"],
-                )
             else:
                 qdrant.finalize_replace_collection(uploaded_point_ids)
     except Exception as exc:
@@ -416,6 +414,18 @@ def run_ingest(config: dict) -> None:
         print("  Building persistent document graph (optional stage)...")
         graph_result = _build_ingest_graph_artifact(
             config, collection, document_id, chunks, vectors, ingest_mode
+        )
+    if graph_pipeline and collection_tombstone_manifest and graph_claim:
+        qdrant.verify_collection_tombstone_proof(graph_pipeline.manifests)
+        current_collection_manifest = graph_pipeline.manifests.read_snapshot().manifest
+        if current_collection_manifest.get("pending_tombstone_set_digest") is not None:
+            graph_pipeline.manifests.finalize_tombstone_cleanup(
+                collection_tombstone_manifest["collection_operation_id"],
+                collection_tombstone_manifest["collection_fence_token"],
+            )
+        graph_pipeline.manifests.release_collection_fence(
+            collection_tombstone_manifest["collection_operation_id"],
+            collection_tombstone_manifest["collection_fence_token"],
         )
 
     print(f"\n  Total chunks uploaded : {len(chunks)}")
@@ -512,6 +522,8 @@ def run_full_pipeline(config: dict) -> None:
             ])
             query_vector = embedder.embed_text(query)
             retrieved_chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
+            if config.get("enable_graph_artifact", False):
+                qdrant.revalidate_query_authorization()
             expand_parent_context = getattr(qdrant, "expand_parent_context", None)
             if callable(expand_parent_context):
                 expanded_chunks = expand_parent_context(retrieved_chunks, max_depth=2)
@@ -537,6 +549,8 @@ def run_full_pipeline(config: dict) -> None:
                     persistent_graph_read_failed = True
                     for chunk in retrieved_chunks:
                         chunk["graph_denied"] = True
+            if config.get("enable_graph_artifact", False):
+                qdrant.revalidate_query_authorization()
             retrieved_chunks = [chunk for chunk in retrieved_chunks if not chunk.get("graph_denied")]
             if persistent_graph_read_failed:
                 raise RuntimeError("persistent graph preflight failed; compatibility fallback denied")

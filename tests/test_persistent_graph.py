@@ -163,6 +163,15 @@ def test_reserve_same_operation_resumes_exact_claim():
     assert resumed["build_attempt_id"] == first["build_attempt_id"]
 
 
+def test_collection_fence_invalidates_retained_document_claims():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve("paper", "op-1", "fingerprint", mode="replace-document")
+    manifests.tombstone_documents({"paper"}, "replace-collection:unique")
+
+    with pytest.raises(RuntimeError, match="stale graph claim"):
+        manifests.assert_claim_current(claim)
+
+
 def test_tombstone_proof_burns_versions_and_commits_control_digest():
     manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
     first = manifests.reserve("paper", "op-1", "fingerprint-1")
@@ -217,6 +226,28 @@ def test_tombstoned_document_reintroduction_stages_deny_cleanup():
     finalized = manifests.finalize_tombstone_cleanup("replace-2", reintroduction["collection_fence_token"])
     assert finalized["pending_tombstone_set_digest"] is None
     assert finalized["tombstone_set_digest"] == manifests.tombstone_proof_digest(finalized)
+
+
+def test_reintroduction_publish_commits_tombstone_set_with_active_pointer():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    first = manifests.reserve("paper", "op-1", "fingerprint-1")
+    manifests.bind_artifact(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
+    manifests.publish(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
+    tombstone = manifests.tombstone_documents(set(), "replace-1")
+    controls = manifests.tombstone_controls(tombstone)
+    manifests.commit_tombstone_proof(controls)
+    manifests.release_collection_fence("replace-1", tombstone["collection_fence_token"])
+    reintroduction = manifests.tombstone_documents({"paper"}, "replace-2")
+    claim = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-collection")
+    key = "graphs/papers/paper/v2/graph.json.gz"
+    manifests.bind_artifact(claim, key, "digest-2")
+
+    published = manifests.publish(claim, key, "digest-2")
+
+    assert published["status"] == "available"
+    assert manifests.read_snapshot().manifest["pending_tombstone_set_digest"] is None
+    assert manifests.read_snapshot().manifest["pending_tombstone_cleanup_ids"] == []
+    assert reintroduction["collection_fence_token"] == published["collection_fence_token"]
 
 
 def test_artifact_read_rejects_noncanonical_json_body():
