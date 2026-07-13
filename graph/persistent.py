@@ -469,7 +469,7 @@ class ManifestStore:
             manifest, _ = self._read()
             if (
                 manifest.get("collection_operation_id") != operation_id
-                or manifest.get("pending_tombstone_set_digest") != "pending"
+                or manifest.get("pending_tombstone_set_digest") not in {"pending", None}
                 or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
             ):
                 raise RuntimeError("stale collection fence cannot mutate Qdrant")
@@ -684,6 +684,17 @@ class ManifestStore:
             digest = _digest(canonical_json_bytes(ordered))
             manifest["tombstone_set_digest"] = digest
             manifest["pending_tombstone_set_digest"] = None
+            self._write(manifest, etag)
+            return manifest
+
+    def release_collection_fence(self, operation_id: str, fence_token: int) -> dict:
+        with self._lock:
+            manifest, etag = self._read()
+            if (
+                manifest.get("collection_operation_id") != operation_id
+                or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
+            ):
+                raise RuntimeError("stale collection fence cannot be released")
             manifest["collection_operation_id"] = None
             manifest["collection_attempt_id"] = None
             self._write(manifest, etag)
