@@ -114,6 +114,28 @@ class QdrantHandler:
     def set_denied_document_ids(self, document_ids) -> None:
         self._denied_document_ids = {str(document_id) for document_id in document_ids}
 
+    def set_query_authorization(self, manifests, snapshot) -> None:
+        self._query_manifest_store = manifests
+        self._query_manifest_snapshot = snapshot
+
+    def revalidate_query_authorization(self) -> None:
+        manifests = getattr(self, "_query_manifest_store", None)
+        initial = getattr(self, "_query_manifest_snapshot", None)
+        if manifests is None or initial is None:
+            return
+        current = manifests.read_snapshot()
+        expected_digest = current.manifest.get("tombstone_set_digest")
+        if not isinstance(expected_digest, str) or not expected_digest:
+            raise RuntimeError("manifest tombstone digest is missing")
+        if (
+            current.manifest.get("tombstone_epoch") != initial.manifest.get("tombstone_epoch")
+            or expected_digest != initial.manifest.get("tombstone_set_digest")
+            or not manifests.revalidate(initial)
+        ):
+            raise RuntimeError("manifest changed during query selection")
+        controls = manifests.tombstone_controls(current.manifest)
+        self.verify_tombstone_control_points(controls, expected_digest=expected_digest)
+
     def set_active_vector_generations(self, generations: dict[str, int]) -> None:
         self._active_vector_generations = {str(key): int(value) for key, value in generations.items()}
 
@@ -567,6 +589,8 @@ class QdrantHandler:
     ) -> None:
         from graph.persistent import canonical_json_bytes
 
+        if not isinstance(expected_digest, str) or not expected_digest:
+            raise RuntimeError("tombstone control proof requires a committed digest")
         expected = sorted(controls, key=lambda item: str(item["point_id"]))
         actual = self._enumerate_tombstone_controls()
         expected_ids = {str(item["point_id"]) for item in expected}
@@ -578,6 +602,14 @@ class QdrantHandler:
         digest = hashlib.sha256(canonical_json_bytes(actual_expected)).hexdigest()
         if expected_digest is not None and digest != expected_digest:
             raise RuntimeError("tombstone control point digest mismatch")
+
+    def verify_collection_tombstone_proof(self, manifests) -> None:
+        snapshot = manifests.read_snapshot()
+        controls = manifests.tombstone_controls(snapshot.manifest)
+        self.verify_tombstone_control_points(
+            controls,
+            expected_digest=manifests.tombstone_proof_digest(snapshot.manifest),
+        )
 
     def _enumerate_tombstone_controls(self) -> list[dict]:
         controls = [
