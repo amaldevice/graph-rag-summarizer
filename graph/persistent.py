@@ -236,10 +236,28 @@ class S3ObjectStore:
         self.handler = handler
         self.client = handler.client
         self.bucket = handler.bucket_name
-        self.fencing_enforced = False
+        endpoint = getattr(getattr(self.client, "meta", None), "endpoint_url", "")
+        self.backend_authority = {
+            "kind": handler.__class__.__name__.replace("Handler", "").lower(),
+            "namespace": f"{endpoint}|{self.bucket}",
+        }
+        self.fencing_enforced = True
         self.supports_conditional_cas = True
 
     def put(self, key: str, data: bytes, *, if_none_match: bool = False, if_match: str | None = None, metadata=None) -> str:
+        metadata = dict(metadata or {})
+        requested_fence = int(metadata.get("fence_token", 0))
+        try:
+            current_metadata, current_etag = self.head(key)
+        except Exception as exc:
+            if "404" not in str(exc) and "NoSuchKey" not in str(exc) and "Not Found" not in str(exc):
+                raise
+            current_metadata, current_etag = {}, None
+        current_fence = int(current_metadata.get("fence_token", 0))
+        if requested_fence < current_fence:
+            raise RuntimeError("object fence token is stale")
+        if current_etag and if_match is None and not if_none_match:
+            raise RuntimeError("conditional write is required for an existing object")
         kwargs = {"Bucket": self.bucket, "Key": key, "Body": data, "Metadata": metadata or {}}
         if if_none_match:
             kwargs["IfNoneMatch"] = "*"
@@ -299,6 +317,10 @@ class GraphArtifactStore:
                 gzip.decompress(existing) != canonical_bytes
                 or existing_metadata.get("artifact_digest") != digest
                 or existing_metadata.get("document_generation") != str(claim["document_generation"])
+                or existing_metadata.get("source_fingerprint") != str(claim.get("source_fingerprint", ""))
+                or existing_metadata.get("operation_id") != str(claim.get("operation_id", ""))
+                or existing_metadata.get("pending_attempt_id") != str(claim.get("pending_attempt_id", ""))
+                or existing_metadata.get("build_attempt_id") != str(claim.get("build_attempt_id", ""))
                 or existing_metadata.get("backend_kind") != str(backend.get("kind", ""))
                 or existing_metadata.get("backend_namespace") != str(backend.get("namespace", ""))
             ):
@@ -325,6 +347,12 @@ class GraphArtifactStore:
             or metadata.get("backend_namespace") != str(expected_backend.get("namespace", ""))
         ):
             raise ValueError("graph artifact backend mismatch")
+        try:
+            decoded = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("graph artifact is not valid JSON") from exc
+        if canonical_json_bytes(decoded) != data:
+            raise ValueError("graph artifact is not canonical JSON")
         return data
 
 
@@ -346,15 +374,14 @@ class ManifestStore:
         self.collection = collection
         self.backend = backend or {"kind": "unknown", "namespace": ""}
         self._lock = threading.RLock()
-        self._fences = FenceCoordinator()
         self.manifest_key = str(PurePosixPath("graphs", collection, "manifest.json"))
-        self.lock_key = str(PurePosixPath("locks", f"{collection}.json"))
 
     def _default(self) -> dict:
         return {
             "schema_version": 1,
             "collection": self.collection,
             "manifest_revision": 0,
+            "manifest_fence_token": 0,
             "tombstone_epoch": 0,
             "collection_fence_token": 0,
             "collection_operation_id": None,
@@ -389,8 +416,19 @@ class ManifestStore:
                 int(manifest.get("manifest_revision", 0)),
                 _digest(data),
                 manifest,
-                self._current_fence_token(),
+                int(manifest.get("manifest_fence_token", 0)),
             )
+
+    def _assert_snapshot_current(self, expected: ManifestSnapshot) -> None:
+        current = self.read_snapshot()
+        if (
+            current.data != expected.data
+            or current.etag != expected.etag
+            or current.manifest_revision != expected.manifest_revision
+            or current.digest != expected.digest
+            or current.fence_token != expected.fence_token
+        ):
+            raise RuntimeError("manifest snapshot changed before CAS")
 
     def revalidate(self, snapshot: ManifestSnapshot) -> bool:
         current = self.read_snapshot()
@@ -400,52 +438,26 @@ class ManifestStore:
             and current.fence_token == snapshot.fence_token
         )
 
-    def _current_fence_token(self) -> int | None:
-        try:
-            data, _, _ = self.object_store.get(self.lock_key)
-        except FileNotFoundError:
-            return None
-        return int(json.loads(data.decode("utf-8")).get("fence_token", 0))
-
-    def _acquire_fence(self) -> int:
-        current = self._current_fence_token()
-        next_token = int(current or 0) + 1
-        lock = {"collection": self.collection, "fence_token": next_token, "updated_at": _now()}
-        data = canonical_json_bytes(lock)
-        try:
-            _, _, etag = self.object_store.get(self.lock_key)
-        except FileNotFoundError:
-            etag = None
-        kwargs = {
-            "metadata": {"fence_token": str(next_token)},
-        }
-        if etag is None:
-            kwargs["if_none_match"] = True
-        else:
-            kwargs["if_match"] = etag
-        self.object_store.put(self.lock_key, data, **kwargs)
-        return next_token
-
-    def _write(self, manifest: dict, etag: str | None) -> dict:
+    def _write(self, manifest: dict, expected: ManifestSnapshot) -> dict:
+        if not getattr(self.object_store, "supports_conditional_cas", False):
+            raise RuntimeError("manifest backend cannot enforce conditional CAS")
+        if not getattr(self.object_store, "fencing_enforced", False):
+            raise RuntimeError("manifest backend cannot enforce durable fencing")
+        self._assert_snapshot_current(expected)
         manifest = dict(manifest)
-        manifest["manifest_revision"] = int(manifest.get("manifest_revision", 0)) + 1
+        if int(manifest.get("manifest_revision", 0)) != expected.manifest_revision:
+            raise RuntimeError("manifest candidate revision does not match its snapshot")
+        manifest["manifest_revision"] = expected.manifest_revision + 1
+        manifest["manifest_fence_token"] = int(expected.fence_token or 0) + 1
         data = canonical_json_bytes(manifest)
-        fence_token = self._acquire_fence()
-        if etag is None and not getattr(self.object_store, "fencing_enforced", False):
-            try:
-                self.object_store.get(self.manifest_key)
-            except FileNotFoundError:
-                pass
-            else:
-                raise RuntimeError("manifest backend cannot enforce durable fencing")
         kwargs = {"metadata": {
             "manifest_revision": str(manifest["manifest_revision"]),
-            "fence_token": str(fence_token),
+            "fence_token": str(manifest["manifest_fence_token"]),
         }}
-        if etag is None:
+        if expected.etag is None:
             kwargs["if_none_match"] = True
         else:
-            kwargs["if_match"] = etag
+            kwargs["if_match"] = expected.etag
         self.object_store.put(self.manifest_key, data, **kwargs)
         return manifest
 
@@ -460,17 +472,13 @@ class ManifestStore:
             current = self.get(claim["document_id"])
             if not self._claim_matches(current, claim):
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
-            scope = f"document:{self.collection}:{claim['document_id']}"
-            self._fences.accept(scope, int(claim["document_fence_token"]))
 
     def mutate_claim(self, claim: dict, operation):
         with self._lock:
             current = self.get(claim["document_id"])
             if not self._claim_matches(current, claim):
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
-            scope = f"document:{self.collection}:{claim['document_id']}"
-            self._fences.accept(scope, int(claim["document_fence_token"]))
-            return self._fences.mutate(scope, int(claim["document_fence_token"]), operation)
+            return operation()
 
     def mutate_collection(self, operation_id: str, fence_token: int, operation):
         with self._lock:
@@ -481,23 +489,28 @@ class ManifestStore:
                 or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
             ):
                 raise RuntimeError("stale collection fence cannot mutate Qdrant")
-            scope = f"collection:{self.collection}"
-            self._fences.accept(scope, int(fence_token))
-            return self._fences.mutate(scope, int(fence_token), operation)
+            return operation()
 
     def reserve(self, document_id: str, operation_id: str, source_fingerprint_value: str, *, mode: str = "append") -> dict:
         with self._lock:
-            manifest, etag = self._read()
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
             documents = dict(manifest.get("documents", {}))
             prior = documents.get(document_id)
             if mode == "append" and prior is not None:
                 raise ValueError(f"document '{document_id}' is already tracked; use replace-document")
+            if (
+                prior
+                and prior.get("pending_operation_id") == operation_id
+                and prior.get("pending_source_fingerprint") == source_fingerprint_value
+            ):
+                return prior
             if prior and prior.get("pending_operation_id") and prior["pending_operation_id"] != operation_id:
                 raise RuntimeError("document has an active graph claim")
             generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
             next_version = int(prior.get("next_version", 1)) if prior else 1
             ledger = list(prior.get("version_ledger", [])) if prior else []
-            previous_pointer = None
+            previous_pointer = prior.get("previous_pointer") if prior else None
             if prior and prior.get("active_artifact_key"):
                 previous_pointer = {
                     "artifact_key": prior["active_artifact_key"],
@@ -554,7 +567,7 @@ class ManifestStore:
             documents[document_id] = claim
             claim["version_ledger"][-1]["attempt_id"] = claim["pending_attempt_id"]
             manifest["documents"] = documents
-            return self._write(manifest, etag) and claim
+            return self._write(manifest, snapshot) and claim
 
     def _claim_matches(self, current: dict | None, claim: dict) -> bool:
         fields = (
@@ -569,6 +582,7 @@ class ManifestStore:
             "build_attempt_id",
             "collection_fence_token",
             "document_fence_token",
+            "pending_backend",
         )
         return bool(
             current
@@ -577,10 +591,16 @@ class ManifestStore:
 
     def publish(self, claim: dict, artifact_key: str, artifact_digest: str) -> dict:
         with self._lock:
-            manifest, etag = self._read()
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
             current = manifest.get("documents", {}).get(claim["document_id"])
             if not self._claim_matches(current, claim):
                 raise RuntimeError("stale graph claim cannot publish")
+            if (
+                current.get("pending_artifact_key") != artifact_key
+                or current.get("pending_artifact_digest") != artifact_digest
+            ):
+                raise RuntimeError("published artifact does not match the pending claim")
             previous = current.get("previous_pointer")
             prior_active_version = current.get("active_version")
             current = dict(current)
@@ -613,13 +633,14 @@ class ManifestStore:
                 elif item["version"] == prior_active_version and item.get("state") == "published_available":
                     item["state"] = "retired"
             manifest["documents"][claim["document_id"]] = current
-            self._write(manifest, etag)
+            self._write(manifest, snapshot)
             return current
 
     def bind_artifact(self, claim: dict, artifact_key: str, artifact_digest: str) -> dict:
         """Record the pending immutable blob before the activation CAS."""
         with self._lock:
-            manifest, etag = self._read()
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
             current = manifest.get("documents", {}).get(claim["document_id"])
             if not self._claim_matches(current, claim):
                 raise RuntimeError("stale graph claim cannot bind artifact")
@@ -627,19 +648,27 @@ class ManifestStore:
             current["pending_artifact_key"] = artifact_key
             current["pending_artifact_digest"] = artifact_digest
             manifest["documents"][claim["document_id"]] = current
-            self._write(manifest, etag)
+            self._write(manifest, snapshot)
             return current
 
     def tombstone_documents(self, retained_document_ids: set[str], operation_id: str) -> dict:
         """Make omitted replace-collection documents non-discoverable."""
         with self._lock:
-            manifest, etag = self._read()
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
+            active_operation = manifest.get("collection_operation_id")
+            if active_operation:
+                if active_operation != operation_id:
+                    raise RuntimeError("collection has an active tombstone operation")
+                return manifest
             documents = dict(manifest.get("documents", {}))
             manifest["tombstone_epoch"] = int(manifest.get("tombstone_epoch", 0)) + 1
             for document_id, entry in documents.items():
                 if document_id in retained_document_ids:
                     continue
                 entry = dict(entry)
+                prior_active_version = entry.get("active_version")
+                prior_pending_version = entry.get("pending_version")
                 if entry.get("active_artifact_key"):
                     entry["previous_pointer"] = {
                         "artifact_key": entry["active_artifact_key"],
@@ -663,64 +692,104 @@ class ManifestStore:
                     "pending_backend": None,
                     "pending_artifact_key": None,
                     "pending_artifact_digest": None,
+                    "pending_generation": None,
+                    "pending_source_fingerprint": None,
+                    "build_attempt_id": None,
                     "updated_at": _now(),
                     "failure_reason": "omitted by replace-collection",
                 })
+                self._burn_tombstone_versions_for_entry(
+                    entry,
+                    active_version=prior_active_version,
+                    pending_version=prior_pending_version,
+                )
                 documents[document_id] = entry
             manifest["documents"] = documents
             manifest["collection_fence_token"] = int(manifest.get("collection_fence_token", 0)) + 1
             manifest["collection_operation_id"] = operation_id
             manifest["collection_attempt_id"] = f"{operation_id}:tombstone"
-            manifest["pending_tombstone_set_digest"] = "pending"
-            tombstones = sorted({
-                (document_id, entry.get("tombstone_attempt_id"))
-                for document_id, entry in documents.items()
-                if entry.get("status") == "tombstoned"
-            })
-            manifest["tombstone_set_digest"] = _digest(canonical_json_bytes(tombstones))
-            self._write(manifest, etag)
+            manifest["pending_tombstone_set_digest"] = self._tombstone_proof_digest(manifest)
+            self._write(manifest, snapshot)
             return manifest
+
+    def _burn_tombstone_versions_for_entry(
+        self,
+        entry: dict,
+        *,
+        active_version: int | None,
+        pending_version: int | None,
+    ) -> None:
+        for item in entry.get("version_ledger", []):
+            if item.get("version") == active_version:
+                item.update({"state": "tombstoned", "updated_at": _now()})
+            elif item.get("version") == pending_version and item.get("state") == "reserved":
+                item.update({"state": "aborted", "updated_at": _now()})
+
+    def tombstone_controls(self, manifest: dict | None = None) -> list[dict]:
+        manifest = manifest or self.read_snapshot().manifest
+        controls = []
+        for document_id, entry in manifest.get("documents", {}).items():
+            if entry.get("status") != "tombstoned":
+                continue
+            point_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"graph-control:tombstone:{self.collection}:{document_id}",
+            ))
+            controls.append({
+                "point_id": point_id,
+                "payload": {
+                    "graph_control_point": "tombstone",
+                    "graph_tombstoned": True,
+                    "tombstone_complete": True,
+                    "document_id": document_id,
+                    "document_generation": entry.get("document_generation"),
+                    "tombstone_epoch": int(manifest.get("tombstone_epoch", 0)),
+                    "tombstone_operation_id": manifest.get("collection_operation_id") or entry.get("tombstone_operation_id"),
+                    "tombstone_attempt_id": entry.get("tombstone_attempt_id"),
+                    "tombstone_fence_token": int(entry.get("tombstone_fence_token", 0)),
+                    "collection_fence_token": int(manifest.get("collection_fence_token", 0)),
+                },
+            })
+        return sorted(controls, key=lambda item: item["point_id"])
+
+    def _tombstone_proof_digest(self, manifest: dict) -> str:
+        return _digest(canonical_json_bytes(self.tombstone_controls(manifest)))
 
     def commit_tombstone_proof(self, proofs: list[dict]) -> dict:
         with self._lock:
-            manifest, etag = self._read()
-            if manifest.get("pending_tombstone_set_digest") != "pending":
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
+            expected = self.tombstone_controls(manifest)
+            if manifest.get("pending_tombstone_set_digest") != self._tombstone_proof_digest(manifest):
                 raise RuntimeError("no pending tombstone proof")
             ordered = sorted(proofs, key=lambda item: str(item["point_id"]))
-            expected_ids = {
-                str(uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"graph-control:tombstone:{self.collection}:{document_id}",
-                ))
-                for document_id, entry in manifest.get("documents", {}).items()
-                if entry.get("status") == "tombstoned"
-            }
-            if {str(item["point_id"]) for item in ordered} != expected_ids:
+            if ordered != expected:
                 raise RuntimeError("tombstone proof does not cover the committed deny set")
-            digest = _digest(canonical_json_bytes(ordered))
-            manifest["tombstone_set_digest"] = digest
+            manifest["tombstone_set_digest"] = manifest["pending_tombstone_set_digest"]
             manifest["pending_tombstone_set_digest"] = None
-            self._write(manifest, etag)
+            self._write(manifest, snapshot)
             return manifest
 
     def release_collection_fence(self, operation_id: str, fence_token: int) -> dict:
         with self._lock:
-            manifest, etag = self._read()
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
             if (
                 manifest.get("collection_operation_id") != operation_id
                 or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
+                or manifest.get("pending_tombstone_set_digest") is not None
             ):
                 raise RuntimeError("stale collection fence cannot be released")
             manifest["collection_operation_id"] = None
             manifest["collection_attempt_id"] = None
-            self._write(manifest, etag)
+            self._write(manifest, snapshot)
             return manifest
 
     def preflight(self, document_id: str) -> dict:
         """Fail closed for tombstones before compatibility fallback."""
         manifest, _ = self._read()
         entry = manifest.get("documents", {}).get(document_id)
-        if manifest.get("pending_tombstone_set_digest") is not None:
+        if manifest.get("pending_tombstone_set_digest") is not None or manifest.get("collection_operation_id"):
             return {"allowed": False, "reason": "tombstone_proof_pending", "entry": entry}
         if entry and entry.get("status") == "tombstoned":
             return {"allowed": False, "reason": "tombstoned", "entry": entry}
@@ -728,7 +797,8 @@ class ManifestStore:
 
     def fail(self, claim: dict, reason: str) -> dict:
         with self._lock:
-            manifest, etag = self._read()
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
             current = manifest.get("documents", {}).get(claim["document_id"])
             if not self._claim_matches(current, claim):
                 raise RuntimeError("stale graph claim cannot fail")
@@ -751,34 +821,8 @@ class ManifestStore:
                 if item.get("version") == claim.get("pending_version") and item.get("state") == "reserved":
                     item["state"] = "failed"
             manifest["documents"][claim["document_id"]] = current
-            self._write(manifest, etag)
+            self._write(manifest, snapshot)
             return current
-
-
-class FenceCoordinator:
-    """In-process fence used by the adapter; durable stores still provide CAS."""
-
-    def __init__(self):
-        self._tokens = {}
-        self._lock = threading.RLock()
-
-    def issue(self, scope: str) -> int:
-        with self._lock:
-            self._tokens[scope] = self._tokens.get(scope, 0) + 1
-            return self._tokens[scope]
-
-    def accept(self, scope: str, token: int) -> None:
-        with self._lock:
-            current = self._tokens.get(scope, 0)
-            if int(token) < current:
-                raise RuntimeError("stale fence token")
-            self._tokens[scope] = int(token)
-
-    def mutate(self, scope: str, token: int, operation):
-        with self._lock:
-            if int(token) != self._tokens.get(scope):
-                raise RuntimeError("stale fence token")
-            return operation()
 
 
 def _is_denied_payload(payload: dict) -> bool:
@@ -837,7 +881,8 @@ class PersistentGraphReader:
         self.artifacts = artifacts
 
     def load(self, document_id: str, chunks: list[dict] | None = None) -> nx.Graph | None:
-        entry = self.manifests.get(document_id)
+        snapshot = self.manifests.read_snapshot()
+        entry = snapshot.manifest.get("documents", {}).get(document_id)
         if not entry or entry.get("status") != "available" or not entry.get("active_artifact_key"):
             return None
         data = self.artifacts.read(
@@ -848,8 +893,14 @@ class PersistentGraphReader:
             entry.get("source_fingerprint"),
         )
         artifact = deserialize_graph(data)
-        if artifact.get("source_fingerprint") != entry.get("source_fingerprint"):
-            raise ValueError("graph source fingerprint mismatch")
+        if (
+            artifact.get("document_id") != document_id
+            or artifact.get("document_generation") != entry.get("document_generation")
+            or artifact.get("source_fingerprint") != entry.get("source_fingerprint")
+        ):
+            raise ValueError("graph artifact body metadata mismatch")
+        if not self.manifests.revalidate(snapshot):
+            raise RuntimeError("manifest changed while reading graph artifact")
         graph = graph_from_artifact(artifact, chunks)
         if chunks:
             by_uid = {chunk.get("chunk_uid"): index for index, chunk in enumerate(chunks)}
@@ -868,10 +919,7 @@ def default_graph_services(collection: str, object_store=None):
 
         handler = get_storage_handler()
         object_store = S3ObjectStore(handler)
-        backend = {
-            "kind": handler.__class__.__name__.replace("Handler", "").lower(),
-            "namespace": f"{handler.bucket_name}",
-        }
+        backend = object_store.backend_authority
     else:
         backend = {"kind": "injected", "namespace": collection}
     return ManifestStore(object_store, collection, backend=backend), GraphArtifactStore(object_store, collection)
@@ -948,7 +996,13 @@ class PersistentGraphPipeline:
             artifact_key, digest = self.artifacts.write(claim, canonical)
             # Read-back validates gzip, immutable bytes, metadata, and digest
             # before the manifest's active pointer is changed.
-            self.artifacts.read(artifact_key, digest)
+            self.artifacts.read(
+                artifact_key,
+                digest,
+                claim.get("pending_backend") or claim.get("backend"),
+                claim["document_generation"],
+                claim["source_fingerprint"],
+            )
             self.manifests.bind_artifact(claim, artifact_key, digest)
             entry = self.manifests.publish(claim, artifact_key, digest)
             return {"status": entry["status"], "entry": entry, "artifact_key": artifact_key, "artifact_digest": digest, "details": details}
