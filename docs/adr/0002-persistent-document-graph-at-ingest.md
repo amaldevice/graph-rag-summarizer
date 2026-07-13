@@ -18,28 +18,27 @@ Add an internal optional graph-artifact stage to Ingest Runs without changing th
 1. Ingest writes vectors and payloads to Qdrant as before.
 2. Ingest may build or refresh the document graph artifact from the same full-document chunks and embeddings.
 3. Ingest writes the versioned artifact to `graphs/{collection}/{document_id}/v{version}/graph.json.gz`.
-4. Ingest writes the active manifest to `graphs/{collection}/{document_id}/manifest.json`.
-5. Ingest atomically activates a validated artifact by updating the manifest pointer only after validation succeeds.
+4. Ingest writes the active manifest to `graphs/{collection}/manifest.json`.
+5. Ingest atomically activates a validated artifact by updating the manifest entry for that document only after validation succeeds.
 6. Query-Only and downstream behavior stay unchanged; any consumer that reads the manifest must continue to honor the existing compatibility path when no usable artifact exists.
 
-The manifest contract is:
+The collection manifest is authoritative and stores one entry per document. Readers resolve the entry for a given `document_id` from `graphs/{collection}/manifest.json`, then follow that entry's active pointer.
 
-- `schema_version` — manifest schema version; increments only for breaking manifest changes.
-- `collection` — collection identifier.
+Each manifest entry contains:
+
 - `document_id` — document identifier.
-- `active_version` — the published artifact version; null only when `artifact_status` is `unavailable`.
-- `active_artifact_key` — the published artifact pointer; null only when `artifact_status` is `unavailable`.
-- `artifact_status` — the current artifact state.
-- `storage_backend` — the storage backend that owns the artifact bytes; null only before the first successful publish.
-- `previous_active_version` — the prior published version; null when no prior active artifact exists.
-- `previous_active_artifact_key` — the prior published pointer; null when no prior active artifact exists.
+- `active_version` — the published artifact version; null only when `status` is `unavailable`.
+- `active_artifact_key` — the published artifact pointer; null only when `status` is `unavailable`.
+- `status` — the current artifact state.
+- `backend` — the storage backend that owns the artifact bytes; null only before the first successful publish.
+- `previous_pointer` — the prior active pointer for this document; null when no prior active artifact exists.
 - `updated_at` — last manifest update timestamp.
 
-The active pointer pair is the only authoritative reader reference to the active artifact. If either `active_version` or `active_artifact_key` is null, readers must treat the artifact as unavailable and fall back to the existing compatibility path; `previous_*` fields are audit history only.
+The active pointer pair in each entry is the only authoritative reader reference to the active artifact for that document. If either `active_version` or `active_artifact_key` is null, readers must treat the artifact as unavailable and fall back to the existing compatibility path; `previous_pointer` is audit history only.
 
 The artifact status values are:
 
-- `available` — the artifact validated successfully and the active manifest pointer matches that validated artifact version. Readers may use it normally.
+- `available` — the artifact validated successfully and the active manifest entry matches that validated artifact version. Readers may use it normally.
 - `partial` — the artifact exists, but one or more graph sub-stages or validations are incomplete; keep the artifact visible, but readers must fall back to the existing compatibility path for authoritative behavior.
 - `unavailable` — no usable active artifact exists for the document version; readers must fall back to the existing compatibility path.
 

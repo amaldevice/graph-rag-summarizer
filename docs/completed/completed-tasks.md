@@ -2,6 +2,12 @@
 
 ## 2026-07-13
 
+- **Aligned ADR 0002 with the collection-level active manifest contract for PR #62**
+  - Updated `docs/adr/0002-persistent-document-graph-at-ingest.md` so the persistent artifact stays at `graphs/{collection}/{document_id}/v{version}/graph.json.gz` while the active manifest lives at `graphs/{collection}/manifest.json`.
+  - Clarified that the manifest is collection-authoritative, readers resolve the per-document entry from the collection manifest, and each entry carries `document_id`, `active_version`, `active_artifact_key`, `status`, `backend`, `previous_pointer`, and `updated_at`.
+  - Kept atomic activation, stale-write protection, and replacement semantics unchanged, and left the handoff untouched per request.
+  - Verification: `git diff --check`.
+
 - **Corrected the persistent graph ADR/PRD scope split for PR #62**
   - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` as the lifecycle-only ADR for the internal optional ingest-stage graph artifact.
   - Narrowed the ADR to the exact artifact key, active manifest path and fields, available/partial/unavailable status semantics, append/replace-document/replace-collection behavior, atomic manifest activation, stale-write protection, and preservation of the previous active pointer on failed replacement.
