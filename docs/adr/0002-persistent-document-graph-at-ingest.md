@@ -37,15 +37,17 @@ Each manifest entry contains:
 - `source_fingerprint` — fingerprint for the source input that produced the bound graph.
 - `artifact_digest` — SHA-256 digest of the canonical compressed artifact bytes; it may be null when no active artifact exists.
 - `operation_id` — durable ingest operation identifier for the artifact build or backfill.
+- `pending_operation_id` — current owning operation for a pending manifest entry; null when no operation is pending.
+- `pending_generation` — generation claimed by the current pending operation; null when no operation is pending.
 - `active_version` — the published artifact version; null when there is no active artifact.
 - `active_artifact_key` — the published artifact pointer; null when there is no active artifact.
 - `status` — the current artifact state.
 - `backend` — the storage backend that owns the artifact bytes; it may be null when no active artifact exists.
-- `previous_pointer` — the prior active pointer for this document; audit/recovery only and null when no prior active artifact exists.
+- `previous_pointer` — the prior active pointer for this document; audit/recovery only and null when no prior active artifact exists. It is a structured recovery object containing `artifact_key`, `version`, `backend`, `digest`, and `document_generation`.
 - `updated_at` — last manifest update timestamp.
 - `failure_reason` — optional diagnostic metadata for failures and rebuilds.
 
-The artifact blob metadata carries the same `document_generation`, `source_fingerprint`, `artifact_digest`, and `operation_id`, and the manifest entry must match the artifact metadata exactly.
+The artifact blob metadata carries the same `document_generation`, `source_fingerprint`, `artifact_digest`, `operation_id`, and `pending_operation_id` when applicable, and the manifest entry must match the artifact metadata exactly. The canonical artifact bytes are deterministic: serialize canonical JSON as UTF-8 with sorted keys and fixed compact separators, then gzip with fixed compression level, `mtime=0`, and an empty filename. `artifact_digest` is the SHA-256 of the final `graph.json.gz` bytes, and state-artifact metadata uses the same bytes.
 
 The pointer/status contract is explicit:
 
@@ -57,9 +59,13 @@ The pointer/status contract is explicit:
 | `stale` | Null | Not authoritative | Current Qdrant data no longer matches the in-flight or superseded graph | Fallback |
 | `unavailable` | Null | Not authoritative | No usable active artifact exists | Fallback |
 
-`pending` is written before Qdrant advances, with the active pointer null and the old pointer retained only in `previous_pointer`; while `pending` readers must fall back to the compatibility path.
+When `active_artifact_key` is null, the active-entry `backend` and `artifact_digest` are null as well.
+
+`pending` is written before Qdrant advances, with the active pointer null and the old pointer retained only in `previous_pointer`; while `pending` readers must fall back to the compatibility path. A pending manifest update claims ownership by CASing `pending_operation_id` and `pending_generation`; only the finalizer whose `operation_id` and generation still match may publish the entry or mark it failed. If a newer operation supersedes the pending one, the older operation aborts without changing status.
 
 `document_generation` is always a positive integer. All chunks for one ingest share the same generation. A new append starts at generation `1`; a replace increments the previous generation. Backfill with a valid `document_id` and no existing generation derives generation `1` from one consistent source fingerprint and writes it once; inconsistent or malformed payloads are unavailable/rebuild-required and are never guessed. `available` must match the current `document_generation` and `source_fingerprint`; `partial` may carry a non-null pointer but remains compatibility fallback and diagnostic-only; `pending`, `stale`, and `unavailable` always use compatibility fallback. If Qdrant has already been replaced but graph activation fails, the old pointer remains only as immutable/recoverable bytes in `previous_pointer`; the entry becomes `stale` or `unavailable`, the active pointer is cleared, and it must never remain falsely `available`.
+
+Version allocation is immutable: every normal ingest append uses `v1` for a new document, replace/refresh reserves `max(existing_versions)+1` under manifest CAS before any work begins, and versions are never reused for different bytes.
 
 The artifact key is exact and versioned:
 
@@ -67,14 +73,15 @@ The artifact key is exact and versioned:
 
 Replacement semantics are:
 
-- `append` — create generation `1` for a new document; reject duplicate appends for an already-tracked `document_id`; publish only after validation succeeds.
-- `replace-document` — CAS the manifest entry to `pending` with the new generation, null active pointer, and the prior pointer retained only in `previous_pointer` before any vector or artifact work, write the new artifact, then publish `available` or `partial` only after validation succeeds.
+- `append` — create generation `1` for a new document; reject duplicate appends for an already-tracked `document_id`; reserve `v1` for the first bytes and publish only after validation succeeds.
+- `replace-document` — CAS the manifest entry to `pending` with the new generation, claimed `pending_operation_id` / `pending_generation`, null active pointer, and the prior pointer retained only in `previous_pointer` before any vector or artifact work, reserve `max(existing_versions)+1` under manifest CAS, write the new artifact, then publish `available` or `partial` only after validation succeeds.
 - `replace-collection` — apply the same document-level rules to each document; a failure for one document must preserve that document's prior artifact bytes and previous_pointer metadata, without treating the pointer as active.
 
 Activation safety is:
 
 - the manifest update must be atomic from the perspective of readers;
 - stale writers must not overwrite a newer manifest pointer;
+- replace/refresh must reserve the next version number under manifest CAS before work begins so the version cannot be reused by a different byte sequence;
 - immediately before publish, reread the Qdrant document metadata for the same `document_id` and verify that the expected `document_generation` and `source_fingerprint` still match; if they do not, reject publish, mark the entry `stale`, clear the active pointer, and keep the prior pointer only in `previous_pointer`;
 - if replacement fails after Qdrant advances, mark the entry `stale` or `unavailable`, set `failure_reason`, clear the active pointer, and keep the prior pointer only in `previous_pointer`; the prior bytes remain immutable and recoverable through `previous_pointer`, but are not reader-active;
 - the older validated artifact bytes remain immutable and recoverable through `previous_pointer` until a newer validated manifest is successfully published, but they are not reader-active while the entry is pending, stale, or unavailable.
