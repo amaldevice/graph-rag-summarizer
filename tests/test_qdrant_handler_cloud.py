@@ -138,6 +138,10 @@ def test_graph_claim_uses_attempt_points_and_readback_control_proof() -> None:
         def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
             return [objects[str(point_id)] for point_id in ids if str(point_id) in objects]
 
+        def scroll(self, **kwargs):
+            del kwargs
+            return list(objects.values()), None
+
     from graph.persistent import InMemoryObjectStore, ManifestStore
 
     manifest = ManifestStore(

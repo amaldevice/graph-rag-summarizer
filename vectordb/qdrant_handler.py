@@ -431,6 +431,24 @@ class QdrantHandler:
         )
         if len(points) != 1 or (points[0].payload or {}) != self._last_control_payload:
             raise RuntimeError("document control point proof mismatch")
+        if not self._graph_claim:
+            raise RuntimeError("document claim is missing for control proof")
+        from graph.persistent import canonical_json_bytes
+
+        claim = self._graph_claim
+        attempt_filter = Filter(must=[
+            FieldCondition(key="document_id", match=MatchValue(value=claim["document_id"])),
+            FieldCondition(key="document_generation", match=MatchValue(value=claim["document_generation"])),
+            FieldCondition(key="document_attempt_id", match=MatchValue(value=claim["pending_attempt_id"])),
+        ])
+        actual = [
+            {"point_id": str(point_id), "payload": payload}
+            for point_id, payload in sorted(self._scroll_point_records(attempt_filter), key=lambda item: str(item[0]))
+        ]
+        actual_digest = hashlib.sha256(canonical_json_bytes(actual)).hexdigest()
+        expected = self._last_control_payload
+        if len(actual) != expected["point_count"] or actual_digest != expected["point_set_digest"]:
+            raise RuntimeError("document point-set proof mismatch")
 
     def write_tombstone_control_points(
         self,

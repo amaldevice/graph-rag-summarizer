@@ -321,7 +321,16 @@ def run_ingest(config: dict) -> None:
                 qdrant.finalize_replace_document(document_id, uploaded_point_ids)
         elif ingest_mode == "replace-collection":
             if graph_claim:
-                qdrant.finalize_replace_collection(uploaded_point_ids, graph_claim)
+                qdrant.set_collection_claim(
+                    graph_pipeline.manifests,
+                    collection_tombstone_manifest["collection_operation_id"],
+                    collection_tombstone_manifest["collection_fence_token"],
+                )
+                qdrant.finalize_replace_collection(uploaded_point_ids)
+                graph_pipeline.manifests.release_collection_fence(
+                    collection_tombstone_manifest["collection_operation_id"],
+                    collection_tombstone_manifest["collection_fence_token"],
+                )
             else:
                 qdrant.finalize_replace_collection(uploaded_point_ids)
     except Exception as exc:
