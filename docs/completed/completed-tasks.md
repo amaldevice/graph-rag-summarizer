@@ -2,6 +2,13 @@
 
 ## 2026-07-13
 
+
+- **Closed the PR #62 docs-only blocker patch for ADR 0002**
+  - Updated `docs/adr/0002-persistent-document-graph-at-ingest.md` to make the lifecycle claim order explicit, fence Qdrant work with the manifest-issued token, define the tombstone deny control point and legacy-scan fail-closed rules, add monotonic version ledgering, and require gzip/canonical digest integrity checks on readers and writers.
+  - Updated `docs/canvas/issue-flow-architecture.html` so ADR 0002 is clearly the decision record and PR #62 still needs a separate implementation delivery issue for PR A.
+  - Updated `docs/todo-in-progress.md` to remove the docs-only item from In Progress and keep the overall handoff tracking intact.
+  - Verification: `git diff --check`.
+
 - **Aligned ADR 0002 with the collection-level active manifest contract for PR #62**
   - Updated `docs/adr/0002-persistent-document-graph-at-ingest.md` so the persistent artifact stays at `graphs/{collection}/{document_id}/v{version}/graph.json.gz` while the active manifest lives at `graphs/{collection}/manifest.json`.
   - Clarified that the manifest is collection-authoritative, readers resolve the per-document entry from the collection manifest, and each entry carries `document_id`, `active_version`, `active_artifact_key`, `status`, `backend`, `previous_pointer`, and `updated_at`.
@@ -18,7 +25,8 @@
 ## 2026-07-12
 
 - **Recorded the accepted persistent document-scoped graph architecture**
-  - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` covering ingest-time graph construction, versioned object-storage artifacts, manifest activation, raw versus active relation evidence, stable ingest-time communities, query-time subgraph selection, failure handling, and legacy backfill boundaries.
+  - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` covering lifecycle/storage/fencing/backfill authority for the persistent document-scoped graph artifact, versioned object-storage artifacts, manifest activation, raw versus active relation evidence, stable ingest-time communities, failure handling, and legacy backfill boundaries. Adaptive query behavior stays with later work.
+  - Kept PR #62 delivery split from the decision record so the implementation issue remains separate.
   - Confirmed the existing adaptive graph PRD and Wayfinder map/tickets remain the implementation planning surfaces; no duplicate spec or ticket set was created.
   - Verification: ADR structure/reference check and `git diff --check`.
 
