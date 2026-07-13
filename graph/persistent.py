@@ -47,8 +47,16 @@ def _jcs_encode(value: Any) -> str:
         mantissa, exponent = text.split("e")
         exponent_value = int(exponent)
         if -6 <= exponent_value < 21:
-            fixed = format(value, ".20f").rstrip("0").rstrip(".")
-            return fixed
+            sign = "-" if mantissa.startswith("-") else ""
+            unsigned = mantissa.lstrip("-")
+            digits = unsigned.replace(".", "")
+            dot = unsigned.find(".")
+            decimal_position = (dot if dot >= 0 else len(unsigned)) + exponent_value
+            if decimal_position <= 0:
+                return f"{sign}0.{('0' * -decimal_position) + digits}"
+            if decimal_position >= len(digits):
+                return f"{sign}{digits}{'0' * (decimal_position - len(digits))}"
+            return f"{sign}{digits[:decimal_position]}.{digits[decimal_position:]}"
         sign = "+" if exponent_value >= 0 else "-"
         return f"{mantissa}e{sign}{abs(exponent_value)}"
     if isinstance(value, list):
@@ -632,6 +640,14 @@ class ManifestStore:
                 if document_id in retained_document_ids:
                     continue
                 entry = dict(entry)
+                if entry.get("active_artifact_key"):
+                    entry["previous_pointer"] = {
+                        "artifact_key": entry["active_artifact_key"],
+                        "version": entry.get("active_version"),
+                        "backend": entry.get("backend"),
+                        "artifact_digest": entry.get("artifact_digest"),
+                        "document_generation": entry.get("document_generation"),
+                    }
                 entry.update({
                     "status": "tombstoned",
                     "tombstone_operation_id": operation_id,
@@ -915,12 +931,16 @@ class PersistentGraphPipeline:
 
     def reserve(self, chunks, document_id, *, mode="append", operation_id=None):
         fingerprint = source_fingerprint(chunks, document_id)
-        operation_id = operation_id or f"ingest:{self.manifests.collection}:{document_id}:{fingerprint}"
+        prior = self.manifests.get(document_id)
+        generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
+        operation_id = operation_id or f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
         return self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
 
     def build_and_publish(self, chunks, embeddings, document_id, *, mode="append", operation_id=None, claim=None, **kwargs):
         fingerprint = source_fingerprint(chunks, document_id)
-        operation_id = operation_id or f"ingest:{self.manifests.collection}:{document_id}:{fingerprint}"
+        prior = self.manifests.get(document_id)
+        generation = claim.get("document_generation") if claim else (int(prior.get("document_generation", 0)) + 1 if prior else 1)
+        operation_id = operation_id or f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
         claim = claim or self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
         try:
             graph, details = build_document_graph(chunks, embeddings, document_id, **kwargs)
