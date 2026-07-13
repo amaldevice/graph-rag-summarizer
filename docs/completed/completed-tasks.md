@@ -2,7 +2,6 @@
 
 ## 2026-07-13
 
-
 - **Prepared the PR #62 docs-only blocker patch for ADR 0002**
   - Updated `docs/adr/0002-persistent-document-graph-at-ingest.md` to make the lifecycle claim order explicit, fence Qdrant work with the manifest-issued token, define the tombstone deny control point and legacy-scan fail-closed rules, add monotonic version ledgering, and require gzip/canonical digest integrity checks on readers and writers.
   - Updated `docs/canvas/issue-flow-architecture.html` so ADR 0002 is clearly the decision record and PR #62 still needs a separate implementation delivery issue for PR A.
@@ -17,13 +16,18 @@
   - Verification: `git diff --check`.
 
 - **Corrected the persistent graph ADR/PRD scope split for PR #62**
-  - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` as the lifecycle-only ADR for the internal optional ingest-stage graph artifact.
-  - Narrowed the ADR to the exact artifact key, active manifest path and fields, available/partial/unavailable status semantics, append/replace-document/replace-collection behavior, atomic manifest activation, stale-write protection, and preservation of the previous active pointer on failed replacement.
-  - Added the PRD clarification that Query-Only and the launcher/operator contract remain unchanged while the accepted ingest-stage graph artifact is optional and owned by ADR 0002.
+  - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` as the lifecycle-only ADR for the ingest-stage graph artifact.
+  - Narrowed the ADR to the exact artifact key, active manifest location and fields, available/partial/unavailable status semantics, append/replace/backfill behavior, atomic manifest activation, stale-write protection, and preservation of the previous active pointer on failed replacement.
+  - Added the short PRD clarification that the launcher/operator contract and Query-Only behavior remain unchanged while the accepted ingest-stage graph artifact is optional and owned by ADR 0002.
   - Updated `docs/todo-in-progress.md` to track the docs-only fix.
   - Verification: focused markdown/reference review and `git diff --check`.
 
 ## 2026-07-12
+
+- **Created the end-to-end implementation handoff for persistent graph construction**
+  - Added `docs/handoff-2026-07-13-persistent-graph-implementation.md` with the target ingest/query flow, storage and lifecycle contract, PR A–D implementation sequence, issue/merge policy, desired outputs, verification contract, and suggested execution skills.
+  - Referenced the adaptive graph PRD, ADR stack, Wayfinder map/decisions, and implementation issues without duplicating their canonical content.
+  - Verification: handoff structure/reference check and `git diff --check`.
 
 - **Recorded the accepted persistent document-scoped graph architecture**
   - Added `docs/adr/0002-persistent-document-graph-at-ingest.md` covering lifecycle/storage/fencing/backfill authority for the persistent document-scoped graph artifact, versioned object-storage artifacts, manifest activation, raw versus active relation evidence, stable ingest-time communities, failure handling, and legacy backfill boundaries. Adaptive query behavior stays with later work.

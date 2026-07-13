@@ -4,4 +4,4 @@
 - PR #62 docs-only architecture blockers resolved in ADR 0002; no remaining docs work for this slice.
 
 ## In Progress
-- Overall handoff remains active: land ADR stack, implement PR A-D, code-review each PR, merge sequentially to main.
+- Execute `docs/handoff-2026-07-13-persistent-graph-implementation.md` end to end: land ADRs, implement PR A–D, review each PR, and merge sequentially to `main`.

@@ -26,6 +26,10 @@ Every adaptive decision will produce artifacts with resolved policies, scores, b
 
 The existing launcher and operator contract, including Query-Only behavior, remains unchanged. Ingest may include an internal, optional graph-artifact stage, and ADR 0002 is the lifecycle authority for that stage. Stacked follow-on PRs #64 and #65, backed by planning issues #60 and #61, keep ownership of adaptive topology and query-time context allocation; ADR 0004 and ADR 0005 are only the intended files for those follow-on decisions.
 
+### Clarification / Exception
+
+The existing launcher and operator contract, including Query-Only behavior, remains unchanged. An accepted internal, optional graph-artifact stage may run during Ingest Runs, and ADR 0002 is the lifecycle authority for that stage. ADRs 0004 and 0005 keep ownership of adaptive topology and query-time context allocation.
+
 ## User Stories
 
 1. As an operator, I want the Full-Pipeline Run to discover supported relations across retrieved chunks, so that evidence is not limited by arbitrary chunk boundaries.
