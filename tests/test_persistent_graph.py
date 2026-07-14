@@ -164,6 +164,16 @@ def test_reserve_same_operation_resumes_exact_claim():
     assert resumed["build_attempt_id"] == first["build_attempt_id"]
 
 
+def test_append_resumes_same_pending_claim_before_duplicate_append_rejection():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    first = manifests.reserve("paper", "op-1", "fingerprint", mode="append")
+
+    resumed = manifests.reserve("paper", "op-1", "fingerprint", mode="append")
+
+    assert resumed["pending_version"] == first["pending_version"]
+    assert resumed["pending_attempt_id"] == first["pending_attempt_id"]
+
+
 def test_pipeline_reserve_reuses_persisted_pending_operation_for_resume():
     manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
     pipeline = PersistentGraphPipeline("papers", manifests=manifests, artifacts=GraphArtifactStore(InMemoryObjectStore(), "papers"))
@@ -188,6 +198,25 @@ def test_manifest_lease_blocks_claim_changes_until_qdrant_mutation_finishes():
 
     assert manifests.read_snapshot().manifest["active_mutation_id"] is None
     assert manifests.get("other") is None
+
+
+def test_manifest_lease_can_be_taken_over_only_for_an_expired_matching_claim():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve("paper", "op-1", "fingerprint", mode="replace-document")
+    snapshot = manifests.read_snapshot()
+    manifest = snapshot.manifest
+    manifest.update({
+        "active_mutation_id": "crashed-owner",
+        "active_mutation_scope": "document",
+        "active_mutation_operation_id": claim["operation_id"],
+        "active_mutation_document_id": claim["document_id"],
+        "active_mutation_attempt_id": claim["pending_attempt_id"],
+        "active_mutation_started_at": "2000-01-01T00:00:00+00:00",
+    })
+    manifests._write(manifest, snapshot)
+
+    assert manifests.mutate_claim(claim, lambda: "resumed") == "resumed"
+    assert manifests.read_snapshot().manifest["active_mutation_id"] is None
 
 
 def test_reserve_rebuilds_next_version_from_ledger_when_counter_is_stale():

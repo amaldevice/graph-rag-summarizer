@@ -88,6 +88,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_MUTATION_LEASE_TTL_SECONDS = 900
+
+
 def _key_component(value: str) -> str:
     """Keep caller-controlled identifiers inside their object-store prefix."""
     return quote(str(value), safe="-_.~")
@@ -416,6 +419,11 @@ class ManifestStore:
             "collection_operation_id": None,
             "collection_attempt_id": None,
             "active_mutation_id": None,
+            "active_mutation_scope": None,
+            "active_mutation_operation_id": None,
+            "active_mutation_document_id": None,
+            "active_mutation_attempt_id": None,
+            "active_mutation_started_at": None,
             "manifest_backend": self.backend,
             "tombstone_set_digest": _digest(canonical_json_bytes([])),
             "pending_tombstone_set_digest": None,
@@ -505,6 +513,83 @@ class ManifestStore:
             if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
 
+    @staticmethod
+    def _mutation_lease_matches(
+        manifest: dict,
+        *,
+        scope: str,
+        operation_id: str,
+        document_id: str | None,
+        attempt_id: str | None,
+    ) -> bool:
+        return (
+            manifest.get("active_mutation_scope") == scope
+            and manifest.get("active_mutation_operation_id") == operation_id
+            and manifest.get("active_mutation_document_id") == document_id
+            and manifest.get("active_mutation_attempt_id") == attempt_id
+        )
+
+    @staticmethod
+    def _mutation_lease_expired(manifest: dict) -> bool:
+        started_at = manifest.get("active_mutation_started_at")
+        if not isinstance(started_at, str):
+            return False
+        try:
+            started = datetime.fromisoformat(started_at)
+        except ValueError:
+            return False
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - started).total_seconds() > _MUTATION_LEASE_TTL_SECONDS
+
+    def _acquire_mutation_lease(
+        self,
+        snapshot: ManifestSnapshot,
+        *,
+        scope: str,
+        operation_id: str,
+        document_id: str | None,
+        attempt_id: str | None,
+    ) -> str:
+        manifest = snapshot.manifest
+        if manifest.get("active_mutation_id") is not None and not (
+            self._mutation_lease_matches(
+                manifest,
+                scope=scope,
+                operation_id=operation_id,
+                document_id=document_id,
+                attempt_id=attempt_id,
+            )
+            and self._mutation_lease_expired(manifest)
+        ):
+            raise RuntimeError("a Qdrant mutation is already fenced")
+        owner = str(uuid.uuid4())
+        manifest.update({
+            "active_mutation_id": owner,
+            "active_mutation_scope": scope,
+            "active_mutation_operation_id": operation_id,
+            "active_mutation_document_id": document_id,
+            "active_mutation_attempt_id": attempt_id,
+            "active_mutation_started_at": _now(),
+        })
+        self._write(manifest, snapshot)
+        return owner
+
+    def _release_mutation_lease(self, owner: str) -> None:
+        snapshot = self.read_snapshot()
+        manifest = snapshot.manifest
+        if manifest.get("active_mutation_id") != owner:
+            raise RuntimeError("Qdrant mutation lease was lost")
+        manifest.update({
+            "active_mutation_id": None,
+            "active_mutation_scope": None,
+            "active_mutation_operation_id": None,
+            "active_mutation_document_id": None,
+            "active_mutation_attempt_id": None,
+            "active_mutation_started_at": None,
+        })
+        self._write(manifest, snapshot)
+
     def mutate_claim(self, claim: dict, operation):
         with self._lock:
             snapshot = self.read_snapshot()
@@ -513,29 +598,31 @@ class ManifestStore:
             if (
                 not self._claim_matches(current, claim)
                 or not self._claim_matches_collection(manifest, claim)
-                or manifest.get("active_mutation_id") is not None
             ):
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
-            owner = str(uuid.uuid4())
-            manifest["active_mutation_id"] = owner
-            self._write(manifest, snapshot)
+            owner = self._acquire_mutation_lease(
+                snapshot,
+                scope="document",
+                operation_id=claim["operation_id"],
+                document_id=claim["document_id"],
+                attempt_id=claim.get("pending_attempt_id"),
+            )
             operation_error = None
             result = None
             try:
                 result = operation()
                 manifest, _ = self._read()
                 current = manifest.get("documents", {}).get(claim["document_id"])
-                if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
+                if (
+                    manifest.get("active_mutation_id") != owner
+                    or not self._claim_matches(current, claim)
+                    or not self._claim_matches_collection(manifest, claim)
+                ):
                     raise RuntimeError("graph claim changed during Qdrant mutation")
             except Exception as exc:
                 operation_error = exc
             try:
-                snapshot = self.read_snapshot()
-                manifest = snapshot.manifest
-                if manifest.get("active_mutation_id") != owner:
-                    raise RuntimeError("graph mutation lease was lost")
-                manifest["active_mutation_id"] = None
-                self._write(manifest, snapshot)
+                self._release_mutation_lease(owner)
             except Exception as release_error:
                 if operation_error is None:
                     raise RuntimeError("graph mutation lease could not be released") from release_error
@@ -548,27 +635,29 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
-            if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id) or manifest.get("active_mutation_id") is not None:
+            if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id):
                 raise RuntimeError("stale collection fence cannot mutate Qdrant")
-            owner = str(uuid.uuid4())
-            manifest["active_mutation_id"] = owner
-            self._write(manifest, snapshot)
+            owner = self._acquire_mutation_lease(
+                snapshot,
+                scope="collection",
+                operation_id=operation_id,
+                document_id=None,
+                attempt_id=attempt_id,
+            )
             operation_error = None
             result = None
             try:
                 result = operation()
                 manifest, _ = self._read()
-                if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id):
+                if (
+                    manifest.get("active_mutation_id") != owner
+                    or not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id)
+                ):
                     raise RuntimeError("collection fence changed during Qdrant mutation")
             except Exception as exc:
                 operation_error = exc
             try:
-                snapshot = self.read_snapshot()
-                manifest = snapshot.manifest
-                if manifest.get("active_mutation_id") != owner:
-                    raise RuntimeError("collection mutation lease was lost")
-                manifest["active_mutation_id"] = None
-                self._write(manifest, snapshot)
+                self._release_mutation_lease(owner)
             except Exception as release_error:
                 if operation_error is None:
                     raise RuntimeError("collection mutation lease could not be released") from release_error
@@ -590,18 +679,18 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
-            if manifest.get("active_mutation_id") is not None:
-                raise RuntimeError("a Qdrant mutation is already fenced")
             documents = dict(manifest.get("documents", {}))
             prior = documents.get(document_id)
-            if mode == "append" and prior is not None:
-                raise ValueError(f"document '{document_id}' is already tracked; use replace-document")
             if (
                 prior
                 and prior.get("pending_operation_id") == operation_id
                 and prior.get("pending_source_fingerprint") == source_fingerprint_value
             ):
                 return prior
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
+            if mode == "append" and prior is not None:
+                raise ValueError(f"document '{document_id}' is already tracked; use replace-document")
             if prior and prior.get("pending_operation_id") and prior["pending_operation_id"] != operation_id:
                 raise RuntimeError("document has an active graph claim")
             generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
@@ -781,13 +870,13 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
-            if manifest.get("active_mutation_id") is not None:
-                raise RuntimeError("a Qdrant mutation is already fenced")
             active_operation = manifest.get("collection_operation_id")
             if active_operation:
                 if active_operation != operation_id:
                     raise RuntimeError("collection has an active tombstone operation")
                 return manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             documents = dict(manifest.get("documents", {}))
             cleanup_ids = []
             manifest["tombstone_epoch"] = int(manifest.get("tombstone_epoch", 0)) + 1
@@ -1147,7 +1236,7 @@ def build_document_graph(chunks, embeddings, document_id, *, entity_extractor=No
         "communities": communities,
         "community_map": community_map,
         "modularity": modularity,
-        "raw_evidence": graph.graph.get("raw_evidence", []),
+        "raw_evidence": relations,
         "diagnostics": diagnostics,
     }
 

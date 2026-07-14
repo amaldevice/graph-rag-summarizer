@@ -136,8 +136,12 @@ class QdrantHandler:
         controls = manifests.tombstone_controls(current.manifest)
         self.verify_tombstone_control_points(controls, expected_digest=expected_digest)
 
-    def set_active_vector_generations(self, generations: dict[str, int]) -> None:
-        self._active_vector_generations = {str(key): int(value) for key, value in generations.items()}
+    def set_active_vector_generations(self, generations: dict[str, int] | None) -> None:
+        self._active_vector_generations = (
+            None
+            if generations is None
+            else {str(key): int(value) for key, value in generations.items()}
+        )
 
     def capture_collection_baseline(self) -> None:
         """Record pre-existing ids so stale cleanup cannot delete newer attempts."""
@@ -161,16 +165,16 @@ class QdrantHandler:
                 FieldCondition(key="document_attempt_id", match=MatchValue(value=selector["document_attempt_id"])),
                 FieldCondition(key="graph_point", match=MatchValue(value=True)),
             ]))
-        must: list[Condition] = [Filter(should=branches)] if branches else []
+        must: list[Condition] = [IsEmptyCondition(is_empty=PayloadField(key="graph_control_point"))]
+        if branches:
+            must.append(Filter(should=branches))
+        else:
+            must.append(HasIdCondition(has_id=[]))
         return Filter(
             must=must,
             must_not=[
-                FieldCondition(key="graph_control_point", match=MatchValue(value="document")),
-                FieldCondition(key="graph_control_point", match=MatchValue(value="tombstone")),
-                *[
-                    FieldCondition(key="document_id", match=MatchValue(value=document_id))
-                    for document_id in sorted(self._denied_document_ids)
-                ],
+                FieldCondition(key="document_id", match=MatchValue(value=document_id))
+                for document_id in sorted(self._denied_document_ids)
             ],
         )
 

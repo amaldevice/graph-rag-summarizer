@@ -158,11 +158,21 @@ def _configure_query_denial(qdrant, collection, object_store=None):
     ]
     qdrant.set_denied_document_ids(denied)
     qdrant.set_query_authorization(manifests, snapshot)
-    qdrant.set_active_vector_generations({
-        document_id: entry["document_generation"]
-        for document_id, entry in snapshot.manifest.get("documents", {}).items()
-        if entry.get("status") != "tombstoned" and entry.get("document_generation") is not None
-    })
+    manifest_entries = snapshot.manifest.get("documents", {})
+    if not manifest_entries:
+        qdrant.set_active_vector_generations(None)
+    else:
+        active_vector_generations = {}
+        for document_id, entry in manifest_entries.items():
+            if entry.get("status") == "tombstoned":
+                continue
+            if entry.get("status") == "pending":
+                generation = (entry.get("previous_pointer") or {}).get("document_generation")
+            else:
+                generation = entry.get("document_generation")
+            if generation is not None:
+                active_vector_generations[document_id] = generation
+        qdrant.set_active_vector_generations(active_vector_generations)
     qdrant.set_active_graph_selectors({
         document_id: {
             "document_generation": entry["document_generation"],
