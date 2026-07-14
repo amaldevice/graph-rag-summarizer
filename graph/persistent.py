@@ -23,6 +23,13 @@ from urllib.parse import quote
 
 import networkx as nx
 
+from graph.relation_evidence import (
+    canonicalize_entities,
+    classify_entity_support,
+    is_active_relation,
+    normalize_relation_evidence,
+)
+
 
 def canonical_json_bytes(value: Any) -> bytes:
     """Return RFC 8785-compatible UTF-8 bytes for the supported JSON values."""
@@ -1441,28 +1448,22 @@ def build_document_graph(
         from graph.community_detector import CommunityDetector
 
         detector = CommunityDetector()
-    entity_map, entities = entity_extractor.extract_entities(chunks)
+    entity_map, extracted_entities = entity_extractor.extract_entities(chunks)
+    entities, canonicalization = canonicalize_entities(extracted_entities)
     relations = []
     for chunk in chunks:
         chunk_uid = chunk.get("chunk_uid", chunk.get("chunk_id"))
         local_entities = entity_map.get(chunk_uid, [])
         extracted = entity_extractor.extract_relations_llm(chunk.get("text", ""), local_entities)
-        for relation in extracted:
-            relation = dict(relation)
-            relation.setdefault("support_chunk_uids", [chunk_uid])
-            relation.setdefault("evidence_type", "explicit" if relation.get("source") not in {"rule-based", "fallback"} else "same_chunk")
-            relation.setdefault("confidence", 1.0 if relation.get("source") not in {"rule-based", "fallback"} else 0.5)
-            relation.setdefault(
-                "status",
-                "unverified" if relation.get("source") in {"rule-based", "fallback"} else "accepted",
-            )
-            relations.append(relation)
+        relations.extend(
+            normalize_relation_evidence(extracted, support_chunk_uid=chunk_uid)
+        )
     relations.sort(key=canonical_json_bytes)
     graph = graph_builder.build_graph(chunks, embeddings, entities, relations)
     graph, communities, community_map, modularity = detector.detect(graph)
     active_evidence = [
         relation for relation in relations
-        if relation.get("status") not in {"rejected", "unverified"}
+        if is_active_relation(relation)
     ]
     status_counts = {
         status: sum(1 for relation in relations if relation.get("status") == status)
@@ -1474,8 +1475,11 @@ def build_document_graph(
     diagnostics = {
         "entity_count": len(entities),
         "local_relation_count": len(relations),
+        "raw_evidence_count": len(relations),
         "active_evidence_count": len(active_evidence),
         "relation_status_counts": status_counts,
+        "canonicalization": canonicalization,
+        "entity_support": classify_entity_support(entities, relations),
         "community_count": len(communities),
         "modularity": modularity,
         "entity_extraction": {
