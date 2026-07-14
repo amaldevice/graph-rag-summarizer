@@ -79,13 +79,13 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/49
 
 **Blocked by:** None — can start immediately because semantic chunk topology is independent of relation recovery.
 
-- [ ] The fixed policy remains available as a backward-compatible baseline and fallback.
-- [ ] The first adaptive policy uses mutual-neighbor evidence and a data-dependent cutoff.
-- [ ] Minimum and maximum degree bounds prevent fragmentation and uncontrolled density.
-- [ ] Stable Defaults control the policy without adding a Launcher Mode or interactive prompt.
-- [ ] Artifacts report the selected policy, resolved cutoff, degree distribution, edge count, connected components, and fallback reason.
-- [ ] Stable graph-node ordering makes repeated inputs deterministic.
-- [ ] Synthetic sparse, dense, and degenerate fixtures verify degree bounds, topology changes, and fallback behavior.
+- [x] The fixed policy remains available as a backward-compatible baseline and fallback.
+- [x] The first adaptive policy uses mutual-neighbor evidence and a data-dependent cutoff.
+- [x] Minimum and maximum degree bounds prevent fragmentation and uncontrolled density.
+- [x] Stable Defaults control the policy without adding a Launcher Mode or interactive prompt.
+- [x] Artifacts report the selected policy, resolved cutoff, degree distribution, edge count, connected components, and fallback reason.
+- [x] Stable graph-node ordering makes repeated inputs deterministic.
+- [x] Synthetic sparse, dense, and degenerate fixtures verify degree bounds, topology changes, and fallback behavior.
 
 ## 6. #50 — Select stable communities from multiresolution Leiden candidates
 
@@ -95,14 +95,14 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/50
 
 **Blocked by:** #48 and #49 — partition selection should consume the recovered graph and adaptive semantic topology.
 
-- [ ] The current modularity partition remains available as a baseline.
-- [ ] Candidate resolutions and seeds are bounded and deterministic.
-- [ ] Every candidate records objective, resolution, community count, size distribution, singleton rate, graph quality, semantic coherence, query coverage, and practical stability.
-- [ ] The selector normalizes incomparable signals before combining them.
-- [ ] Identical inputs and Stable Defaults choose the same active partition.
-- [ ] Rejected candidates include explicit rejection reasons.
-- [ ] Candidate and selected-partition artifacts are written per Full-Pipeline attempt.
-- [ ] Synthetic graphs cover clear communities, bridge nodes, imbalance, singleton noise, disconnected input, and a resolution-limit scenario.
+- [x] The current modularity partition remains available as a baseline.
+- [x] Candidate resolutions and seeds are bounded and deterministic.
+- [x] Every candidate records objective, resolution, community count, size distribution, singleton rate, graph quality, semantic coherence, query coverage, and practical stability.
+- [x] The selector normalizes incomparable signals before combining them.
+- [x] Identical inputs and Stable Defaults choose the same active partition.
+- [x] Rejected candidates include explicit rejection reasons.
+- [x] Candidate and selected-partition artifacts are written per Full-Pipeline attempt.
+- [x] Synthetic graphs cover clear communities, bridge nodes, imbalance, singleton noise, disconnected input, and a resolution-limit scenario.
 
 ## 7. #51 — Compare graph communities with an embedding-clustering baseline
 
@@ -112,13 +112,13 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/51
 
 **Blocked by:** #50 — the comparison requires an active graph partition.
 
-- [ ] Agglomerative clustering reuses the existing embedding runtime and scikit-learn dependency.
-- [ ] The comparison reports cluster count, noise/singleton behavior where applicable, coherence, and agreement with the active graph partition.
-- [ ] Diagnostic failures degrade gracefully and do not fail the Full-Pipeline Run.
-- [ ] The diagnostic path never replaces the active partition automatically.
-- [ ] No HDBSCAN, BERTopic, or other mandatory dependency is added.
-- [ ] Artifacts make the baseline configuration and comparison results reproducible.
-- [ ] Tests cover agreement, disagreement, small-input fallback, and diagnostic unavailability.
+- [x] Agglomerative clustering reuses the existing embedding runtime and scikit-learn dependency.
+- [x] The comparison reports cluster count, noise/singleton behavior where applicable, coherence, and agreement with the active graph partition.
+- [x] Diagnostic failures degrade gracefully and do not fail the Full-Pipeline Run.
+- [x] The diagnostic path never replaces the active partition automatically.
+- [x] No HDBSCAN, BERTopic, or other mandatory dependency is added.
+- [x] Artifacts make the baseline configuration and comparison results reproducible.
+- [x] Tests cover agreement, disagreement, small-input fallback, and diagnostic unavailability.
 
 ## 8. #52 — Allocate query-aware context with diversity and bounded budgets
 
