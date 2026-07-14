@@ -4,8 +4,34 @@
 # ============================================================
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+_MONTH_NAMES = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)"
+)
+_DATE_PATTERN = re.compile(
+    rf"\b(?:{_MONTH_NAMES})\.?\s+\d{{1,2}}(?:,\s*|\s+)\d{{4}}\b"
+    rf"|\b\d{{1,2}}\s+(?:{_MONTH_NAMES})\.?\s+\d{{4}}\b"
+    rf"|\b(?:{_MONTH_NAMES})\.?\s+\d{{4}}\b"
+    rf"|\b(?:\d{{4}}[-/]\d{{1,2}}[-/]\d{{1,2}}|\d{{1,2}}[-/]\d{{1,2}}[-/]\d{{4}})\b",
+    re.IGNORECASE,
+)
+_MONTH_TOKEN_PATTERN = re.compile(rf"\b(?:{_MONTH_NAMES})\.?", re.IGNORECASE)
+_NUMBER_PATTERN = re.compile(r"(?<![\w.\d])[+-]?\d[\d,]*(?:\.\d+)?%?(?!\w)")
+_NON_ENTITY_TITLE_WORDS = {
+    "a", "additionally", "although", "an", "and", "because", "but", "consequently",
+    "dec", "december", "feb", "february", "finally", "first", "for", "from",
+    "furthermore", "he", "however", "i", "in", "it", "jan", "january", "jul", "july",
+    "jun", "june", "mar", "march", "may", "meanwhile", "moreover", "nov", "november",
+    "oct", "october", "of", "on", "or", "overall", "second", "sep", "sept", "september",
+    "she", "that", "the", "their", "therefore", "these", "they", "third", "this", "those",
+    "to", "we", "while", "with", "you",
+}
 
 try:
     from rouge_score import rouge_scorer
@@ -88,8 +114,8 @@ class SummaryEvaluator:
         result["grounded_metrics"] = self._grounded_metrics(
             generated_summary=generated_summary,
             source_text=source_text,
+            source_chunks=source_chunks or [],
             query=query,
-            lexical_overlap=lexical_overlap,
         )
         return result
 
@@ -97,8 +123,8 @@ class SummaryEvaluator:
         self,
         generated_summary: str,
         source_text: str,
+        source_chunks: List[Dict],
         query: Optional[str],
-        lexical_overlap: float,
     ) -> Dict:
         # ponytail: FactCC/SummaC are optional research evaluators; report absence instead of adding heavy deps.
         metrics = {
@@ -119,9 +145,192 @@ class SummaryEvaluator:
             },
             "qa_coverage": self._qa_coverage(generated_summary, source_text, query),
         }
+        sentence_support, supports = self._sentence_support(generated_summary, source_chunks)
+        metrics.update({
+            "entity_consistency": self._entity_consistency(generated_summary, source_text),
+            "number_date_consistency": self._number_date_consistency(generated_summary, source_text),
+            "sentence_support": sentence_support,
+            "citation_coverage": self._citation_coverage(supports, source_chunks),
+            "redundancy": self._redundancy(generated_summary),
+            "query_relevance": self._query_relevance(generated_summary, query),
+            "evidence_diversity": self._evidence_diversity(source_chunks),
+        })
         if self.judge_session is not None:
             metrics["geval"] = self._geval(generated_summary, source_text, query)
         return metrics
+
+    @staticmethod
+    def _metric(score: float, reason: str, **details) -> Dict:
+        result = {"status": "available", "score": score, "reason": reason}
+        if details:
+            result["details"] = details
+        return result
+
+    @staticmethod
+    def _unavailable(reason: str) -> Dict:
+        return {"status": "unavailable", "score": None, "reason": reason}
+
+    @staticmethod
+    def _words(text: str) -> set[str]:
+        return set(re.findall(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*", text.lower()))
+
+    @staticmethod
+    def _sentences(text: str) -> List[str]:
+        return [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text) if sentence.strip()]
+
+    @staticmethod
+    def _chunk_id(chunk: Dict):
+        return chunk.get("chunk_uid") or chunk.get("chunk_id")
+
+    @staticmethod
+    def _entities(text: str) -> set[str]:
+        entities = set()
+        for match in re.finditer(r"\b[A-Z]{2,}\b|\b[A-Z][a-z]+\b", text):
+            value = match.group()
+            if value.casefold() in _NON_ENTITY_TITLE_WORDS:
+                continue
+            if not value.isupper() and text[match.end():].lstrip().startswith(","):
+                continue
+            entities.add(value.casefold())
+        return entities
+
+    @staticmethod
+    def _numbers_and_dates(text: str) -> set[str]:
+        date_matches = list(_DATE_PATTERN.finditer(text))
+        values = {
+            SummaryEvaluator._normalize_date(match.group())
+            for match in date_matches
+        }
+        for match in _NUMBER_PATTERN.finditer(text):
+            if not any(match.start() < date.end() and match.end() > date.start() for date in date_matches):
+                values.add(match.group().replace(",", ""))
+        return values
+
+    @staticmethod
+    def _normalize_date(value: str) -> str:
+        value = re.sub(r"\s+", " ", value).replace(",", "").casefold()
+        if re.fullmatch(r"\d+[-/]\d+[-/]\d+", value):
+            return "-".join(str(int(part)) for part in re.split(r"[-/]", value))
+        return _MONTH_TOKEN_PATTERN.sub(
+            lambda month: month.group().rstrip(".")[:3].casefold(),
+            value,
+        )
+
+    def _entity_consistency(self, generated_summary: str, source_text: str) -> Dict:
+        summary_entities = self._entities(generated_summary)
+        if not summary_entities:
+            return self._metric(1.0, "No named-like entities in summary")
+        source_entities = self._entities(source_text)
+        score = len(summary_entities & source_entities) / len(summary_entities)
+        return self._metric(score, "Named-like summary entities found in source")
+
+    def _number_date_consistency(self, generated_summary: str, source_text: str) -> Dict:
+        summary_values = self._numbers_and_dates(generated_summary)
+        if not summary_values:
+            return self._metric(1.0, "No numbers or dates in summary")
+        source_values = self._numbers_and_dates(source_text)
+        score = len(summary_values & source_values) / len(summary_values)
+        return self._metric(score, "Summary numbers and dates found in source")
+
+    def _sentence_support(self, generated_summary: str, source_chunks: List[Dict]):
+        sentences = self._sentences(generated_summary)
+        if not sentences:
+            return self._unavailable("Summary contains no sentences"), []
+        if not source_chunks:
+            return self._unavailable("No source chunks available"), []
+
+        source_vocabularies = [self._words(chunk.get("text", "")) for chunk in source_chunks]
+        supports = []
+        for sentence_index, sentence in enumerate(sentences):
+            sentence_words = self._words(sentence)
+            scores = [
+                len(sentence_words & source_words) / len(sentence_words) if sentence_words else 0.0
+                for source_words in source_vocabularies
+            ]
+            index = max(range(len(scores)), key=scores.__getitem__)
+            supports.append({
+                "sentence_index": sentence_index,
+                "sentence": sentence,
+                "chunk_index": index,
+                "score": scores[index],
+            })
+
+        score = sum(item["score"] >= 0.5 for item in supports) / len(supports)
+        return self._metric(score, "Best lexical support per summary sentence"), supports
+
+    def _citation_coverage(self, supports: List[Dict], source_chunks: List[Dict]) -> Dict:
+        if not supports:
+            return self._unavailable("No sentence support available")
+        sentence_support = []
+        for item in supports:
+            chunk_id = self._chunk_id(source_chunks[item["chunk_index"]])
+            if item["score"] >= 0.5 and chunk_id is not None:
+                sentence_support.append({
+                    "sentence_index": item["sentence_index"],
+                    "sentence": item["sentence"],
+                    "chunk_id": str(chunk_id),
+                    "support_score": item["score"],
+                })
+        if not sentence_support:
+            return self._unavailable("No supported summary sentences have stable chunk IDs")
+        chunk_ids = list(dict.fromkeys(item["chunk_id"] for item in sentence_support))
+        return self._metric(
+            len(sentence_support) / len(supports),
+            "Summary sentences trace to lexical source support",
+            supporting_chunk_ids=chunk_ids,
+            sentence_support=sentence_support,
+        )
+
+    def _redundancy(self, generated_summary: str) -> Dict:
+        sentences = [self._words(sentence) for sentence in self._sentences(generated_summary)]
+        if len(sentences) < 2:
+            return self._metric(1.0, "Fewer than two summary sentences")
+        overlap = max(
+            len(left & right) / len(left | right) if left | right else 0.0
+            for index, left in enumerate(sentences)
+            for right in sentences[index + 1:]
+        )
+        return self._metric(1.0 - overlap, "Lower score indicates repeated summary sentences")
+
+    def _query_relevance(self, generated_summary: str, query: Optional[str]) -> Dict:
+        if not query:
+            return self._unavailable("No query available")
+        query_words = self._words(query)
+        if not query_words:
+            return self._unavailable("Query contains no comparable terms")
+        score = len(self._words(generated_summary) & query_words) / len(query_words)
+        return self._metric(score, "Query terms represented in summary")
+
+    def _evidence_diversity(self, source_chunks: List[Dict]) -> Dict:
+        if not source_chunks:
+            return self._unavailable("No selected source chunks available")
+        groups = []
+        for chunk in source_chunks:
+            hierarchy = chunk.get("hierarchy") or {}
+            layout = chunk.get("layout") or {}
+            group = next(
+                (
+                    value
+                    for value in (
+                        chunk.get("community"),
+                        hierarchy.get("section_id"),
+                        layout.get("page_no"),
+                        chunk.get("page"),
+                    )
+                    if value is not None
+                ),
+                None,
+            )
+            if group is not None:
+                groups.append(str(group))
+        if not groups:
+            return self._unavailable("Selected chunks have no community, section, or page metadata")
+        if len(source_chunks) == 1:
+            return self._metric(1.0, "Single selected evidence chunk is genuinely narrow")
+        return self._metric(
+            len(set(groups)) / len(source_chunks),
+            "Distinct evidence groups among selected source chunks",
+        )
 
     def _qa_coverage(self, generated_summary: str, source_text: str, query: Optional[str]) -> Dict:
         summary_vocab = self._vocab(generated_summary)

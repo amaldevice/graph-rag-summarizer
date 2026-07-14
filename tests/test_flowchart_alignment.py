@@ -14,6 +14,7 @@ from evaluation.evaluator import SummaryEvaluator
 from evaluation.quality_checker import QualityChecker
 from graph.graph_builder import GraphBuilder
 from graph.graph_analyzer import GraphAnalyzer
+from launcher.runners import _evaluation_source_chunks
 from pipeline.feedback_loop import FeedbackLoopController
 from summarizer.hierarchical_reducer import HierarchicalReducer
 from summarizer.prompt_builder import PromptBuilder
@@ -282,7 +283,11 @@ def test_evaluator_reports_grounded_metric_statuses_without_optional_models():
         query="What is alpha?",
     )
     metrics = result["grounded_metrics"]
-    assert set(metrics) == {"factcc", "summac", "geval", "qa_coverage"}
+    assert set(metrics) == {
+        "factcc", "summac", "geval", "qa_coverage",
+        "entity_consistency", "number_date_consistency", "sentence_support",
+        "citation_coverage", "redundancy", "query_relevance", "evidence_diversity",
+    }
     assert metrics["factcc"]["status"] in {"available", "unavailable"}
     assert metrics["summac"]["status"] in {"available", "unavailable"}
     assert metrics["geval"]["status"] in {"available", "unavailable"}
@@ -291,6 +296,13 @@ def test_evaluator_reports_grounded_metric_statuses_without_optional_models():
     quality = QualityChecker(min_summary_words=1).check(result)
     assert "metric_decisions" in quality
     assert QualityChecker(min_summary_words=1).suggest_action(quality)["action"] in {"accept", "retry_retrieval", "retry_prompt", "retry_reduce", "manual_review", "review"}
+
+
+def test_evaluation_uses_explicit_selected_evidence_without_raw_retrieval_fallback():
+    retrieved_chunks = [{"chunk_id": "raw", "text": "Raw retrieval evidence."}]
+
+    assert _evaluation_source_chunks({"global_top_chunks": []}, retrieved_chunks) == []
+    assert _evaluation_source_chunks({"communities": []}, retrieved_chunks) == retrieved_chunks
 
 
 def test_feedback_controller_maps_actions_to_retry_stages():
@@ -307,7 +319,7 @@ def test_feedback_controller_maps_actions_to_retry_stages():
 def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_path):
     from config import settings
 
-    calls = {"retrieval": 0, "graph": 0, "summarize": 0, "reduce": 0, "decision": 0}
+    calls = {"retrieval": 0, "graph": 0, "summarize": 0, "reduce": 0, "decision": 0, "evaluation_sources": []}
     graph_failure = {"enabled": False}
     modules = {name: types.ModuleType(name) for name in [
         "embedding.embedder", "vectordb.qdrant_handler", "preprocessing.docling_loader",
@@ -376,7 +388,9 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_pa
 
     class FakeEvaluator:
         def __init__(self, judge_session=None): pass
-        def evaluate_without_reference(self, generated_summary, source_chunks, query=None): return {"generated_length": 10, "has_reference": False}
+        def evaluate_without_reference(self, generated_summary, source_chunks, query=None):
+            calls["evaluation_sources"].append(source_chunks)
+            return {"generated_length": 10, "has_reference": False}
         def save_evaluation_json(self, result, output_path): return output_path
 
     class FakeQuality:
@@ -423,6 +437,7 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_pa
     assert calls["graph"] == 1
     assert calls["summarize"] == 2
     assert calls["reduce"] == 2
+    assert all("path_evidence" in chunk for chunks in calls["evaluation_sources"] for chunk in chunks)
     for current_dir, attempt in ((artifact_dir, 0), (artifact_dir / "attempt-1", 1)):
         allocation = json.loads((current_dir / "context_allocation.json").read_text())
         assert allocation["character_budget"] == 12_000

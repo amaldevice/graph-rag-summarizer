@@ -9,6 +9,10 @@ from typing import Dict, List
 
 
 class QualityChecker:
+    _WARN_GROUNDED_METRICS = {"redundancy", "evidence_diversity"}
+    _STRICT_GROUNDED_METRICS = {"number_date_consistency"}
+    _FULL_COVERAGE_WARN_METRICS = {"evidence_diversity"}
+
     def __init__(
         self,
         min_rougeL: float = 0.15,
@@ -80,10 +84,16 @@ class QualityChecker:
             decision = "unavailable"
             if metric_status == "available":
                 decision = "pass"
-                if score is not None and score < self.min_lexical_overlap:
-                    decision = "fail"
-                    status = "FAIL"
-                    issues.append(f"{name} below threshold: {score:.4f} < {self.min_lexical_overlap:.4f}")
+                threshold = self._grounded_threshold(name)
+                if score is not None and score < threshold:
+                    if name in self._WARN_GROUNDED_METRICS:
+                        decision = "warn"
+                        status = "WARN" if status == "PASS" else status
+                        warnings.append(f"{name} below warning threshold: {score:.4f} < {threshold:.4f}")
+                    else:
+                        decision = "fail"
+                        status = "FAIL"
+                        issues.append(f"{name} below threshold: {score:.4f} < {threshold:.4f}")
             else:
                 warnings.append(f"{name} unavailable: {metric.get('reason', 'not configured')}")
             metric_decisions[name] = {
@@ -116,6 +126,11 @@ class QualityChecker:
             }
         }
 
+    def _grounded_threshold(self, name: str) -> float:
+        if name in self._STRICT_GROUNDED_METRICS or name in self._FULL_COVERAGE_WARN_METRICS:
+            return 1.0
+        return self.min_lexical_overlap
+
     def suggest_action(self, quality_result: Dict) -> Dict:
         status = quality_result.get("status", "FAIL")
 
@@ -132,12 +147,20 @@ class QualityChecker:
             }
 
         issues = " ".join(quality_result.get("issues", []))
-        if "qa_coverage" in issues or "Lexical overlap" in issues:
+        if "qa_coverage" in issues or "query_relevance" in issues or "Lexical overlap" in issues:
             return {
                 "action": "retry_retrieval",
                 "reason": "Summary may not be grounded strongly enough in source chunks"
             }
-        if "geval" in issues or "factcc" in issues or "summac" in issues:
+        if (
+            "geval" in issues
+            or "factcc" in issues
+            or "summac" in issues
+            or "entity_consistency" in issues
+            or "number_date_consistency" in issues
+            or "sentence_support" in issues
+            or "citation_coverage" in issues
+        ):
             return {
                 "action": "retry_prompt",
                 "reason": "Grounded quality signal failed; retry prompt and map summarization"
