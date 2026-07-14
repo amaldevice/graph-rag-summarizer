@@ -481,24 +481,23 @@ class SummaryPruner:
         df["chunk_id_resolved"] = df["node"].apply(self._normalize_chunk_id)
         df = df[df["chunk_id_resolved"].notna()].copy()
         df["chunk_id_resolved"] = df["chunk_id_resolved"].astype(int)
+        prefilter_df = df
         df, filtered_chunks = self._filter_tiny_sentences(df, chunks)
-        if df.empty:
-            empty_allocation["rejected_chunks"] = [
-                {**item, "reason": item["reason"]} for item in filtered_chunks
-            ]
-            return {
-                "selection_strategy": "path_aware",
-                "global_top_chunks": [],
-                "communities": [],
-                "filtered_chunks": filtered_chunks,
-                "context_allocation": empty_allocation,
-            }
+        filtered_rows = [
+            row
+            for index, row in prefilter_df.iterrows()
+            if index not in df.index
+        ]
 
         chunk_lookup = self._chunk_lookup(chunks)
         grouped_nodes = {
             community: group["node"].tolist()
             for community, group in df.groupby("community", sort=True)
         }
+        vector_only = bool(
+            graph is not None
+            and getattr(graph, "graph", {}).get("vector_only")
+        )
         candidates = []
         path_available = False
         for _, row in df.iterrows():
@@ -525,7 +524,9 @@ class SummaryPruner:
                 "section": self._section_key(chunk),
                 "query_raw": query_raw,
                 "retrieval_raw": self._finite(chunk.get("score", query_raw)),
-                "graph_raw": self._finite(row.get("composite_score", 0)),
+                "graph_raw": 0.0 if vector_only else self._finite(
+                    row.get("composite_score", 0)
+                ),
                 "relation_raw": self._relation_support(graph, row["node"]),
                 "path_raw": path_value,
                 "query_protected": bool(
@@ -541,14 +542,57 @@ class SummaryPruner:
                 ),
             })
 
-        for name, source in (
+        signal_sources = (
             ("relevance", "query_raw"),
             ("graph_support", "graph_raw"),
             ("relation_support", "relation_raw"),
             ("path_support", "path_raw"),
-        ):
-            for candidate, value in zip(candidates, self._normalized([item[source] for item in candidates])):
+        )
+        signal_maxima = {
+            source: max(
+                (max(0.0, self._finite(item[source])) for item in candidates),
+                default=0.0,
+            )
+            for _, source in signal_sources
+        }
+        for name, source in signal_sources:
+            for candidate, value in zip(
+                candidates,
+                self._normalized([item[source] for item in candidates]),
+            ):
                 candidate.setdefault("signals", {})[name] = value
+
+        prefilter_rejected = []
+        for row, filtered in zip(filtered_rows, filtered_chunks):
+            chunk = chunk_lookup.get(row["chunk_id_resolved"], {})
+            path_value, _ = self._path_values(row, chunk)
+            parent_context = self._parent_context(chunk, chunks)
+            path_evidence = self._path_evidence(
+                graph,
+                row["node"],
+                grouped_nodes.get(row["community"], []),
+            )
+            raw_signals = {
+                "relevance": self._finite(
+                    chunk.get("query_similarity", chunk.get("score", 0))
+                ),
+                "graph_support": self._finite(row.get("composite_score", 0)),
+                "relation_support": self._relation_support(graph, row["node"]),
+                "path_support": path_value,
+            }
+            signals = {
+                name: min(1.0, max(0.0, raw_signals[name]) / signal_maxima[source])
+                if signal_maxima[source] else 0.0
+                for name, source in signal_sources
+            }
+            prefilter_rejected.append({
+                **filtered,
+                "community_id": int(row.get("community", -1)),
+                "character_cost": self._character_cost(
+                    chunk, row, parent_context, path_evidence
+                ),
+                "signals": signals,
+            })
 
         protected_reserves, protected_rejected = self._reserve_query_protected_candidates(candidates)
         candidates = [
@@ -558,9 +602,7 @@ class SummaryPruner:
         allocation_communities = self._community_allocations(candidates, protected_reserves)
         selected = []
         selected_tokens = []
-        rejected = [
-            {**item, "reason": item["reason"]} for item in filtered_chunks
-        ] + protected_rejected
+        rejected = prefilter_rejected + protected_rejected
         selection_order = 0
 
         for allocation in sorted(

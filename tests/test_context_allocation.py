@@ -74,6 +74,31 @@ def test_allocator_uses_novelty_and_not_legacy_top_k_limit():
     assert rejected[1] == "redundant_evidence"
 
 
+def test_prefilter_rejection_keeps_allocation_diagnostics():
+    ranked = _ranked([
+        {"node": "chunk_0", "type": "chunk", "community": 3, "rank": 1, "composite_score": 0.9, "text_preview": "tiny"},
+        {"node": "chunk_1", "type": "chunk", "community": 3, "rank": 2, "composite_score": 0.8, "text_preview": "evidence"},
+    ])
+    chunks = [
+        {"chunk_id": 0, "text": "too short", "level": "sentence", "score": 0.7},
+        {"chunk_id": 1, "text": "usable evidence", "level": "paragraph", "score": 0.8},
+    ]
+
+    result = SummaryPruner(context_char_budget=1_000).select_top_chunks(ranked, chunks)
+
+    rejected = next(
+        item for item in result["context_allocation"]["rejected_chunks"]
+        if item["chunk_id"] == 0
+    )
+    assert rejected["reason"] == "tiny_sentence"
+    assert rejected["community_id"] == 3
+    assert rejected["character_cost"] > len(chunks[0]["text"])
+    assert set(rejected["signals"]) == {
+        "relevance", "graph_support", "relation_support", "path_support",
+    }
+    assert all(0.0 <= value <= 1.0 for value in rejected["signals"].values())
+
+
 def test_allocator_preserves_query_protected_chunk_and_degrades_without_path_signal():
     ranked = _ranked([
         {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.9, "text_preview": "strong"},

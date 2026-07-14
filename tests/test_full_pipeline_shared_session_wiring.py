@@ -404,6 +404,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             "allocator_status": "unavailable",
             "graph_source": "compatibility_query_graph",
             "fallback_status": "persistent_graph_disabled",
+            "fallback_reason": "",
             "query_protected_chunk_uids": ["c1"],
         },
     }
@@ -625,6 +626,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             "allocator_status": "unavailable",
             "graph_source": "persistent_graph",
             "fallback_status": "not_used",
+            "fallback_reason": "",
             "query_protected_chunk_uids": ["c1"],
         }
     assert persisted_diagnostics == persisted_diagnostics_before

@@ -101,6 +101,7 @@ def _context_allocation_artifact(
     *,
     graph_source: str,
     fallback_status: str,
+    fallback_reason: str,
     query_protected_chunk_uids: set,
     attempt: int,
 ) -> dict:
@@ -117,6 +118,7 @@ def _context_allocation_artifact(
         "allocator_status": allocator_status,
         "graph_source": graph_source,
         "fallback_status": fallback_status,
+        "fallback_reason": fallback_reason,
         "query_protected_chunk_uids": sorted(
             str(chunk_uid) for chunk_uid in query_protected_chunk_uids
         ),
@@ -360,6 +362,179 @@ def _persistent_graph_view(collection, chunks, object_store=None):
         float(merged.graph.get("modularity", 0.0)),
         {"documents": diagnostics_by_document},
     )
+
+
+def _compatibility_query_graph_view(
+    chunks,
+    *,
+    embedder,
+    extractor,
+    graph_builder,
+    detector,
+    query_protected_chunk_uids,
+):
+    """Build the legacy query graph and return the artifacts it would produce."""
+    from graph.relation_evidence import (
+        canonicalize_entities,
+        classify_entity_support,
+        classify_weak_relation_evidence,
+        is_active_relation,
+        normalize_relation_evidence,
+    )
+
+    entity_map, extracted_entities = extractor.extract_entities(chunks)
+    all_entities, canonicalization = canonicalize_entities(extracted_entities)
+    mentions_by_chunk_uid = {}
+    for mention in extracted_entities:
+        mention_chunk_uid = mention.get("chunk_uid", mention.get("chunk_id"))
+        mentions_by_chunk_uid.setdefault(mention_chunk_uid, []).append(mention)
+    all_relations = []
+    for chunk in chunks:
+        chunk_uid = chunk.get("chunk_uid", chunk["chunk_id"])
+        relations = extractor.extract_relations_llm(
+            chunk["text"], entity_map.get(chunk_uid, [])
+        )
+        relations = [
+            {
+                **relation,
+                "evidence_type": classify_weak_relation_evidence(
+                    relation, mentions_by_chunk_uid.get(chunk_uid, [])
+                ),
+            }
+            if str(relation.get("source", "")).casefold() in {"rule-based", "fallback"}
+            else relation
+            for relation in relations
+        ]
+        all_relations.extend(
+            normalize_relation_evidence(relations, support_chunk_uid=chunk_uid)
+        )
+    all_relations = normalize_relation_evidence(all_relations)
+    active_evidence = [relation for relation in all_relations if is_active_relation(relation)]
+    status_counts = {
+        status: sum(
+            1 for relation in all_relations
+            if relation.get("status", "unknown") == status
+        )
+        for status in sorted({relation.get("status", "unknown") for relation in all_relations})
+    }
+    chunk_embeddings = [embedder.embed_text(chunk["text"]) for chunk in chunks]
+    graph = graph_builder.build_graph(
+        chunks, chunk_embeddings, all_entities, all_relations
+    )
+    try:
+        graph, communities, community_map, modularity = detector.detect(
+            graph, chunk_embeddings
+        )
+    except TypeError:
+        graph, communities, community_map, modularity = detector.detect(graph)
+    entity_support = classify_entity_support(
+        all_entities,
+        all_relations,
+        graph=graph,
+        query_protected_chunk_uids=query_protected_chunk_uids,
+    )
+    graph_metadata = getattr(graph, "graph", {})
+    if not isinstance(graph_metadata, dict):
+        graph_metadata = {}
+    return {
+        "graph": graph,
+        "communities": communities,
+        "community_map": community_map,
+        "modularity": modularity,
+        "all_relations": all_relations,
+        "active_evidence": active_evidence,
+        "status_counts": status_counts,
+        "canonicalization": canonicalization,
+        "entity_support": entity_support,
+        "community_selection": graph_metadata.get("community_selection", {}),
+        "embedding_comparison": graph_metadata.get(
+            "embedding_cluster_comparison", {}
+        ),
+        "relation_recovery": _compatibility_relation_recovery_diagnostics(),
+    }
+
+
+def _vector_only_query_graph_view(chunks, reason):
+    """Keep vector-retrieved chunks summarizable when query graph work fails."""
+    import networkx as nx
+
+    graph = nx.Graph()
+    nodes = []
+    for index, chunk in enumerate(chunks):
+        node = f"chunk_{index}"
+        nodes.append(node)
+        graph.add_node(
+            node,
+            type="chunk",
+            text=chunk.get("text", ""),
+            community=0,
+            query_protected=bool(chunk.get("query_protected")),
+        )
+    graph.graph["vector_only"] = True
+    graph.graph["fallback_reason"] = reason
+    return {
+        "graph": graph,
+        "communities": {0: nodes} if nodes else {},
+        "community_map": {node: 0 for node in nodes},
+        "modularity": 0.0,
+        "all_relations": [],
+        "active_evidence": [],
+        "status_counts": {},
+        "canonicalization": {
+            "status": "not_run",
+            "reason": "vector_only_fallback",
+            "canonical_entities": [],
+            "unresolved_aliases": [],
+        },
+        "entity_support": {
+            "status": "not_run",
+            "reason": "vector_only_fallback",
+            "elements": [],
+            "strongly_supported": [],
+            "weakly_supported": [],
+            "mention_only": [],
+            "isolated_noise_candidates": [],
+            "query_protected": [],
+            "relation_orphans": [],
+        },
+        "community_selection": {
+            "status": "not_run",
+            "reason": "vector_only_fallback",
+        },
+        "embedding_comparison": {
+            "status": "not_run",
+            "reason": "vector_only_fallback",
+        },
+        "relation_recovery": {
+            "status": "not_run",
+            "reason": "vector_only_fallback",
+            **_empty_relation_recovery_diagnostics(),
+        },
+    }
+
+
+def _compatibility_or_vector_view(
+    chunks,
+    *,
+    embedder,
+    extractor,
+    graph_builder,
+    detector,
+    query_protected_chunk_uids,
+):
+    """Use compatibility graph evidence when available, otherwise vector retrieval."""
+    try:
+        return _compatibility_query_graph_view(
+            chunks,
+            embedder=embedder,
+            extractor=extractor,
+            graph_builder=graph_builder,
+            detector=detector,
+            query_protected_chunk_uids=query_protected_chunk_uids,
+        ), None
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        return _vector_only_query_graph_view(chunks, reason), reason
 
 
 def _configure_query_denial(qdrant, collection, object_store=None):
@@ -867,6 +1042,7 @@ def run_full_pipeline(config: dict) -> None:
     context_allocation = None
     context_graph_source = "not_run"
     context_fallback_status = "not_run"
+    context_fallback_reason = ""
     query_protected_chunk_uids = set()
     community_prompts = []
     community_summaries = []
@@ -881,6 +1057,7 @@ def run_full_pipeline(config: dict) -> None:
                     pruned_result,
                     graph_source=context_graph_source,
                     fallback_status=context_fallback_status,
+                    fallback_reason=context_fallback_reason,
                     query_protected_chunk_uids=query_protected_chunk_uids,
                     attempt=attempt,
                 ),
@@ -910,27 +1087,23 @@ def run_full_pipeline(config: dict) -> None:
             retrieved_chunks = _maybe_render_images(retrieved_chunks, pdf_path)
 
             persistent_view = None
-            persistent_graph_read_failed = False
+            persistent_graph_read_reason = ""
             if config.get("enable_graph_artifact", False):
                 try:
                     persistent_view = _persistent_graph_view(
                         collection, retrieved_chunks, config.get("graph_object_store")
                     )
                 except Exception as exc:
+                    persistent_graph_read_reason = f"{type(exc).__name__}: {exc}"
                     _write_json_artifact(_artifact_path(current_dir, "persistent_graph_read.json"), {
                         "status": "unavailable",
-                        "reason": f"{type(exc).__name__}: {exc}",
+                        "reason": persistent_graph_read_reason,
                     })
-                    persistent_graph_read_failed = True
-                    for chunk in retrieved_chunks:
-                        chunk["graph_denied"] = True
             qdrant.revalidate_query_authorization()
             retrieved_chunks = [chunk for chunk in retrieved_chunks if not chunk.get("graph_denied")]
             query_protected_chunk_uids = _mark_retrieval_hits_query_protected(
                 retrieved_chunks, query_protected_keys
             )
-            if persistent_graph_read_failed:
-                raise RuntimeError("persistent graph preflight failed; compatibility fallback denied")
 
             if persistent_view is None:
                 context_graph_source = "compatibility_query_graph"
@@ -939,104 +1112,60 @@ def run_full_pipeline(config: dict) -> None:
                     if config.get("enable_graph_artifact", False)
                     else "persistent_graph_disabled"
                 )
+                context_fallback_reason = persistent_graph_read_reason
                 _print_stage(2, 8, "extract entities and relations", verbose, f"Chunk count: {len(retrieved_chunks)}")
-                entity_map, extracted_entities = extractor.extract_entities(retrieved_chunks)
-                all_entities, canonicalization = canonicalize_entities(extracted_entities)
-                mentions_by_chunk_uid = {}
-                for mention in extracted_entities:
-                    mention_chunk_uid = mention.get("chunk_uid", mention.get("chunk_id"))
-                    mentions_by_chunk_uid.setdefault(mention_chunk_uid, []).append(mention)
-                all_relations = []
-                for chunk in retrieved_chunks:
-                    chunk_uid = chunk.get("chunk_uid", chunk["chunk_id"])
-                    rels = extractor.extract_relations_llm(
-                        chunk["text"],
-                        entity_map.get(chunk_uid, []),
-                    )
-                    rels = [
-                        {
-                            **relation,
-                            "evidence_type": classify_weak_relation_evidence(
-                                relation,
-                                mentions_by_chunk_uid.get(chunk_uid, []),
-                            ),
-                        }
-                        if str(relation.get("source", "")).casefold() in {"rule-based", "fallback"}
-                        else relation
-                        for relation in rels
-                    ]
-                    all_relations.extend(
-                        normalize_relation_evidence(rels, support_chunk_uid=chunk_uid)
-                    )
-                all_relations = normalize_relation_evidence(all_relations)
-                active_evidence = [
-                    relation for relation in all_relations
-                    if is_active_relation(relation)
-                ]
-                status_counts = {
-                    status: sum(
-                        1 for relation in all_relations
-                        if relation.get("status", "unknown") == status
-                    )
-                    for status in sorted({
-                        relation.get("status", "unknown") for relation in all_relations
-                    })
-                }
-                _print_stage(3, 8, "build graph", verbose, [
-                    f"Entities: {len(all_entities)}",
-                    f"Relations: {len(all_relations)}",
-                ])
-                chunk_embeddings = [embedder.embed_text(c["text"]) for c in retrieved_chunks]
-                G = graph_builder.build_graph(retrieved_chunks, chunk_embeddings, all_entities, all_relations)
-
-                _print_stage(4, 8, "detect communities", verbose)
-                try:
-                    G, communities, community_map, modularity = detector.detect(
-                        G, chunk_embeddings
-                    )
-                except TypeError:
-                    # Preserve custom detectors that implement the pre-PR-C seam.
-                    G, communities, community_map, modularity = detector.detect(G)
-                entity_support = classify_entity_support(
-                    all_entities,
-                    all_relations,
-                    graph=G,
+                compatibility_view, compatibility_failure = _compatibility_or_vector_view(
+                    retrieved_chunks,
+                    embedder=embedder,
+                    extractor=extractor,
+                    graph_builder=graph_builder,
+                    detector=detector,
                     query_protected_chunk_uids=query_protected_chunk_uids,
                 )
+                if compatibility_failure:
+                    context_graph_source = "vector_only"
+                    context_fallback_status = "compatibility_graph_failed"
+                    context_fallback_reason = compatibility_failure
+                    _write_json_artifact(_artifact_path(current_dir, "graph_fallback.json"), {
+                        "graph_source": context_graph_source,
+                        "fallback_status": context_fallback_status,
+                        "fallback_reason": context_fallback_reason,
+                    })
+                    _print_stage(3, 8, "use vector-only context", verbose)
+                else:
+                    _print_stage(3, 8, "build graph", verbose)
+                    _print_stage(4, 8, "detect communities", verbose)
+                G = compatibility_view["graph"]
+                communities = compatibility_view["communities"]
+                community_map = compatibility_view["community_map"]
+                modularity = compatibility_view["modularity"]
                 _write_json_artifact(_artifact_path(current_dir, "relation_evidence.json"), {
-                    "raw_evidence": all_relations,
-                    "active_evidence": active_evidence,
+                    "raw_evidence": compatibility_view["all_relations"],
+                    "active_evidence": compatibility_view["active_evidence"],
                     "counts": {
-                        "raw_evidence_count": len(all_relations),
-                        "active_evidence_count": len(active_evidence),
-                        "relation_status_counts": status_counts,
+                        "raw_evidence_count": len(compatibility_view["all_relations"]),
+                        "active_evidence_count": len(compatibility_view["active_evidence"]),
+                        "relation_status_counts": compatibility_view["status_counts"],
                     },
                 })
                 _write_json_artifact(
                     _artifact_path(current_dir, "entity_canonicalization.json"),
-                    canonicalization,
+                    compatibility_view["canonicalization"],
                 )
                 _write_json_artifact(
                     _artifact_path(current_dir, "orphan_node_report.json"),
-                    entity_support,
+                    compatibility_view["entity_support"],
                 )
-                # ADR 0002 keeps compatibility fallback query-time only.  Global
-                # recovery is an ingest concern, so record the deliberate skip
-                # rather than attempting another provider call after retrieval.
                 _write_json_artifact(
                     _artifact_path(current_dir, "relation_recovery.json"),
-                    _compatibility_relation_recovery_diagnostics(),
+                    compatibility_view["relation_recovery"],
                 )
-                graph_metadata = getattr(G, "graph", {})
-                if not isinstance(graph_metadata, dict):
-                    graph_metadata = {}
-                community_selection = graph_metadata.get("community_selection", {})
-                embedding_comparison = graph_metadata.get(
-                    "embedding_cluster_comparison", {}
-                )
+                community_selection = compatibility_view["community_selection"]
+                embedding_comparison = compatibility_view["embedding_comparison"]
             else:
                 context_graph_source = "persistent_graph"
                 context_fallback_status = "not_used"
+                context_fallback_reason = ""
                 _print_stage(2, 8, "load persistent graph artifact", verbose)
                 G, communities, community_map, modularity, persisted_diagnostics = persistent_view
                 _print_stage(3, 8, "reuse persisted graph", verbose, f"Communities: {len(communities)}")
@@ -1135,6 +1264,7 @@ def run_full_pipeline(config: dict) -> None:
                 pruned_result,
                 graph_source=context_graph_source,
                 fallback_status=context_fallback_status,
+                fallback_reason=context_fallback_reason,
                 query_protected_chunk_uids=query_protected_chunk_uids,
                 attempt=attempt,
             )
