@@ -273,11 +273,14 @@ def test_determinism():
         
         # Verify node sets
         assert set(G.nodes()) == set(G_ref.nodes())
-        # Verify edge sets
-        assert set(G.edges()) == set(G_ref.edges())
+        # Verify edge sets (normalize undirected edge tuples)
+        assert {tuple(sorted(e)) for e in G.edges()} == {tuple(sorted(e)) for e in G_ref.edges()}
         # Verify edge attributes
         for u, v in G_ref.edges():
-            assert G[u][v] == G_ref[u][v]
+            # Check edge attributes in a node-order-independent way
+            edge_data = G.get_edge_data(u, v)
+            ref_data = G_ref.get_edge_data(u, v)
+            assert edge_data == ref_data
         # Verify graph attributes (metadata)
         assert G.graph["topology_metadata"] == G_ref.graph["topology_metadata"]
 
