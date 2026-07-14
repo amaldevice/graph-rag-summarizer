@@ -45,3 +45,5 @@ Thumbs.db
 /assets/
 /lessons/
 /reference/
+.worktrees/
+
