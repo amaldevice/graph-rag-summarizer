@@ -141,6 +141,12 @@ def _prompt_delivery_diagnostics(community_prompts: list[dict]) -> list[dict]:
     ]
 
 
+def _evaluation_source_chunks(pruned_result: dict, retrieved_chunks: list[dict]) -> list[dict]:
+    """Use the explicit selected evidence; support legacy pruners that omit it."""
+    selected = pruned_result.get("global_top_chunks") if isinstance(pruned_result, dict) else None
+    return selected if isinstance(selected, list) else retrieved_chunks
+
+
 def _chunk_query_key(chunk: dict):
     """Prefer stable document-scoped identities when protecting retrieval hits."""
     chunk_uid = chunk.get("chunk_uid")
@@ -1301,16 +1307,17 @@ def run_full_pipeline(config: dict) -> None:
             print(f"  {final_result['final_summary'][:200]}...")
 
             _print_stage(8, 8, "evaluate quality and decide", verbose)
+            selected_evidence = _evaluation_source_chunks(pruned_result, retrieved_chunks)
             try:
                 eval_result = evaluator.evaluate_without_reference(
                     generated_summary=final_result["final_summary"],
-                    source_chunks=retrieved_chunks,
+                    source_chunks=selected_evidence,
                     query=query,
                 )
             except TypeError:
                 eval_result = evaluator.evaluate_without_reference(
                     generated_summary=final_result["final_summary"],
-                    source_chunks=retrieved_chunks,
+                    source_chunks=selected_evidence,
                 )
             evaluator.save_evaluation_json(eval_result, _artifact_path(current_dir, "evaluation_result.json"))
 
