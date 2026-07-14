@@ -1,14 +1,16 @@
 # PRD — adaptive global graph construction, community discovery, and context selection
 
 Date: 2026-07-11
-Status: Finalized as the repo-local decision record for parent issue #44
+Status: Completed on 2026-07-14; archived after parent issue #44 closure
 Parent issue: https://github.com/amaldevice/graph-rag-summarizer/issues/44
 
 ## Delivery Status
 
-- **PR A — persistent ingest graph foundation:** delivered by [PR #67](https://github.com/amaldevice/graph-rag-summarizer/pull/67) (`1ecc0b4`) on 2026-07-14; GitHub closed issues #39 and #69.
-- **Next delivery:** PR B — bounded global relation recovery, closing issues #45–#48 from the merged PR A baseline. The implementation sequence and PR ownership remain in `docs/handoff-2026-07-13-persistent-graph-implementation.md`.
-- **Later deliveries:** adaptive topology/community selection (#49–#51) and adaptive context allocation (#52) remain sequenced after PR B.
+- **PR A — persistent ingest graph foundation:** delivered by [PR #67](https://github.com/amaldevice/graph-rag-summarizer/pull/67) (`1ecc0b4`); GitHub closed issues #39 and #69.
+- **PR B — bounded global relation recovery:** delivered by [PR #72](https://github.com/amaldevice/graph-rag-summarizer/pull/72); GitHub closed issues #45–#48.
+- **PR C — adaptive topology/community selection:** delivered by [PR #68](https://github.com/amaldevice/graph-rag-summarizer/pull/68); GitHub closed issues #49–#51.
+- **PR D — query-time adaptive context allocation:** delivered by [PR #75](https://github.com/amaldevice/graph-rag-summarizer/pull/75); GitHub closed issue #52.
+- **Separate follow-up:** issue #40 remains open for explicit PathRAG candidate discovery and scoring; PR D only consumes its optional normalized path signal.
 
 ## Problem Statement
 
