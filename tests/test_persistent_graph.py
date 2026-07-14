@@ -143,7 +143,10 @@ def test_document_graph_persists_weak_evidence_without_activating_its_edge():
         "edge_type": "entity_relation",
     }
     diagnostics = details["diagnostics"]
-    assert diagnostics["raw_evidence_count"] == 2
+    # Local evidence remains two records; unavailable recovery candidates are
+    # retained separately in raw evidence for later audit/tuning.
+    assert diagnostics["local_relation_count"] == 2
+    assert diagnostics["raw_evidence_count"] == 5
     assert diagnostics["active_evidence_count"] == 1
     assert any(
         item["canonical_id"] == "ent_acme_inc"
@@ -162,6 +165,158 @@ def test_document_graph_persists_weak_evidence_without_activating_its_edge():
     assert support_by_id["ent_beta"]["graph_supported"] is True
     assert support_by_id["ent_gamma"]["graph_degree"] == 0
     assert support_by_id["ent_gamma"]["graph_supported"] is False
+
+
+def test_document_graph_promotes_only_verified_bounded_cross_chunk_evidence():
+    class Extractor:
+        relation_extraction_mode = "spacy-only"
+
+        def extract_entities(self, chunks):
+            del chunks
+            return {
+                "paper:chunk:0": [("Alpha", "ORG")],
+                "paper:chunk:1": [("Beta", "ORG")],
+            }, [
+                {"chunk_uid": "paper:chunk:0", "text": "Alpha", "label": "ORG"},
+                {"chunk_uid": "paper:chunk:1", "text": "Beta", "label": "ORG"},
+            ]
+
+        def extract_relations_llm(self, text, entities):
+            del text, entities
+            return []
+
+    class Provider:
+        active_provider = "fake"
+
+        def __init__(self):
+            self.calls = []
+
+        def resolve_chain(self):
+            return ["fake"]
+
+        def call_llm(self, system_prompt, user_prompt):
+            self.calls.append((system_prompt, user_prompt))
+            return json.dumps({
+                "status": "accepted",
+                "relation": "supports",
+                "confidence": 0.9,
+                "support_chunk_uids": ["paper:chunk:0", "paper:chunk:1"],
+            })
+
+    class Detector:
+        def detect(self, graph):
+            return graph, [], {}, 0.0
+
+    provider = Provider()
+    graph, details = persistent.build_document_graph(
+        [
+            {"chunk_id": 0, "chunk_uid": "paper:chunk:0", "text": "Alpha"},
+            {"chunk_id": 1, "chunk_uid": "paper:chunk:1", "text": "Beta"},
+        ],
+        [[1.0, 0.0], [0.99, 0.1]],
+        "paper",
+        entity_extractor=Extractor(),
+        detector=Detector(),
+        relation_provider=provider,
+    )
+
+    assert len(provider.calls) == 1
+    accepted = details["active_evidence"]
+    assert len(accepted) == 1
+    assert accepted[0]["scope"] == "cross_chunk"
+    assert accepted[0]["evidence_type"] == "verified"
+    assert graph["ent_alpha"]["ent_beta"]["edge_type"] == "entity_relation"
+    recovery = details["diagnostics"]["relation_recovery"]
+    assert recovery["counts"] == {
+        "local": 0,
+        "cross_chunk": 1,
+        "accepted": 1,
+        "rejected": 0,
+        "unverified": 0,
+    }
+    assert recovery["verification"][0]["evidence_window"]["chunk_uids"] == [
+        "paper:chunk:0", "paper:chunk:1"
+    ]
+
+
+def test_rejected_or_unavailable_recovery_stays_raw_and_does_not_block_cleanup():
+    class Extractor:
+        relation_extraction_mode = "spacy-only"
+
+        def extract_entities(self, chunks):
+            del chunks
+            return {
+                "paper:chunk:0": [("Alpha", "ORG")],
+                "paper:chunk:1": [("Beta", "ORG")],
+                "paper:chunk:2": [("Protected", "ORG")],
+            }, [
+                {"chunk_uid": "paper:chunk:0", "text": "Alpha", "label": "ORG"},
+                {"chunk_uid": "paper:chunk:1", "text": "Beta", "label": "ORG"},
+                {"chunk_uid": "paper:chunk:2", "text": "Protected", "label": "ORG"},
+            ]
+
+        def extract_relations_llm(self, text, entities):
+            del text, entities
+            return []
+
+    class Provider:
+        active_provider = "fake"
+
+        def __init__(self):
+            self.calls = 0
+
+        def resolve_chain(self):
+            return ["fake"]
+
+        def call_llm(self, system_prompt, user_prompt):
+            del system_prompt, user_prompt
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({
+                    "status": "rejected",
+                    "relation": None,
+                    "confidence": None,
+                    "support_chunk_uids": [],
+                })
+            raise RuntimeError("provider unavailable")
+
+    class Detector:
+        def detect(self, graph):
+            return graph, [], {}, 0.0
+
+    graph, details = persistent.build_document_graph(
+        [
+            {"chunk_id": 0, "chunk_uid": "paper:chunk:0", "text": "Alpha"},
+            {"chunk_id": 1, "chunk_uid": "paper:chunk:1", "text": "Beta"},
+            {
+                "chunk_id": 2,
+                "chunk_uid": "paper:chunk:2",
+                "text": "Protected",
+                "query_protected": True,
+            },
+        ],
+        [[1.0, 0.0], [0.99, 0.1], [0.98, 0.2]],
+        "paper",
+        entity_extractor=Extractor(),
+        detector=Detector(),
+        relation_provider=Provider(),
+    )
+
+    recovery = details["diagnostics"]["relation_recovery"]
+    assert {item["status"] for item in recovery["verification"]} == {"rejected", "unavailable"}
+    assert {item["status"] for item in details["raw_evidence"]} == {"rejected", "unavailable"}
+    assert recovery["cleanup"] == {
+        "removed_entity_ids": ["ent_alpha", "ent_beta"],
+        "removed": [
+            {"canonical_id": "ent_alpha", "reason": "isolated_noise_candidate"},
+            {"canonical_id": "ent_beta", "reason": "isolated_noise_candidate"},
+        ],
+        "preserved": [{"canonical_id": "ent_protected", "reason": "query_protected"}],
+    }
+    assert not graph.has_node("ent_alpha")
+    assert not graph.has_node("ent_beta")
+    assert graph.has_node("ent_protected")
+    assert details["diagnostics"]["entity_support"]["weakly_supported"] == []
 
 
 def test_graph_builder_normalizes_legacy_explicit_relations_before_edge_gating():

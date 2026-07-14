@@ -223,8 +223,8 @@ class ProviderRouter:
             return True
         return False
 
-    def call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Call the LLM with fallback. Returns response text or raises RuntimeError."""
+    def call_llm(self, system_prompt: str, user_prompt: str, response_validator=None) -> str:
+        """Call the LLM with fallback, optionally rejecting an invalid response."""
         if not self.enable_fallback:
             if self.preferred_provider not in SUPPORTED_PROVIDERS:
                 raise RuntimeError(
@@ -237,7 +237,16 @@ class ProviderRouter:
                     f"Preferred LLM provider '{self.preferred_provider}' is unavailable: "
                     f"missing configuration ({', '.join(missing_fields)})."
                 )
-            result = self._call_with_retry(self.preferred_provider, system_prompt, user_prompt)
+            result = (
+                self._call_with_retry(
+                    self.preferred_provider,
+                    system_prompt,
+                    user_prompt,
+                    response_validator=response_validator,
+                )
+                if response_validator is not None
+                else self._call_with_retry(self.preferred_provider, system_prompt, user_prompt)
+            )
             self._active_provider = self.preferred_provider
             return result
 
@@ -253,7 +262,16 @@ class ProviderRouter:
         last_error = None
         for provider in remaining:
             try:
-                result = self._call_with_retry(provider, system_prompt, user_prompt)
+                result = (
+                    self._call_with_retry(
+                        provider,
+                        system_prompt,
+                        user_prompt,
+                        response_validator=response_validator,
+                    )
+                    if response_validator is not None
+                    else self._call_with_retry(provider, system_prompt, user_prompt)
+                )
                 self._active_provider = provider
                 return result
             except Exception as e:
@@ -273,7 +291,13 @@ class ProviderRouter:
             f"All LLM providers failed. Failure summary: [{failed_summary}]"
         )
 
-    def _call_with_retry(self, provider: str, system_prompt: str, user_prompt: str) -> str:
+    def _call_with_retry(
+        self,
+        provider: str,
+        system_prompt: str,
+        user_prompt: str,
+        response_validator=None,
+    ) -> str:
         """Call a provider with retry logic for transient failures."""
         last_error = None
 
@@ -282,6 +306,8 @@ class ProviderRouter:
                 result = self._call_provider(provider, system_prompt, user_prompt)
                 if self._is_hard_failure(result):
                     raise RuntimeError(f"Provider '{provider}' returned empty response")
+                if response_validator is not None and not response_validator(result):
+                    raise RuntimeError(f"Provider '{provider}' returned an invalid response")
                 return result
             except Exception as e:
                 last_error = e

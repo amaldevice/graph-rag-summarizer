@@ -215,6 +215,36 @@ def test_call_llm_falls_over_to_next_provider_on_failure(monkeypatch):
     assert call_count["gemini"] == 1
 
 
+def test_call_llm_falls_back_when_response_validator_rejects_first_result(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "key-groq")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "key-gemini")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_API_KEY", "")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+    router = create_session(
+        preferred_provider="groq",
+        fallback_chain=["groq", "gemini"],
+        enable_fallback=True,
+    )
+    calls = []
+
+    def fake_call(provider, system_prompt, user_prompt):
+        del system_prompt, user_prompt
+        calls.append(provider)
+        return "not-json" if provider == "groq" else '{"status":"accepted"}'
+
+    monkeypatch.setattr(router, "_call_provider", fake_call)
+
+    result = router.call_llm(
+        "system",
+        "prompt",
+        response_validator=lambda response: response.startswith("{"),
+    )
+
+    assert result == '{"status":"accepted"}'
+    assert calls == ["groq", "gemini"]
+    assert router.active_provider == "gemini"
+
+
 def test_call_llm_raises_when_all_providers_fail(monkeypatch):
     monkeypatch.setattr(settings, "GROQ_API_KEY", "key-groq")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "key-gemini")

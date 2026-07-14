@@ -30,6 +30,11 @@ from graph.relation_evidence import (
     is_active_relation,
     normalize_relation_evidence,
 )
+from graph.relation_recovery import (
+    cleanup_unsupported_entity_nodes,
+    generate_relation_candidates,
+    verify_relation_candidates,
+)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -1436,7 +1441,7 @@ def build_document_graph(
     detector=None,
     relation_provider=None,
 ):
-    """Build the reusable baseline graph from all document chunks."""
+    """Build a document graph with bounded recovery before community detection."""
     if entity_extractor is None:
         from graph.entity_extractor import EntityExtractor
 
@@ -1457,7 +1462,7 @@ def build_document_graph(
         if mention_chunk_uid is None:
             mention_chunk_uid = mention.get("chunk_id")
         mentions_by_chunk_uid.setdefault(mention_chunk_uid, []).append(mention)
-    relations = []
+    local_relations = []
     for chunk in chunks:
         chunk_uid = chunk.get("chunk_uid", chunk.get("chunk_id"))
         local_entities = entity_map.get(chunk_uid, [])
@@ -1472,11 +1477,60 @@ def build_document_graph(
             else relation
             for relation in extracted
         ]
-        relations.extend(
+        local_relations.extend(
             normalize_relation_evidence(extracted, support_chunk_uid=chunk_uid)
         )
-    relations.sort(key=canonical_json_bytes)
+    local_relations.sort(key=canonical_json_bytes)
+
+    # The first graph is intentionally only a bounded-neighborhood source.  It
+    # is rebuilt after verification so accepted evidence is the only recovery
+    # output that can become an active direct relation edge.
+    graph = graph_builder.build_graph(chunks, embeddings, entities, local_relations)
+    query_protected_chunk_uids = {
+        str(chunk.get("chunk_uid", chunk.get("chunk_id")))
+        for chunk in chunks
+        if chunk.get("query_protected")
+        and chunk.get("chunk_uid", chunk.get("chunk_id")) is not None
+    }
+    pre_recovery_support = classify_entity_support(
+        entities,
+        local_relations,
+        graph=graph,
+        query_protected_chunk_uids=query_protected_chunk_uids,
+    )
+    recovery_chunks = [
+        {**chunk, "document_id": str(chunk.get("document_id", document_id))}
+        for chunk in chunks
+    ]
+    recovery_candidates = generate_relation_candidates(
+        recovery_chunks,
+        entities,
+        graph,
+        pre_recovery_support,
+    )
+    recovered_evidence, verification_outcomes = verify_relation_candidates(
+        recovery_candidates["generated"],
+        recovery_chunks,
+        graph,
+        local_relations,
+        relation_provider,
+    )
+    relations = normalize_relation_evidence([*local_relations, *recovered_evidence])
     graph = graph_builder.build_graph(chunks, embeddings, entities, relations)
+    # Rejected, insufficient, and unavailable candidates remain raw audit
+    # records only. They must not alter support classification or shield an
+    # otherwise isolated entity from the post-recovery cleanup policy.
+    support_relations = [
+        *local_relations,
+        *(relation for relation in recovered_evidence if is_active_relation(relation)),
+    ]
+    post_recovery_support = classify_entity_support(
+        entities,
+        support_relations,
+        graph=graph,
+        query_protected_chunk_uids=query_protected_chunk_uids,
+    )
+    cleanup = cleanup_unsupported_entity_nodes(graph, post_recovery_support)
     graph, communities, community_map, modularity = detector.detect(graph)
     active_evidence = [
         relation for relation in relations
@@ -1491,12 +1545,38 @@ def build_document_graph(
         relation_extraction_mode = "unavailable"
     diagnostics = {
         "entity_count": len(entities),
-        "local_relation_count": len(relations),
+        "local_relation_count": len(local_relations),
         "raw_evidence_count": len(relations),
         "active_evidence_count": len(active_evidence),
         "relation_status_counts": status_counts,
         "canonicalization": canonicalization,
-        "entity_support": classify_entity_support(entities, relations, graph=graph),
+        "entity_support": classify_entity_support(
+            entities,
+            support_relations,
+            graph=graph,
+            query_protected_chunk_uids=query_protected_chunk_uids,
+        ),
+        "relation_recovery": {
+            "candidate_generation": recovery_candidates,
+            "verification": verification_outcomes,
+            "cleanup": cleanup,
+            "counts": {
+                "local": len(local_relations),
+                "cross_chunk": len(recovered_evidence),
+                "accepted": sum(
+                    1 for relation in recovered_evidence
+                    if relation.get("status") == "accepted"
+                ),
+                "rejected": sum(
+                    1 for relation in recovered_evidence
+                    if relation.get("status") == "rejected"
+                ),
+                "unverified": sum(
+                    1 for relation in recovered_evidence
+                    if relation.get("status") in {"insufficient", "unavailable"}
+                ),
+            },
+        },
         "community_count": len(communities),
         "modularity": modularity,
         "entity_extraction": {

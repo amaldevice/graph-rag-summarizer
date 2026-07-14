@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 import sys
 import types
@@ -349,6 +350,28 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
     )
     assert fallback["evidence_type"] == "same_sentence"
     assert fallback["support_chunk_uids"] == ["c1"]
+    assert json.loads((artifact_dir / "relation_recovery.json").read_text()) == {
+        "status": "not_run",
+        "reason": "compatibility_fallback",
+        "candidate_generation": {
+            "generated": [],
+            "deduplicated": [],
+            "budget_rejected": [],
+        },
+        "verification": [],
+        "cleanup": {
+            "removed_entity_ids": [],
+            "removed": [],
+            "preserved": [],
+        },
+        "counts": {
+            "local": 0,
+            "cross_chunk": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "unverified": 0,
+        },
+    }
 
     canonicalization = json.loads((artifact_dir / "entity_canonicalization.json").read_text())
     assert [entity["canonical_id"] for entity in canonicalization["canonical_entities"]] == [
@@ -416,10 +439,37 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
                         ],
                         "query_protected": [],
                     },
+                    "relation_recovery": {
+                        "candidate_generation": {
+                            "generated": [{"head": "Persisted Alpha", "tail": "Persisted Beta"}],
+                            "deduplicated": [],
+                            "budget_rejected": [],
+                        },
+                        "verification": [{
+                            "status": "accepted",
+                            "attempted": True,
+                            "provider": "persisted-provider",
+                        }],
+                        "cleanup": {
+                            "removed_entity_ids": [],
+                            "preserved": [{
+                                "canonical_id": "ent_persisted_alpha",
+                                "reason": "query_protected",
+                            }],
+                        },
+                        "counts": {
+                            "local": 1,
+                            "cross_chunk": 1,
+                            "accepted": 1,
+                            "rejected": 0,
+                            "unverified": 0,
+                        },
+                    },
                 },
             },
         },
     }
+    persisted_diagnostics_before = deepcopy(persisted_diagnostics)
 
     def persistent_graph_view(collection, chunks, object_store=None):
         del collection, chunks, object_store
@@ -507,6 +557,14 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
                 },
             },
         }
+        assert json.loads((current_dir / "relation_recovery.json").read_text()) == {
+            "documents": {
+                "persisted-document": persisted_diagnostics_before["documents"][
+                    "persisted-document"
+                ]["diagnostics"]["relation_recovery"],
+            },
+        }
+    assert persisted_diagnostics == persisted_diagnostics_before
     assert persisted_diagnostics["documents"]["persisted-document"]["diagnostics"]["entity_support"] == {
         "elements": [
             {"canonical_id": "ent_persisted_alpha", "query_protected": False},
