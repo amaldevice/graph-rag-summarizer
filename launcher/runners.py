@@ -862,7 +862,13 @@ def run_full_pipeline(config: dict) -> None:
                 G = graph_builder.build_graph(retrieved_chunks, chunk_embeddings, all_entities, all_relations)
 
                 _print_stage(4, 8, "detect communities", verbose)
-                G, communities, community_map, modularity = detector.detect(G)
+                try:
+                    G, communities, community_map, modularity = detector.detect(
+                        G, chunk_embeddings
+                    )
+                except TypeError:
+                    # Preserve custom detectors that implement the pre-PR-C seam.
+                    G, communities, community_map, modularity = detector.detect(G)
                 entity_support = classify_entity_support(
                     all_entities,
                     all_relations,
@@ -892,6 +898,13 @@ def run_full_pipeline(config: dict) -> None:
                 _write_json_artifact(
                     _artifact_path(current_dir, "relation_recovery.json"),
                     _compatibility_relation_recovery_diagnostics(),
+                )
+                graph_metadata = getattr(G, "graph", {})
+                if not isinstance(graph_metadata, dict):
+                    graph_metadata = {}
+                community_selection = graph_metadata.get("community_selection", {})
+                embedding_comparison = graph_metadata.get(
+                    "embedding_cluster_comparison", {}
                 )
             else:
                 _print_stage(2, 8, "load persistent graph artifact", verbose)
@@ -945,6 +958,31 @@ def run_full_pipeline(config: dict) -> None:
                         for document_id, details in sorted(persisted_documents.items())
                     },
                 })
+                community_selection = {
+                    "documents": {
+                        document_id: details["diagnostics"].get(
+                            "community_selection", {}
+                        )
+                        for document_id, details in sorted(persisted_documents.items())
+                    },
+                }
+                embedding_comparison = {
+                    "documents": {
+                        document_id: details["diagnostics"].get(
+                            "embedding_cluster_comparison", {}
+                        )
+                        for document_id, details in sorted(persisted_documents.items())
+                    },
+                }
+
+            _write_json_artifact(
+                _artifact_path(current_dir, "community_selection.json"),
+                community_selection,
+            )
+            _write_json_artifact(
+                _artifact_path(current_dir, "embedding_cluster_comparison.json"),
+                embedding_comparison,
+            )
 
             _print_stage(5, 8, "rank graph and prune context", verbose, [
                 f"Communities: {len(communities)}",

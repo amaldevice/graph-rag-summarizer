@@ -18,6 +18,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
     received_sessions = []
     saved_paths = {}
     received_extractor_session = []
+    detector_embeddings = []
     graph_inputs = {}
     feedback_decisions = [{"final_decision": "stop"}]
 
@@ -114,7 +115,13 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             return graph
 
     class FakeCommunityDetector:
-        def detect(self, graph):
+        def detect(self, graph, chunk_embeddings=None):
+            detector_embeddings.append(chunk_embeddings)
+            graph.graph["community_selection"] = {"selected": {"seed": 17}}
+            graph.graph["embedding_cluster_comparison"] = {
+                "status": "available",
+                "active_partition_replaced": False,
+            }
             return graph, [[1]], {}, 0.0
 
     class FakeRanked:
@@ -321,6 +328,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         ("reducer", shared_session),
     ]
     assert received_extractor_session == [shared_session]
+    assert detector_embeddings == [[[0.1, 0.2]]]
     assert saved_paths["graph_ranked_csv"] == str(artifact_dir / "graph_ranked_nodes.csv")
     assert saved_paths["graph_ranked_json"] == str(artifact_dir / "graph_ranked_nodes.json")
     assert saved_paths["graph_summary_json"] == str(artifact_dir / "graph_summary.json")
@@ -372,6 +380,15 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             "rejected": 0,
             "unverified": 0,
         },
+    }
+    assert json.loads((artifact_dir / "community_selection.json").read_text()) == {
+        "selected": {"seed": 17},
+    }
+    assert json.loads(
+        (artifact_dir / "embedding_cluster_comparison.json").read_text()
+    ) == {
+        "status": "available",
+        "active_partition_replaced": False,
     }
 
     canonicalization = json.loads((artifact_dir / "entity_canonicalization.json").read_text())
@@ -465,6 +482,11 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
                             "rejected": 0,
                             "unverified": 0,
                         },
+                    },
+                    "community_selection": {"selected": {"seed": 29}},
+                    "embedding_cluster_comparison": {
+                        "status": "available",
+                        "active_partition_replaced": False,
                     },
                 },
             },
@@ -563,6 +585,21 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
                 "persisted-document": persisted_diagnostics_before["documents"][
                     "persisted-document"
                 ]["diagnostics"]["relation_recovery"],
+            },
+        }
+        assert json.loads((current_dir / "community_selection.json").read_text()) == {
+            "documents": {
+                "persisted-document": {"selected": {"seed": 29}},
+            },
+        }
+        assert json.loads(
+            (current_dir / "embedding_cluster_comparison.json").read_text()
+        ) == {
+            "documents": {
+                "persisted-document": {
+                    "status": "available",
+                    "active_partition_replaced": False,
+                },
             },
         }
     assert persisted_diagnostics == persisted_diagnostics_before

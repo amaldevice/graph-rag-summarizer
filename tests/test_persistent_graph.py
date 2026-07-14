@@ -15,6 +15,7 @@ from graph.persistent import (
     ManifestStore,
     canonical_json_bytes,
     deserialize_graph,
+    graph_from_artifact,
     serialize_graph,
     source_fingerprint,
     PersistentGraphPipeline,
@@ -165,6 +166,20 @@ def test_document_graph_persists_weak_evidence_without_activating_its_edge():
     assert support_by_id["ent_beta"]["graph_supported"] is True
     assert support_by_id["ent_gamma"]["graph_degree"] == 0
     assert support_by_id["ent_gamma"]["graph_supported"] is False
+    assert diagnostics["topology"] == graph.graph["topology_metadata"]
+    assert graph.graph["modularity"] == details["modularity"]
+    artifact = deserialize_graph(
+        serialize_graph(
+            graph,
+            _chunks(),
+            document_id="paper",
+            generation=1,
+            raw_evidence=details["raw_evidence"],
+            diagnostics=diagnostics,
+            active_evidence=details["active_evidence"],
+        )
+    )
+    assert graph_from_artifact(artifact, _chunks()).graph["modularity"] == 0.0
 
 
 def test_document_graph_promotes_only_verified_bounded_cross_chunk_evidence():

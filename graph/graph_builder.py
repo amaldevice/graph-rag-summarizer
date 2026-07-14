@@ -3,9 +3,12 @@
 # Build hierarchical graph from chunks, entities, relations
 # ============================================================
 
+import math
+from numbers import Integral
+
+import numpy as np
 import networkx as nx
 from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
 
 from graph.relation_evidence import is_active_relation, normalize_relation_evidence
 
@@ -20,8 +23,28 @@ class GraphBuilder:
         max_degree=None
     ):
         import config.settings as settings
-        self.knn_k = knn_k if knn_k is not None else getattr(settings, "GRAPH_KNN_K", 3)
-        self.sim_threshold = sim_threshold if sim_threshold is not None else getattr(settings, "GRAPH_SIM_THRESHOLD", 0.3)
+
+        resolved_knn_k = knn_k if knn_k is not None else getattr(settings, "GRAPH_KNN_K", 3)
+        if (
+            isinstance(resolved_knn_k, bool)
+            or not isinstance(resolved_knn_k, Integral)
+            or resolved_knn_k < 1
+        ):
+            raise ValueError("knn_k must be an integer greater than or equal to 1")
+        self.knn_k = int(resolved_knn_k)
+
+        resolved_threshold = (
+            sim_threshold
+            if sim_threshold is not None
+            else getattr(settings, "GRAPH_SIM_THRESHOLD", 0.3)
+        )
+        try:
+            self.sim_threshold = float(resolved_threshold)
+        except (TypeError, ValueError) as error:
+            raise ValueError("sim_threshold must be a finite cosine similarity") from error
+        if not math.isfinite(self.sim_threshold) or not -1.0 <= self.sim_threshold <= 1.0:
+            raise ValueError("sim_threshold must be a finite cosine similarity in [-1, 1]")
+
         self.policy = policy if policy is not None else getattr(settings, "GRAPH_TOPOLOGY_POLICY", "adaptive")
         self.min_degree = min_degree if min_degree is not None else getattr(settings, "GRAPH_MIN_DEGREE", 1)
         self.max_degree = max_degree if max_degree is not None else getattr(settings, "GRAPH_MAX_DEGREE", 5)
@@ -363,7 +386,11 @@ class GraphBuilder:
             top_idx = np.argsort(scores)[-self.knn_k:][::-1]
 
             for j in top_idx:
-                if j in active_index_set and sim_matrix[i][j] > self.sim_threshold:
+                if (
+                    j != i
+                    and j in active_index_set
+                    and sim_matrix[i][j] > self.sim_threshold
+                ):
                     G.add_edge(
                         f"chunk_{i}",
                         f"chunk_{j}",
