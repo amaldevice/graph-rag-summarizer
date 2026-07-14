@@ -8,6 +8,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from summarizer.pruner import SummaryPruner
+from summarizer.prompt_builder import PromptBuilder
+from summarizer.llm_summarizer import LLMSummarizer
 
 
 def _ranked(rows):
@@ -111,3 +113,65 @@ def test_allocator_consumes_normalized_path_score_when_available_deterministical
     assert first["context_allocation"]["path_signal_status"] == "available"
     assert [item["chunk_id"] for item in first["global_top_chunks"]] == [1, 0]
     assert first["context_allocation"] == second["context_allocation"]
+
+
+def test_prompt_emits_budget_metadata_and_blocks_provider_overflow():
+    pruned = {
+        "context_allocation": {
+            "character_budget": 1_000,
+            "communities": [{"community_id": 3, "allocated_characters": 800}],
+        },
+        "communities": [{
+            "community_id": 3,
+            "chunks": [{
+                "chunk_id": "c1",
+                "text": "evidence " * 100,
+                "allocation": {"character_cost": 900},
+            }],
+        }],
+    }
+
+    prompt = PromptBuilder(
+        provider_context_token_limit=200,
+        reserved_output_tokens=50,
+    ).build_all_community_prompts(pruned)[0]
+
+    assert prompt["budget"] == {
+        "selected_chunk_count": 1,
+        "selected_character_cost": 900,
+        "community_character_budget": 800,
+        "total_character_budget": 1_000,
+    }
+    assert prompt["provider_safety"]["status"] == "blocked"
+    assert prompt["provider_safety"]["estimated_total_tokens"] > 200
+
+    class Session:
+        def call_llm(self, *_args):
+            raise AssertionError("unsafe prompt must not reach a provider")
+
+    summary = LLMSummarizer(session=Session()).summarize_communities([prompt])[0]
+    assert summary["summary"] == ""
+    assert summary["skip_reason"] == "provider_token_budget_exceeded"
+
+
+def test_query_protection_marks_only_original_retrieval_hits_after_parent_expansion():
+    from launcher.runners import _mark_retrieval_hits_query_protected, _with_current_query_protection
+
+    chunks = [
+        {"chunk_uid": "paper:chunk:hit", "chunk_id": 1, "query_protected": True},
+        {"chunk_uid": "paper:chunk:parent", "chunk_id": 0, "query_protected": True},
+    ]
+    protected = _mark_retrieval_hits_query_protected(chunks, {("uid", "paper:chunk:hit")})
+
+    assert protected == {"paper:chunk:hit"}
+    assert [chunk["query_protected"] for chunk in chunks] == [True, False]
+
+    report = _with_current_query_protection(
+        {"elements": [{"canonical_id": "ent_hit"}, {"canonical_id": "ent_parent"}]},
+        {"canonical_entities": [
+            {"canonical_id": "ent_hit", "chunk_uids": ["paper:chunk:hit"]},
+            {"canonical_id": "ent_parent", "chunk_uids": ["paper:chunk:parent"]},
+        ]},
+        chunks,
+    )
+    assert report["query_protected"] == ["ent_hit"]

@@ -124,6 +124,21 @@ def _context_allocation_artifact(
     return allocation
 
 
+def _prompt_delivery_diagnostics(community_prompts: list[dict]) -> list[dict]:
+    """Persist the final prompt budget and provider safety gate per community."""
+    return [
+        {
+            "community_id": prompt.get("community_id", -1),
+            "budget": prompt["budget"],
+            "provider_safety": prompt["provider_safety"],
+        }
+        for prompt in community_prompts
+        if isinstance(prompt, dict)
+        and isinstance(prompt.get("budget"), dict)
+        and isinstance(prompt.get("provider_safety"), dict)
+    ]
+
+
 def _chunk_query_key(chunk: dict):
     """Prefer stable document-scoped identities when protecting retrieval hits."""
     chunk_uid = chunk.get("chunk_uid")
@@ -134,6 +149,18 @@ def _chunk_query_key(chunk: dict):
     if document_id is not None:
         return ("document", str(document_id), str(chunk_id))
     return ("local", str(chunk_id))
+
+
+def _mark_retrieval_hits_query_protected(chunks: list[dict], retrieval_keys: set) -> set:
+    """Protect original retrieval hits only; expanded hierarchy context stays eligible."""
+    protected_chunk_uids = set()
+    for chunk in chunks:
+        chunk["query_protected"] = _chunk_query_key(chunk) in retrieval_keys
+        if chunk["query_protected"]:
+            chunk_uid = chunk.get("chunk_uid", chunk.get("chunk_id"))
+            if chunk_uid is not None:
+                protected_chunk_uids.add(chunk_uid)
+    return protected_chunk_uids
 
 
 def _build_ingest_graph_artifact(config, collection, document_id, chunks, vectors, ingest_mode):
@@ -235,7 +262,8 @@ def _with_current_query_protection(entity_support, canonicalization, retrieved_c
     current_chunk_uids = {
         str(chunk.get("chunk_uid", chunk.get("chunk_id")))
         for chunk in retrieved_chunks
-        if chunk.get("chunk_uid", chunk.get("chunk_id")) is not None
+        if chunk.get("query_protected")
+        and chunk.get("chunk_uid", chunk.get("chunk_id")) is not None
     }
     protected_ids = set()
     if isinstance(canonicalization, dict):
@@ -804,7 +832,15 @@ def run_full_pipeline(config: dict) -> None:
     except TypeError:
         # Keep third-party/legacy pruners working while allocation rolls out.
         pruner = SummaryPruner(top_k_per_community=3, top_k_global=10)
-    prompt_builder = PromptBuilder(max_chars_per_chunk=1200)
+    try:
+        prompt_builder = PromptBuilder(
+            max_chars_per_chunk=1200,
+            provider_context_token_limit=config.get("provider_context_token_limit", 4096),
+            reserved_output_tokens=400,
+        )
+    except TypeError:
+        # Keep third-party/legacy prompt builders working while the safety gate rolls out.
+        prompt_builder = PromptBuilder(max_chars_per_chunk=1200)
     if verbose:
         resolved_chain = session.resolve_chain() if hasattr(session, "resolve_chain") else []
         if resolved_chain:
@@ -890,14 +926,9 @@ def run_full_pipeline(config: dict) -> None:
                         chunk["graph_denied"] = True
             qdrant.revalidate_query_authorization()
             retrieved_chunks = [chunk for chunk in retrieved_chunks if not chunk.get("graph_denied")]
-            query_protected_chunk_uids = set()
-            for chunk in retrieved_chunks:
-                if _chunk_query_key(chunk) in query_protected_keys:
-                    chunk["query_protected"] = True
-                if chunk.get("query_protected"):
-                    query_protected_chunk_uids.add(
-                        chunk.get("chunk_uid", chunk.get("chunk_id"))
-                    )
+            query_protected_chunk_uids = _mark_retrieval_hits_query_protected(
+                retrieved_chunks, query_protected_keys
+            )
             if persistent_graph_read_failed:
                 raise RuntimeError("persistent graph preflight failed; compatibility fallback denied")
 
@@ -950,11 +981,6 @@ def run_full_pipeline(config: dict) -> None:
                     for status in sorted({
                         relation.get("status", "unknown") for relation in all_relations
                     })
-                }
-                query_protected_chunk_uids = {
-                    chunk.get("chunk_uid", chunk.get("chunk_id"))
-                    for chunk in retrieved_chunks
-                    if chunk.get("chunk_uid", chunk.get("chunk_id")) is not None
                 }
                 _print_stage(3, 8, "build graph", verbose, [
                     f"Entities: {len(all_entities)}",
@@ -1123,6 +1149,13 @@ def run_full_pipeline(config: dict) -> None:
         if next_stage == "prompt":
             _print_stage(6, 8, "summarize communities", verbose)
             community_prompts = prompt_builder.build_all_community_prompts(pruned_result, query=query, style="concise")
+            prompt_delivery = _prompt_delivery_diagnostics(community_prompts)
+            if prompt_delivery:
+                context_allocation["prompt_delivery"] = prompt_delivery
+                _write_json_artifact(
+                    _artifact_path(current_dir, "context_allocation.json"),
+                    context_allocation,
+                )
             community_summaries = summarizer.summarize_communities(community_prompts)
             summarizer.save_map_summaries_json(community_summaries, _artifact_path(current_dir, "community_map_summaries.json"))
             summarizer.save_map_summaries_txt(community_summaries, _artifact_path(current_dir, "community_map_summaries.txt"))

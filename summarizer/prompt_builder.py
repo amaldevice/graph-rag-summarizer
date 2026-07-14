@@ -3,12 +3,20 @@
 # Structure-aware prompts for community-level summarization
 # ============================================================
 
+import math
 from typing import Dict, List, Optional
 
 
 class PromptBuilder:
-    def __init__(self, max_chars_per_chunk: int = 1200):
+    def __init__(
+        self,
+        max_chars_per_chunk: int = 1200,
+        provider_context_token_limit: int = 4096,
+        reserved_output_tokens: int = 400,
+    ):
         self.max_chars_per_chunk = max_chars_per_chunk
+        self.provider_context_token_limit = max(0, int(provider_context_token_limit))
+        self.reserved_output_tokens = max(0, int(reserved_output_tokens))
 
     def _truncate_text(self, text: str) -> str:
         if not isinstance(text, str):
@@ -17,6 +25,54 @@ class PromptBuilder:
         if len(text) <= self.max_chars_per_chunk:
             return text
         return text[: self.max_chars_per_chunk].rstrip() + " ..."
+
+    @staticmethod
+    def _estimated_tokens(text: str) -> int:
+        """Use a conservative, tokenizer-independent estimate for the safety gate."""
+        return math.ceil(len(text) / 3)
+
+    def _provider_safety(self, prompt: str) -> Dict:
+        estimated_input_tokens = self._estimated_tokens(prompt)
+        available_input_tokens = max(
+            0, self.provider_context_token_limit - self.reserved_output_tokens
+        )
+        return {
+            "status": (
+                "within_limit"
+                if estimated_input_tokens <= available_input_tokens
+                else "blocked"
+            ),
+            "provider_context_token_limit": self.provider_context_token_limit,
+            "reserved_output_tokens": self.reserved_output_tokens,
+            "estimated_input_tokens": estimated_input_tokens,
+            "estimated_total_tokens": estimated_input_tokens + self.reserved_output_tokens,
+            "prompt_characters": len(prompt),
+        }
+
+    @staticmethod
+    def _prompt_budget(pruned_result: Dict, community: Dict, chunks: List[Dict]) -> Dict:
+        allocation = pruned_result.get("context_allocation", {})
+        if not isinstance(allocation, dict):
+            allocation = {}
+        community_id = community.get("community_id", -1)
+        community_allocation = next(
+            (
+                item
+                for item in allocation.get("communities", [])
+                if item.get("community_id") == community_id
+            ),
+            {},
+        )
+        selected_character_cost = sum(
+            int((chunk.get("allocation") or {}).get("character_cost", len(str(chunk.get("text", "")))))
+            for chunk in chunks
+        )
+        return {
+            "selected_chunk_count": len(chunks),
+            "selected_character_cost": selected_character_cost,
+            "community_character_budget": community_allocation.get("allocated_characters", 0),
+            "total_character_budget": allocation.get("character_budget", 0),
+        }
 
     def build_community_prompt(
         self,
@@ -125,12 +181,15 @@ Return only the summary text.
                 query=query,
                 style=style
             )
+            budget = self._prompt_budget(pruned_result, community, chunks)
 
             prompts.append({
                 "community_id": community_id,
                 "num_chunks": len(chunks),
                 "prompt": prompt_text,
-                "chunk_ids": [c.get("chunk_id") for c in chunks]
+                "chunk_ids": [c.get("chunk_id") for c in chunks],
+                "budget": budget,
+                "provider_safety": self._provider_safety(prompt_text),
             })
 
         return prompts

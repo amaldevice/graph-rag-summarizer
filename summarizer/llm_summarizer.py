@@ -27,16 +27,19 @@ class LLMSummarizer:
             chunk_ids = item.get("chunk_ids", [])
             num_chunks = item.get("num_chunks", 0)
 
-            summary_text = self.summarize_prompt(prompt)
+            provider_safety = item.get("provider_safety", {})
+            blocked = isinstance(provider_safety, dict) and provider_safety.get("status") == "blocked"
+            summary_text = "" if blocked else self.summarize_prompt(prompt)
 
-            summaries.append(
-                {
-                    "community_id": community_id,
-                    "num_chunks": num_chunks,
-                    "chunk_ids": chunk_ids,
-                    "summary": summary_text,
-                }
-            )
+            summary = {
+                "community_id": community_id,
+                "num_chunks": num_chunks,
+                "chunk_ids": chunk_ids,
+                "summary": summary_text,
+            }
+            if blocked:
+                summary["skip_reason"] = "provider_token_budget_exceeded"
+            summaries.append(summary)
 
         return summaries
 
