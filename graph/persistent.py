@@ -10,6 +10,8 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
+import socket
 import threading
 import uuid
 from dataclasses import dataclass
@@ -424,6 +426,8 @@ class ManifestStore:
             "active_mutation_document_id": None,
             "active_mutation_attempt_id": None,
             "active_mutation_started_at": None,
+            "active_mutation_pid": None,
+            "active_mutation_host": None,
             "manifest_backend": self.backend,
             "tombstone_set_digest": _digest(canonical_json_bytes([])),
             "pending_tombstone_set_digest": None,
@@ -542,6 +546,22 @@ class ManifestStore:
             started = started.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - started).total_seconds() > _MUTATION_LEASE_TTL_SECONDS
 
+    @staticmethod
+    def _mutation_owner_alive(manifest: dict) -> bool:
+        pid = manifest.get("active_mutation_pid")
+        host = manifest.get("active_mutation_host")
+        if not isinstance(pid, int) or not isinstance(host, str):
+            return True
+        if host != socket.gethostname():
+            return True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError):
+            return True
+        return True
+
     def _acquire_mutation_lease(
         self,
         snapshot: ManifestSnapshot,
@@ -561,6 +581,7 @@ class ManifestStore:
                 attempt_id=attempt_id,
             )
             and self._mutation_lease_expired(manifest)
+            and not self._mutation_owner_alive(manifest)
         ):
             raise RuntimeError("a Qdrant mutation is already fenced")
         owner = str(uuid.uuid4())
@@ -571,6 +592,8 @@ class ManifestStore:
             "active_mutation_document_id": document_id,
             "active_mutation_attempt_id": attempt_id,
             "active_mutation_started_at": _now(),
+            "active_mutation_pid": os.getpid(),
+            "active_mutation_host": socket.gethostname(),
         })
         self._write(manifest, snapshot)
         return owner
@@ -587,6 +610,8 @@ class ManifestStore:
             "active_mutation_document_id": None,
             "active_mutation_attempt_id": None,
             "active_mutation_started_at": None,
+            "active_mutation_pid": None,
+            "active_mutation_host": None,
         })
         self._write(manifest, snapshot)
 
@@ -728,6 +753,7 @@ class ManifestStore:
                 "active_version": prior.get("active_version") if prior else None,
                 "active_artifact_key": prior.get("active_artifact_key") if prior else None,
                 "build_attempt_id": str(uuid.uuid4()),
+                "vector_ready": False,
                 "status": "pending",
                 "backend": prior.get("backend") if prior else None,
                 "previous_pointer": previous_pointer,
@@ -814,6 +840,7 @@ class ManifestStore:
                 "active_artifact_key": artifact_key,
                 "document_attempt_id": claim["pending_attempt_id"],
                 "status": "available",
+                "vector_ready": True,
                 "backend": self.backend,
                 "previous_pointer": previous,
                 "pending_operation_id": None,
@@ -838,6 +865,23 @@ class ManifestStore:
                 manifest["tombstone_set_digest"] = self.tombstone_proof_digest(manifest)
                 manifest["pending_tombstone_set_digest"] = None
                 manifest["pending_tombstone_cleanup_ids"] = []
+            self._write(manifest, snapshot)
+            return current
+
+    def mark_vectors_ready(self, claim: dict) -> dict:
+        """Record that the Qdrant vector/control proof completed before graph publication."""
+        with self._lock:
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
+            current = manifest.get("documents", {}).get(claim["document_id"])
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
+                raise RuntimeError("stale graph claim cannot mark vectors ready")
+            current = dict(current)
+            current["vector_ready"] = True
+            current["updated_at"] = _now()
+            manifest["documents"][claim["document_id"]] = current
             self._write(manifest, snapshot)
             return current
 
@@ -1093,6 +1137,38 @@ class ManifestStore:
             self._write(manifest, snapshot)
             return current
 
+    def stale(self, claim: dict, reason: str) -> dict:
+        """Terminally fence a claim after a Qdrant ownership/proof mismatch."""
+        with self._lock:
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
+            current = manifest.get("documents", {}).get(claim["document_id"])
+            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
+                raise RuntimeError("stale graph claim cannot transition stale")
+            current = dict(current)
+            current.update({
+                "status": "stale",
+                "pending_operation_id": None,
+                "pending_generation": None,
+                "pending_source_fingerprint": None,
+                "pending_version": None,
+                "pending_attempt_id": None,
+                "pending_backend": None,
+                "pending_artifact_key": None,
+                "pending_artifact_digest": None,
+                "build_attempt_id": None,
+                "failure_reason": str(reason)[:500],
+                "updated_at": _now(),
+            })
+            for item in current.get("version_ledger", []):
+                if item.get("version") == claim.get("pending_version") and item.get("state") == "reserved":
+                    item["state"] = "failed"
+            manifest["documents"][claim["document_id"]] = current
+            self._write(manifest, snapshot)
+            return current
+
 
 def _is_denied_payload(payload: dict) -> bool:
     return bool(payload.get("graph_control_point") or payload.get("graph_tombstoned"))
@@ -1143,6 +1219,14 @@ def graph_from_artifact(data: dict, chunks: list[dict] | None = None) -> nx.Grap
         for node in list(graph.nodes):
             if graph.nodes[node].get("type") == "chunk" and graph.nodes[node].get("chunk_uid") not in valid_uids:
                 graph.remove_node(node)
+        retained_chunks = [
+            node for node, attrs in graph.nodes(data=True)
+            if attrs.get("type") == "chunk"
+        ]
+        connected_evidence = set()
+        for chunk_node in retained_chunks:
+            connected_evidence.update(nx.node_connected_component(graph, chunk_node))
+        graph.remove_nodes_from(set(graph.nodes) - connected_evidence)
     return graph
 
 
@@ -1196,12 +1280,21 @@ def default_graph_services(collection: str, object_store=None):
     return ManifestStore(object_store, collection, backend=backend), GraphArtifactStore(object_store, collection)
 
 
-def build_document_graph(chunks, embeddings, document_id, *, entity_extractor=None, graph_builder=None, detector=None):
+def build_document_graph(
+    chunks,
+    embeddings,
+    document_id,
+    *,
+    entity_extractor=None,
+    graph_builder=None,
+    detector=None,
+    relation_provider=None,
+):
     """Build the reusable baseline graph from all document chunks."""
     if entity_extractor is None:
         from graph.entity_extractor import EntityExtractor
 
-        entity_extractor = EntityExtractor()
+        entity_extractor = EntityExtractor(provider_router=relation_provider)
     if graph_builder is None:
         from graph.graph_builder import GraphBuilder
 
@@ -1220,6 +1313,8 @@ def build_document_graph(chunks, embeddings, document_id, *, entity_extractor=No
             relation = dict(relation)
             relation.setdefault("support_chunk_uids", [chunk_uid])
             relation.setdefault("evidence_type", "explicit" if relation.get("source") not in {"rule-based", "fallback"} else "same_chunk")
+            relation.setdefault("confidence", 1.0 if relation.get("source") not in {"rule-based", "fallback"} else 0.5)
+            relation.setdefault("status", "accepted")
             relations.append(relation)
     graph = graph_builder.build_graph(chunks, embeddings, entities, relations)
     graph, communities, community_map, modularity = detector.detect(graph)
@@ -1305,13 +1400,15 @@ class PersistentGraphPipeline:
         except Exception as exc:
             try:
                 failure_reason = f"{type(exc).__name__}: {exc}"
+                claim_is_stale = False
                 if qdrant is not None:
                     try:
                         qdrant.verify_graph_claim_current(claim)
                     except Exception as qdrant_exc:
+                        claim_is_stale = True
                         failure_reason = f"{failure_reason}; Qdrant validation: {qdrant_exc}"
                 self.manifests.assert_claim_current(claim)
-                entry = self.manifests.fail(claim, failure_reason)
+                entry = self.manifests.stale(claim, failure_reason) if claim_is_stale else self.manifests.fail(claim, failure_reason)
             except Exception as fail_exc:
                 raise GraphLifecycleError("graph failure status CAS failed; claim remains fail-closed") from fail_exc
             return {"status": entry.get("status", "unavailable"), "entry": entry, "failure_reason": str(exc)}
@@ -1367,6 +1464,18 @@ def backfill_qdrant_collection(qdrant, collection: str, *, object_store=None, do
     results = []
     for current_document_id, document_chunks in sorted(grouped.items()):
         if not current_document_id:
+            continue
+        if any(
+            not isinstance(chunk.get("chunk_uid"), str)
+            or not chunk["chunk_uid"].strip()
+            or not isinstance(chunk.get("chunk_id"), int)
+            for chunk in document_chunks
+        ):
+            results.append({
+                "status": "unavailable",
+                "document_id": current_document_id,
+                "failure_reason": "chunk identity metadata is incomplete; rebuild required",
+            })
             continue
         generations = {chunk.get("document_generation") for chunk in document_chunks}
         if (
