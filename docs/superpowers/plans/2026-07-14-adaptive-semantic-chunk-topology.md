@@ -95,7 +95,7 @@
 **Files:**
 - Create: `tests/test_adaptive_topology.py`
 
-- [ ] **Step 1: Write tests covering:**
+- [x] **Step 1: Write tests covering:**
   - Compatibility check: ensuring the `fixed` policy builds identical graphs to the previous implementation.
   - Mutual kNN extraction.
   - Cutoff calculation on normal similarity distribution.
@@ -104,11 +104,11 @@
   - Determinism: proving that sorting of inputs and nodes yields identical graphs on repeated runs.
   - Degenerate inputs: handling when all similarities are identical or zero.
 
-- [ ] **Step 2: Run the new tests:**
+- [x] **Step 2: Run the new tests:**
   Run: `uv run pytest tests/test_adaptive_topology.py -v`
   Expected: PASS
 
-- [ ] **Step 3: Run the entire test suite to ensure no regressions:**
+- [x] **Step 3: Run the entire test suite to ensure no regressions:**
   Run: `uv run pytest`
   Expected: 172+ PASS, 0 failures
 
