@@ -96,6 +96,51 @@ def test_allocator_preserves_query_protected_chunk_and_degrades_without_path_sig
     assert protected["selection_reason"] == "query_protected"
 
 
+def test_query_protected_chunk_reserves_budget_beyond_community_cap():
+    ranked = _ranked([
+        {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.9, "text_preview": "strong"},
+        {"node": "chunk_1", "type": "chunk", "community": 1, "rank": 2, "composite_score": 0.0, "text_preview": "protected"},
+    ])
+    chunks = [
+        {"chunk_id": 0, "text": "strong evidence", "score": 0.9},
+        {"chunk_id": 1, "text": "P" * 300, "score": 0.0, "query_protected": True},
+    ]
+
+    result = SummaryPruner(
+        context_char_budget=1_000,
+        min_community_chars=10,
+        max_community_chars=100,
+        max_community_share=0.1,
+    ).select_top_chunks(ranked, chunks)
+
+    allocation = result["context_allocation"]
+    protected = next(item for item in allocation["selected_chunks"] if item["chunk_id"] == 1)
+    protected_community = next(
+        item for item in allocation["communities"] if item["community_id"] == 1
+    )
+    assert allocation["consumed_characters"] <= allocation["character_budget"]
+    assert protected["query_protection_reservation"] == "reserved"
+    assert protected_community["query_protected_reserve_characters"] == protected["character_cost"]
+    assert protected_community["query_protected_budget_override"] is True
+
+
+def test_query_protected_chunk_that_cannot_fit_records_safe_rejection():
+    ranked = _ranked([
+        {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.0, "text_preview": "protected"},
+    ])
+    result = SummaryPruner(context_char_budget=100).select_top_chunks(
+        ranked,
+        [{"chunk_id": 0, "text": "P" * 1_000, "score": 0.0, "query_protected": True}],
+    )
+
+    rejected = result["context_allocation"]["rejected_chunks"]
+    assert result["global_top_chunks"] == []
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "query_protected_exceeds_total_budget"
+    assert rejected[0]["safety_action"] == "not_selected_to_preserve_character_budget"
+    assert rejected[0]["character_cost"] > 100
+
+
 def test_allocator_consumes_normalized_path_score_when_available_deterministically():
     ranked = _ranked([
         {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.5, "normalized_path_score": 0.0, "text_preview": "a"},

@@ -275,7 +275,8 @@ class SummaryPruner:
             + len(json.dumps(metadata, sort_keys=True, ensure_ascii=False))
         )
 
-    def _community_allocations(self, candidates):
+    def _community_allocations(self, candidates, protected_reserves=None):
+        protected_reserves = protected_reserves or {}
         grouped = {}
         for candidate in candidates:
             grouped.setdefault(candidate["community"], []).append(candidate)
@@ -292,7 +293,14 @@ class SummaryPruner:
                 "unique_evidence_coverage": float(unique_evidence),
                 "section_diversity": float(section_diversity),
             }
-            communities.append({"community_id": community_id, "members": members, "raw": raw})
+            communities.append({
+                "community_id": community_id,
+                "members": members,
+                "raw": raw,
+                "query_protected_reserve_characters": max(
+                    0, int(protected_reserves.get(community_id, 0))
+                ),
+            })
 
         metric_names = (
             "query_similarity",
@@ -339,21 +347,31 @@ class SummaryPruner:
             self.max_community_chars,
             int(self.context_char_budget * self.max_community_share),
         )
+        reserved_characters = sum(
+            item["query_protected_reserve_characters"] for item in eligible
+        )
         minimum = min(
             self.min_community_chars,
             per_community_cap,
-            self.context_char_budget // len(eligible),
+            (self.context_char_budget - reserved_characters) // len(eligible),
         )
         for item in eligible:
-            item["allocated_characters"] = minimum
+            reserve = item["query_protected_reserve_characters"]
+            item["allocated_characters"] = max(minimum, reserve)
+            item["query_protected_budget_override"] = reserve > per_community_cap
 
-        remaining = self.context_char_budget - minimum * len(eligible)
+        remaining = self.context_char_budget - sum(
+            item["allocated_characters"] for item in eligible
+        )
         total_importance = sum(item["importance"] for item in eligible)
         ordered = sorted(eligible, key=lambda item: (-item["importance"], item["community_id"]))
         for item in ordered:
             share = item["importance"] / total_importance if total_importance else 1 / len(ordered)
+            allocation_cap = max(
+                per_community_cap, item["query_protected_reserve_characters"]
+            )
             additional = min(
-                per_community_cap - item["allocated_characters"],
+                allocation_cap - item["allocated_characters"],
                 int(remaining * share),
             )
             item["allocated_characters"] += max(0, additional)
@@ -362,7 +380,10 @@ class SummaryPruner:
         while remaining > 0:
             progressed = False
             for item in ordered:
-                if item["allocated_characters"] >= per_community_cap:
+                allocation_cap = max(
+                    per_community_cap, item["query_protected_reserve_characters"]
+                )
+                if item["allocated_characters"] >= allocation_cap:
                     continue
                 item["allocated_characters"] += 1
                 remaining -= 1
@@ -388,6 +409,41 @@ class SummaryPruner:
         ) / total_weight
         novelty = self._novelty(candidate["tokens"], selected_tokens)
         return base_score * novelty, novelty, base_score
+
+    def _reserve_query_protected_candidates(self, candidates):
+        """Reserve total-budget space for protected retrieval hits before ranking."""
+        remaining = self.context_char_budget
+        reserves = {}
+        rejected = []
+        protected = sorted(
+            (item for item in candidates if item["query_protected"]),
+            key=lambda item: (item["rank"], str(item["node"])),
+        )
+        for candidate in protected:
+            cost = candidate["character_cost"]
+            if cost <= remaining:
+                candidate["query_protection_reservation"] = "reserved"
+                reserves[candidate["community"]] = (
+                    reserves.get(candidate["community"], 0) + cost
+                )
+                remaining -= cost
+                continue
+
+            candidate["query_protection_reservation"] = "unavailable"
+            rejected.append({
+                "chunk_id": candidate["chunk_id"],
+                "community_id": candidate["community"],
+                "character_cost": cost,
+                "query_protected": True,
+                "reason": (
+                    "query_protected_exceeds_total_budget"
+                    if cost > self.context_char_budget
+                    else "query_protected_reserve_exhausted"
+                ),
+                "remaining_characters": remaining,
+                "safety_action": "not_selected_to_preserve_character_budget",
+            })
+        return reserves, rejected
 
     def select_top_chunks(self, ranked_df: pd.DataFrame, chunks, graph=None):
         empty_allocation = {
@@ -494,12 +550,17 @@ class SummaryPruner:
             for candidate, value in zip(candidates, self._normalized([item[source] for item in candidates])):
                 candidate.setdefault("signals", {})[name] = value
 
-        allocation_communities = self._community_allocations(candidates)
+        protected_reserves, protected_rejected = self._reserve_query_protected_candidates(candidates)
+        candidates = [
+            item for item in candidates
+            if item.get("query_protection_reservation") != "unavailable"
+        ]
+        allocation_communities = self._community_allocations(candidates, protected_reserves)
         selected = []
         selected_tokens = []
         rejected = [
             {**item, "reason": item["reason"]} for item in filtered_chunks
-        ]
+        ] + protected_rejected
         selection_order = 0
 
         for allocation in sorted(
@@ -531,7 +592,7 @@ class SummaryPruner:
                 candidate, marginal_gain, novelty, base_score = max(
                     scored,
                     key=lambda item: (
-                        item[1], item[0]["query_protected"], -item[0]["rank"], str(item[0]["node"])
+                        item[0]["query_protected"], item[1], -item[0]["rank"], str(item[0]["node"])
                     ),
                 )
                 remaining.remove(candidate)
@@ -564,6 +625,10 @@ class SummaryPruner:
                     "selection_order": selection_order,
                     "selection_reason": selection_reason,
                 }
+                if candidate["query_protected"]:
+                    allocation_record["query_protection_reservation"] = (
+                        candidate.get("query_protection_reservation", "not_required")
+                    )
                 candidate["row"] = candidate["row"].copy()
                 candidate["row"]["path_aware_score"] = base_score
                 record = self._chunk_record(
@@ -607,6 +672,12 @@ class SummaryPruner:
                     "importance": item["importance"],
                     "signals": item["signals"],
                     "allocated_characters": item["allocated_characters"],
+                    "query_protected_reserve_characters": item[
+                        "query_protected_reserve_characters"
+                    ],
+                    "query_protected_budget_override": item.get(
+                        "query_protected_budget_override", False
+                    ),
                     "consumed_characters": item.get("consumed_characters", 0),
                     "selected_count": item.get("selected_count", 0),
                     "reason": item["reason"],
