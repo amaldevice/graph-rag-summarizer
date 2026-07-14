@@ -49,6 +49,39 @@ def _write_json_artifact(path: str, value: dict) -> str:
     return str(out)
 
 
+def _empty_relation_recovery_diagnostics() -> dict:
+    """Return the stable empty shape for optional ingest recovery diagnostics."""
+    return {
+        "candidate_generation": {
+            "generated": [],
+            "deduplicated": [],
+            "budget_rejected": [],
+        },
+        "verification": [],
+        "cleanup": {
+            "removed_entity_ids": [],
+            "removed": [],
+            "preserved": [],
+        },
+        "counts": {
+            "local": 0,
+            "cross_chunk": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "unverified": 0,
+        },
+    }
+
+
+def _compatibility_relation_recovery_diagnostics() -> dict:
+    """Record that query-time fallback intentionally does not run recovery."""
+    return {
+        "status": "not_run",
+        "reason": "compatibility_fallback",
+        **_empty_relation_recovery_diagnostics(),
+    }
+
+
 def _build_ingest_graph_artifact(config, collection, document_id, chunks, vectors, ingest_mode):
     """Build the baseline graph after vector upload; vectors survive graph failure."""
     status_path = _artifact_path(config.get("artifact_dir") or "output", "graph_artifact_status.json")
@@ -853,6 +886,13 @@ def run_full_pipeline(config: dict) -> None:
                     _artifact_path(current_dir, "orphan_node_report.json"),
                     entity_support,
                 )
+                # ADR 0002 keeps compatibility fallback query-time only.  Global
+                # recovery is an ingest concern, so record the deliberate skip
+                # rather than attempting another provider call after retrieval.
+                _write_json_artifact(
+                    _artifact_path(current_dir, "relation_recovery.json"),
+                    _compatibility_relation_recovery_diagnostics(),
+                )
             else:
                 _print_stage(2, 8, "load persistent graph artifact", verbose)
                 G, communities, community_map, modularity, persisted_diagnostics = persistent_view
@@ -891,6 +931,16 @@ def run_full_pipeline(config: dict) -> None:
                             details["diagnostics"].get("entity_support", {}),
                             details["diagnostics"].get("canonicalization", {}),
                             retrieved_chunks,
+                        )
+                        for document_id, details in sorted(persisted_documents.items())
+                    },
+                })
+                # This is immutable ingest diagnostics.  Unlike entity support,
+                # it has no query-time protection overlay or other mutation.
+                _write_json_artifact(_artifact_path(current_dir, "relation_recovery.json"), {
+                    "documents": {
+                        document_id: details["diagnostics"].get(
+                            "relation_recovery", _empty_relation_recovery_diagnostics()
                         )
                         for document_id, details in sorted(persisted_documents.items())
                     },
