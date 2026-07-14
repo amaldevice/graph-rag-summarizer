@@ -13,10 +13,18 @@
 
 ## Exclusions
 
-No adaptive topology/community selection (#49–#51), context allocation (#52), all-pairs search, mandatory provider calls, or launcher changes.
+No adaptive topology/community selection (#49–#51), context allocation (#52), all-pairs search, mandatory provider calls, or launcher contract changes.
 
 ## Public test seams
 
 - Graph artifact construction and diagnostics from an Ingest Run.
 - Persistent graph artifact load/query compatibility behavior.
 - Deterministic unit fixtures for candidate caps and provider-unavailable verification.
+
+## Progress
+
+- [x] Scope, ADR ownership, existing seams, and a 245-test baseline confirmed.
+- [ ] M1 — relation-evidence contract, canonical entities, and support diagnostics (#45–#46).
+- [ ] M2 — bounded candidates, verification outcomes, and post-recovery cleanup (#47–#48).
+- [ ] M3 — persistent/Full-Pipeline artifact wiring and regression coverage.
+- [ ] M4 — targeted tests, full suite, independent review, and PR readiness.
