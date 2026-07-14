@@ -2,7 +2,8 @@
 
 ## 2026-07-15
 
-- **Implemented Issue #43 lightweight grounded evaluation metrics (PR #78, pending review)**
+- **Completed Issue #43 lightweight grounded evaluation metrics (PR #78 merged)**
+  - Merged PR #78 (`4b784e5`) and GitHub automatically closed Issue #43.
   - Added entity, number/date, sentence-support, citation-coverage, redundancy, query-relevance, and evidence-diversity signals without a new model dependency.
   - Kept quality evaluation bound to explicitly selected pruner evidence; an intentional empty selection no longer falls back to raw retrieval.
   - Added per-sentence chunk-ID traceability, careful date/number normalization, strict unsupported number/date failure, and warning-oriented redundancy/diversity decisions.
