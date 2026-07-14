@@ -2,6 +2,13 @@
 
 ## 2026-07-15
 
+- **Refreshed active documentation for the current project state**
+  - Replaced the pre-delivery Flow Project handoff with the current persistent-graph baseline, the five open GitHub issues (#35, #36, #40–#42), and the recommended next slice (#40).
+  - Updated starter architecture and runbook guidance for the default-enabled optional persistent graph, selected-evidence evaluation, and compatibility/vector-only fallbacks.
+  - Archived the stale 2026-07-13 issue-flow canvas and completed 2026-07-04 plans/specs under `docs/completed/`; repaired their archived references.
+  - Synced the live backlog with the current GitHub issue tracker and removed completed #43 from active work.
+  - Verification: `gh issue list --state open`; markdown/path reference scan with `rg`; `git diff --check`.
+
 - **Completed Issue #43 lightweight grounded evaluation metrics (PR #78 merged)**
   - Merged PR #78 (`4b784e5`) and GitHub automatically closed Issue #43.
   - Added entity, number/date, sentence-support, citation-coverage, redundancy, query-relevance, and evidence-diversity signals without a new model dependency.
@@ -56,7 +63,7 @@
 
 - **Prepared the PR #62 docs-only blocker patch for ADR 0002**
   - Updated `docs/adr/0002-persistent-document-graph-at-ingest.md` to make the lifecycle claim order explicit, fence Qdrant work with the manifest-issued token, define the tombstone deny control point and legacy-scan fail-closed rules, add monotonic version ledgering, and require gzip/canonical digest integrity checks on readers and writers.
-  - Updated `docs/canvas/issue-flow-architecture.html` so ADR 0002 is clearly the decision record and PR #62 still needs a separate implementation delivery issue for PR A.
+  - Updated the issue-flow canvas (now archived at `docs/completed/canvas/issue-flow-architecture.html`) so ADR 0002 is clearly the decision record and PR #62 still needs a separate implementation delivery issue for PR A.
   - Updated `docs/todo-in-progress.md` to remove the docs-only item from In Progress and keep the overall handoff tracking intact.
   - PR #62 remains open pending independent review and merge.
   - Verification: `git diff --check`.
@@ -116,7 +123,7 @@
   - Verification: validated 17 referenced paths, `uv run pytest -q` (`161 passed`), and `git diff --check`.
 
 - **Created an issue-to-flow architecture docs canvas**
-  - Added `docs/canvas/issue-flow-architecture.html` with current PR/issue status, before/after flow comparisons, issue dependency graph, blocker semantics, and detailed stage-by-stage architecture impact.
+  - Added the issue-flow architecture canvas (now archived at `docs/completed/canvas/issue-flow-architecture.html`) with then-current PR/issue status, before/after flow comparisons, issue dependency graph, blocker semantics, and detailed stage-by-stage architecture impact.
   - Covered the active PR #53, staged #12 delivery, closed parent issues #25/#33, and open adaptive graph chain #44–#52.
   - Verification: Python HTML parser smoke test, internal-anchor validation, `git diff --check`, and local HTTP server/curl render check.
 
@@ -436,7 +443,7 @@
 
 - **Prepared the cross-platform local embedding runtime planning artifacts**
   - Ran a grilling pass to lock the runtime contract for macOS, Windows, Linux, optional ONNX, project-local embedding cache behavior, and same-model ingest/query guarantees.
-  - Added `docs/prd-2026-07-04-cross-platform-local-embedding-runtime.md`, `docs/superpowers/plans/2026-07-04-cross-platform-local-embedding-runtime.md`, and `docs/slice-2026-07-04-cross-platform-local-embedding-runtime.md`.
+  - Added `docs/prd-2026-07-04-cross-platform-local-embedding-runtime.md`, `docs/completed/superpowers/plans/2026-07-04-cross-platform-local-embedding-runtime.md`, and `docs/slice-2026-07-04-cross-platform-local-embedding-runtime.md`.
   - Published the parent PRD issue `#6` plus the ready-for-agent slice issues `#7`, `#8`, `#9`, and `#10`.
   - Verification: `gh issue list --state open --limit 20 --json number,title,state,labels`; `gh issue view 6 --json number,title,body,labels`; `gh issue view 7 --json number,title,body,labels`; `gh issue view 8 --json number,title,body`; `gh issue view 9 --json number,title,body`; `gh issue view 10 --json number,title,body`.
 

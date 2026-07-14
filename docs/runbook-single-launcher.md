@@ -154,6 +154,10 @@ Good candidates for runtime input are:
 - Even in **cloud** profile, the PDF is still read from the local filesystem or the host machine that runs `main.py`.
 - Embedding inference still runs on the same machine that launches the app.
 - `full-pipeline` requires at least one configured LLM provider.
+- Persistent graph artifacts are enabled by default through
+  `ENABLE_PERSISTENT_GRAPH`. Ingest publishes a document-scoped graph artifact
+  when that stage is enabled; Full-Pipeline reuses a validated artifact when
+  available and records a compatibility/vector fallback otherwise.
 - Non-verbose runs still print the current stage; `--verbose` adds higher-detail stage context.
 - The launcher checks configuration presence, not end-to-end remote health. Use `uv run python scripts/check_cloud_connections.py` to validate Qdrant Cloud and R2 connectivity separately.
 - Shared collections support document-safe `append`, `replace-document`, and `replace-collection` ingest modes. Legacy collections without `document_id` must be rebuilt with `replace-collection` first.

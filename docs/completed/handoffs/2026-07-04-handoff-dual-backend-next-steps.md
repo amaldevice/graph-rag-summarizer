@@ -17,10 +17,10 @@ This session did three things:
 
 Use these artifacts as the current source of truth instead of re-planning:
 
-- `summarizer_project/docs/superpowers/specs/2026-07-04-graph-rag-summarizer-ingest-design.md`
-- `summarizer_project/docs/superpowers/plans/2026-07-04-graph-rag-summarizer-ingest-integration.md`
-- `summarizer_project/docs/superpowers/specs/2026-07-04-dual-local-cloud-storage-qdrant-design.md`
-- `summarizer_project/docs/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md`
+- `summarizer_project/docs/completed/superpowers/specs/2026-07-04-graph-rag-summarizer-ingest-design.md`
+- `summarizer_project/docs/completed/superpowers/plans/2026-07-04-graph-rag-summarizer-ingest-integration.md`
+- `summarizer_project/docs/completed/superpowers/specs/2026-07-04-dual-local-cloud-storage-qdrant-design.md`
+- `summarizer_project/docs/completed/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md`
 
 Use the dual-backend spec/plan for the next implementation pass. The older graph-rag ingest spec/plan is still useful for rationale/history.
 
@@ -103,7 +103,7 @@ Implement the dual-backend plan in this order:
 
 Use this plan as the checklist:
 
-- `summarizer_project/docs/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md`
+- `summarizer_project/docs/completed/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md`
 
 ## Constraints and gotchas
 
@@ -132,4 +132,4 @@ Invoke these in the next session if implementing from the new plan:
 
 ## Minimal pickup prompt for the next agent
 
-"Continue from `summarizer_project/docs/completed/handoffs/2026-07-04-handoff-dual-backend-next-steps.md` and implement `summarizer_project/docs/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md` with minimal diffs, preserving the post-VectorDB summarizer contract."
+"Continue from `summarizer_project/docs/completed/handoffs/2026-07-04-handoff-dual-backend-next-steps.md` and implement `summarizer_project/docs/completed/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md` with minimal diffs, preserving the post-VectorDB summarizer contract."
