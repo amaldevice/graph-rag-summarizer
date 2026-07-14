@@ -82,6 +82,60 @@ def _compatibility_relation_recovery_diagnostics() -> dict:
     }
 
 
+def _empty_context_allocation_diagnostics() -> dict:
+    """Keep the optional allocation artifact inspectable for legacy pruners."""
+    return {
+        "strategy": "adaptive_character_budget",
+        "character_budget": 0,
+        "consumed_characters": 0,
+        "remaining_characters": 0,
+        "path_signal_status": "unavailable",
+        "communities": [],
+        "selected_chunks": [],
+        "rejected_chunks": [],
+    }
+
+
+def _context_allocation_artifact(
+    pruned_result: dict,
+    *,
+    graph_source: str,
+    fallback_status: str,
+    query_protected_chunk_uids: set,
+    attempt: int,
+) -> dict:
+    """Add runner-owned provenance without changing allocator decisions."""
+    allocation = pruned_result.get("context_allocation") if isinstance(pruned_result, dict) else None
+    allocator_status = "available"
+    if not isinstance(allocation, dict):
+        allocation = _empty_context_allocation_diagnostics()
+        allocator_status = "unavailable"
+    else:
+        allocation = dict(allocation)
+    allocation["runner_context"] = {
+        "attempt": attempt,
+        "allocator_status": allocator_status,
+        "graph_source": graph_source,
+        "fallback_status": fallback_status,
+        "query_protected_chunk_uids": sorted(
+            str(chunk_uid) for chunk_uid in query_protected_chunk_uids
+        ),
+    }
+    return allocation
+
+
+def _chunk_query_key(chunk: dict):
+    """Prefer stable document-scoped identities when protecting retrieval hits."""
+    chunk_uid = chunk.get("chunk_uid")
+    if chunk_uid is not None:
+        return ("uid", str(chunk_uid))
+    document_id = chunk.get("document_id")
+    chunk_id = chunk.get("chunk_id")
+    if document_id is not None:
+        return ("document", str(document_id), str(chunk_id))
+    return ("local", str(chunk_id))
+
+
 def _build_ingest_graph_artifact(config, collection, document_id, chunks, vectors, ingest_mode):
     """Build the baseline graph after vector upload; vectors survive graph failure."""
     status_path = _artifact_path(config.get("artifact_dir") or "output", "graph_artifact_status.json")
@@ -734,7 +788,22 @@ def run_full_pipeline(config: dict) -> None:
     graph_builder = GraphBuilder()
     detector = CommunityDetector()
     analyzer = GraphAnalyzer()
-    pruner = SummaryPruner(top_k_per_community=3, top_k_global=10)
+    allocation_options = {
+        "context_char_budget": config.get("context_char_budget", 12000),
+        "min_community_chars": config.get("min_community_chars", 600),
+        "max_community_chars": config.get("max_community_chars", 4800),
+        "relevance_floor": config.get("context_relevance_floor", 0.05),
+        "min_marginal_gain": config.get("min_marginal_gain", 0.01),
+    }
+    try:
+        pruner = SummaryPruner(
+            top_k_per_community=3,
+            top_k_global=10,
+            **allocation_options,
+        )
+    except TypeError:
+        # Keep third-party/legacy pruners working while allocation rolls out.
+        pruner = SummaryPruner(top_k_per_community=3, top_k_global=10)
     prompt_builder = PromptBuilder(max_chars_per_chunk=1200)
     if verbose:
         resolved_chain = session.resolve_chain() if hasattr(session, "resolve_chain") else []
@@ -759,11 +828,27 @@ def run_full_pipeline(config: dict) -> None:
     communities = []
     modularity = 0.0
     pruned_result = {"communities": []}
+    context_allocation = None
+    context_graph_source = "not_run"
+    context_fallback_status = "not_run"
+    query_protected_chunk_uids = set()
     community_prompts = []
     community_summaries = []
 
     while True:
         current_dir = artifact_dir if attempt == 0 else _artifact_path(artifact_dir, f"attempt-{attempt}")
+
+        if next_stage != "retrieval" and context_allocation is not None:
+            _write_json_artifact(
+                _artifact_path(current_dir, "context_allocation.json"),
+                _context_allocation_artifact(
+                    pruned_result,
+                    graph_source=context_graph_source,
+                    fallback_status=context_fallback_status,
+                    query_protected_chunk_uids=query_protected_chunk_uids,
+                    attempt=attempt,
+                ),
+            )
 
         if next_stage == "retrieval":
             _print_stage(1, 8, "retrieve chunks", verbose, [
@@ -774,6 +859,9 @@ def run_full_pipeline(config: dict) -> None:
             ])
             query_vector = embedder.embed_text(query)
             retrieved_chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
+            query_protected_keys = {
+                _chunk_query_key(chunk) for chunk in retrieved_chunks
+            }
             qdrant.revalidate_query_authorization()
             expand_parent_context = getattr(qdrant, "expand_parent_context", None)
             if callable(expand_parent_context):
@@ -802,10 +890,24 @@ def run_full_pipeline(config: dict) -> None:
                         chunk["graph_denied"] = True
             qdrant.revalidate_query_authorization()
             retrieved_chunks = [chunk for chunk in retrieved_chunks if not chunk.get("graph_denied")]
+            query_protected_chunk_uids = set()
+            for chunk in retrieved_chunks:
+                if _chunk_query_key(chunk) in query_protected_keys:
+                    chunk["query_protected"] = True
+                if chunk.get("query_protected"):
+                    query_protected_chunk_uids.add(
+                        chunk.get("chunk_uid", chunk.get("chunk_id"))
+                    )
             if persistent_graph_read_failed:
                 raise RuntimeError("persistent graph preflight failed; compatibility fallback denied")
 
             if persistent_view is None:
+                context_graph_source = "compatibility_query_graph"
+                context_fallback_status = (
+                    "persistent_graph_unavailable"
+                    if config.get("enable_graph_artifact", False)
+                    else "persistent_graph_disabled"
+                )
                 _print_stage(2, 8, "extract entities and relations", verbose, f"Chunk count: {len(retrieved_chunks)}")
                 entity_map, extracted_entities = extractor.extract_entities(retrieved_chunks)
                 all_entities, canonicalization = canonicalize_entities(extracted_entities)
@@ -907,6 +1009,8 @@ def run_full_pipeline(config: dict) -> None:
                     "embedding_cluster_comparison", {}
                 )
             else:
+                context_graph_source = "persistent_graph"
+                context_fallback_status = "not_used"
                 _print_stage(2, 8, "load persistent graph artifact", verbose)
                 G, communities, community_map, modularity, persisted_diagnostics = persistent_view
                 _print_stage(3, 8, "reuse persisted graph", verbose, f"Communities: {len(communities)}")
@@ -1001,6 +1105,17 @@ def run_full_pipeline(config: dict) -> None:
                 pruned_result = pruner.select_top_chunks(ranked, retrieved_chunks, graph=G)
             except TypeError:
                 pruned_result = pruner.select_top_chunks(ranked, retrieved_chunks)
+            context_allocation = _context_allocation_artifact(
+                pruned_result,
+                graph_source=context_graph_source,
+                fallback_status=context_fallback_status,
+                query_protected_chunk_uids=query_protected_chunk_uids,
+                attempt=attempt,
+            )
+            _write_json_artifact(
+                _artifact_path(current_dir, "context_allocation.json"),
+                context_allocation,
+            )
             pruner.save_pruned_json(pruned_result, _artifact_path(current_dir, "pruned_summary_context.json"))
             pruner.save_pruned_csv(pruned_result, _artifact_path(current_dir, "pruned_summary_context.csv"))
             next_stage = "prompt"
