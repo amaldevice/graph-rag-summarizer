@@ -1531,7 +1531,11 @@ def build_document_graph(
         query_protected_chunk_uids=query_protected_chunk_uids,
     )
     cleanup = cleanup_unsupported_entity_nodes(graph, post_recovery_support)
-    graph, communities, community_map, modularity = detector.detect(graph)
+    try:
+        graph, communities, community_map, modularity = detector.detect(graph, embeddings)
+    except TypeError:
+        # Backward-compatible seam for injected test/custom detectors.
+        graph, communities, community_map, modularity = detector.detect(graph)
     active_evidence = [
         relation for relation in relations
         if is_active_relation(relation)
@@ -1588,6 +1592,7 @@ def build_document_graph(
         },
         "topology": graph.graph.get("topology", {}),
         "community_selection": graph.graph.get("community_selection", {}),
+        "embedding_cluster_comparison": graph.graph.get("embedding_cluster_comparison", {}),
     }
     return graph, {
         "communities": communities,
