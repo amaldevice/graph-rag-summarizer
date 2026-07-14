@@ -124,10 +124,3 @@ GRAPH_KNN_K = int(os.getenv("GRAPH_KNN_K", 3))
 GRAPH_SIM_THRESHOLD = float(os.getenv("GRAPH_SIM_THRESHOLD", 0.3))
 GRAPH_MIN_DEGREE = int(os.getenv("GRAPH_MIN_DEGREE", 1))
 GRAPH_MAX_DEGREE = int(os.getenv("GRAPH_MAX_DEGREE", 5))
-# --- GRAPH TOPOLOGY ---
-GRAPH_TOPOLOGY_POLICY = os.getenv("GRAPH_TOPOLOGY_POLICY", "adaptive").strip().lower()
-GRAPH_KNN_K = int(os.getenv("GRAPH_KNN_K", 3))
-GRAPH_SIM_THRESHOLD = float(os.getenv("GRAPH_SIM_THRESHOLD", 0.3))
-GRAPH_MIN_DEGREE = int(os.getenv("GRAPH_MIN_DEGREE", 1))
-GRAPH_MAX_DEGREE = int(os.getenv("GRAPH_MAX_DEGREE", 5))
-

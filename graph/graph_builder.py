@@ -157,147 +157,216 @@ class GraphBuilder:
         return G
 
     def _build_semantic_edges(self, G, chunks, active_indices, sim_matrix):
-        selected_policy = self.policy
-        resolved_cutoff = self.sim_threshold
+        requested_policy = str(self.policy).strip().lower()
+        selected_policy = requested_policy
+        resolved_cutoff = float(self.sim_threshold)
         fallback_reason = ""
-        
-        run_adaptive = False
+        degree_bounds_valid = self._valid_degree_bounds()
+
+        if requested_policy not in {"adaptive", "fixed"}:
+            selected_policy = "fixed"
+            fallback_reason = f"Unsupported graph topology policy: {requested_policy}"
+        elif requested_policy == "adaptive" and not degree_bounds_valid:
+            selected_policy = "fixed"
+            fallback_reason = "Invalid adaptive degree bounds"
+        elif requested_policy == "adaptive" and len(active_indices) < 2:
+            selected_policy = "fixed"
+            fallback_reason = "Fewer than 2 active chunks"
+
         if selected_policy == "adaptive":
-            if len(active_indices) < 2:
-                selected_policy = "fixed"
-                fallback_reason = "Fewer than 2 active chunks"
-            else:
-                run_adaptive = True
-
-        if run_adaptive:
             try:
-                # 1. Compute unique pair similarity scores for active chunks (i < j)
-                scores = []
-                for idx_a, i in enumerate(active_indices):
-                    for j in active_indices[idx_a + 1:]:
-                        scores.append(sim_matrix[i][j])
-                
-                # 2. Compute mean and std of these similarity scores
-                mean = float(np.mean(scores))
-                std = float(np.std(scores))
-                
-                # 3. Derive resolved_cutoff
-                resolved_cutoff = mean + 0.5 * std
-                
-                # 4. If resolved_cutoff is not between -1.0 and 1.0, clamp it to self.sim_threshold
-                if resolved_cutoff < -1.0 or resolved_cutoff > 1.0:
-                    resolved_cutoff = self.sim_threshold
-                
-                # 5. Generate mutual-kNN candidate edges
-                top_k_for_node = {}
-                for i in active_indices:
-                    # Sort active chunks j != i by similarity descending, then index j ascending
-                    candidates = [j for j in active_indices if j != i]
-                    candidates.sort(key=lambda j: (-sim_matrix[i][j], j))
-                    top_k_for_node[i] = set(candidates[:self.knn_k])
-                
-                semantic_edges = set()
-                for idx_a, i in enumerate(active_indices):
-                    for j in active_indices[idx_a + 1:]:
-                        if j in top_k_for_node[i] and i in top_k_for_node[j] and sim_matrix[i][j] >= resolved_cutoff:
-                            semantic_edges.add((i, j, float(sim_matrix[i][j])))
-                
-                # 6. Initialize degree tracking
-                current_degrees = {i: 0 for i in active_indices}
-                for u, v, _ in semantic_edges:
-                    current_degrees[u] += 1
-                    current_degrees[v] += 1
-                
-                # 7. Enforce min_degree per active node
-                for i in sorted(active_indices):
-                    candidates = [j for j in active_indices if j != i]
-                    candidates.sort(key=lambda j: (-sim_matrix[i][j], j))
-                    
-                    for j in candidates:
-                        if current_degrees[i] >= self.min_degree:
-                            break
-                        if sim_matrix[i][j] < self.sim_threshold:
-                            break
-                        
-                        u, v = min(i, j), max(i, j)
-                        # Check if edge already exists in semantic_edges
-                        edge_exists = False
-                        for ex_u, ex_v, _ in semantic_edges:
-                            if ex_u == u and ex_v == v:
-                                edge_exists = True
-                                break
-                        
-                        if not edge_exists:
-                            semantic_edges.add((u, v, float(sim_matrix[i][j])))
-                            current_degrees[u] += 1
-                            current_degrees[v] += 1
-                
-                # 8. Enforce max_degree per active node
-                for i in sorted(active_indices):
-                    # Count current degree of i dynamically from semantic_edges
-                    incident_edges = []
-                    for u, v, w in semantic_edges:
-                        if u == i:
-                            incident_edges.append((u, v, w, v))
-                        elif v == i:
-                            incident_edges.append((u, v, w, u))
-                    
-                    if len(incident_edges) > self.max_degree:
-                        # Sort them by weight ascending, then neighbor index ascending
-                        incident_edges.sort(key=lambda edge: (edge[2], edge[3]))
-                        num_to_prune = len(incident_edges) - self.max_degree
-                        for k in range(num_to_prune):
-                            u, v, w, neighbor = incident_edges[k]
-                            semantic_edges.discard((u, v, w))
-                
-                # 9. Add final set of semantic_edges to G
-                for u, v, weight in semantic_edges:
-                    G.add_edge(
-                        f"chunk_{u}",
-                        f"chunk_{v}",
-                        weight=float(weight),
-                        edge_type="knn_similarity"
-                    )
-            except Exception as e:
+                semantic_edges, resolved_cutoff, unmet_nodes = self._adaptive_edges(
+                    active_indices,
+                    sim_matrix,
+                )
+            except (FloatingPointError, IndexError, TypeError, ValueError) as error:
                 selected_policy = "fixed"
-                fallback_reason = str(e)
-                run_adaptive = False
-        
-        # Fixed policy or fallback
-        if not run_adaptive:
-            active_index_set = set(active_indices)
-            for i in active_indices:
-                scores = sim_matrix[i].copy()
-                scores[i] = -1
-                for inactive_index in range(len(chunks)):
-                    if inactive_index not in active_index_set:
-                        scores[inactive_index] = -1
-                top_idx = np.argsort(scores)[-self.knn_k:][::-1]
+                fallback_reason = f"Adaptive topology unavailable: {error}"
+            else:
+                if unmet_nodes:
+                    selected_policy = "fixed"
+                    fallback_reason = (
+                        "Adaptive degree bounds cannot be satisfied for: "
+                        + ", ".join(str(node) for node in unmet_nodes)
+                    )
+                elif not semantic_edges and len(active_indices) > 1:
+                    selected_policy = "fixed"
+                    fallback_reason = "Adaptive topology has no semantic edges"
+                else:
+                    self._add_semantic_edges(G, semantic_edges)
 
-                for j in top_idx:
-                    if j in active_index_set and sim_matrix[i][j] > self.sim_threshold:
-                        G.add_edge(
-                            f"chunk_{i}",
-                            f"chunk_{j}",
-                            weight=float(sim_matrix[i][j]),
-                            edge_type="knn_similarity"
-                        )
-        
-        # Collect and record metadata in G.graph["topology_metadata"]
+        if selected_policy == "fixed":
+            self._apply_fixed_policy(G, chunks, active_indices, sim_matrix)
+
         similarity_subgraph = nx.Graph()
         similarity_subgraph.add_nodes_from(f"chunk_{i}" for i in active_indices)
         for u, v, data in G.edges(data=True):
             if data.get("edge_type") == "knn_similarity":
                 similarity_subgraph.add_edge(u, v)
-        
+
         degrees = [int(similarity_subgraph.degree(f"chunk_{i}")) for i in active_indices]
-        
+        orphan_nodes = [
+            f"chunk_{index}"
+            for index, degree in zip(active_indices, degrees)
+            if degree == 0
+        ]
+        node_count = len(active_indices)
+        max_edges = node_count * (node_count - 1) / 2
+        density = similarity_subgraph.number_of_edges() / max_edges if max_edges else 0.0
+        degree_bounds_satisfied = (
+            degree_bounds_valid
+            and all(self.min_degree <= degree <= self.max_degree for degree in degrees)
+        )
+
         G.graph["topology_metadata"] = {
+            "requested_policy": requested_policy,
             "selected_policy": selected_policy,
             "resolved_cutoff": float(resolved_cutoff),
             "degree_bounds": [self.min_degree, self.max_degree],
+            "degree_bounds_valid": degree_bounds_valid,
+            "degree_bounds_satisfied": degree_bounds_satisfied,
             "degree_distribution": degrees,
             "edge_count": similarity_subgraph.number_of_edges(),
             "connected_components": nx.number_connected_components(similarity_subgraph),
-            "fallback_reason": fallback_reason
+            "density": float(density),
+            "orphan_count": len(orphan_nodes),
+            "orphan_nodes": orphan_nodes,
+            "at_max_degree_count": sum(
+                degree == self.max_degree for degree in degrees
+            ) if degree_bounds_valid else 0,
+            "sparse_guardrail_triggered": bool(orphan_nodes),
+            "dense_guardrail_triggered": bool(
+                degree_bounds_valid
+                and node_count > 1
+                and density > self.max_degree / (node_count - 1)
+            ),
+            "fallback_reason": fallback_reason,
         }
+
+    def _valid_degree_bounds(self):
+        return (
+            isinstance(self.min_degree, int)
+            and isinstance(self.max_degree, int)
+            and 0 <= self.min_degree <= self.max_degree
+        )
+
+    def _adaptive_edges(self, active_indices, sim_matrix):
+        scores = [
+            float(sim_matrix[i][j])
+            for offset, i in enumerate(active_indices)
+            for j in active_indices[offset + 1:]
+        ]
+        if not scores or not np.isfinite(scores).all():
+            raise ValueError("non-finite similarity scores")
+
+        resolved_cutoff = float(np.mean(scores) + 0.5 * np.std(scores))
+        if not -1.0 <= resolved_cutoff <= 1.0:
+            raise ValueError("similarity cutoff is outside [-1, 1]")
+
+        neighbors = {
+            i: self._sorted_neighbors(i, active_indices, sim_matrix)
+            for i in active_indices
+        }
+        top_neighbors = {
+            i: {neighbor for neighbor, _ in candidates[:self.knn_k]}
+            for i, candidates in neighbors.items()
+        }
+        mutual_edges = [
+            (i, j, float(sim_matrix[i][j]))
+            for offset, i in enumerate(active_indices)
+            for j in active_indices[offset + 1:]
+            if j in top_neighbors[i]
+            and i in top_neighbors[j]
+            and sim_matrix[i][j] >= resolved_cutoff
+        ]
+        mutual_edges.sort(key=lambda edge: (-edge[2], edge[0], edge[1]))
+
+        degrees = {index: 0 for index in active_indices}
+        edges = {}
+
+        def add_edge(u, v, weight):
+            edge = (min(u, v), max(u, v))
+            if edge not in edges:
+                edges[edge] = float(weight)
+                degrees[u] += 1
+                degrees[v] += 1
+
+        def remove_edge(u, v):
+            edge = (min(u, v), max(u, v))
+            del edges[edge]
+            degrees[u] -= 1
+            degrees[v] -= 1
+
+        for u, v, weight in mutual_edges:
+            if degrees[u] < self.max_degree and degrees[v] < self.max_degree:
+                add_edge(u, v, weight)
+
+        for i in active_indices:
+            for j, weight in neighbors[i]:
+                if degrees[i] >= self.min_degree or weight < self.sim_threshold:
+                    break
+                edge = (min(i, j), max(i, j))
+                if edge in edges:
+                    continue
+                if degrees[j] >= self.max_degree:
+                    repairable = sorted(
+                        (
+                            (edge_weight, neighbor)
+                            for (u, v), edge_weight in edges.items()
+                            for neighbor in ([v] if u == j else [u] if v == j else [])
+                            if degrees[neighbor] > self.min_degree
+                        ),
+                        key=lambda candidate: (candidate[0], candidate[1]),
+                    )
+                    if not repairable:
+                        continue
+                    _, neighbor = repairable[0]
+                    remove_edge(j, neighbor)
+                add_edge(i, j, weight)
+
+        unmet_nodes = [
+            index for index in active_indices if degrees[index] < self.min_degree
+        ]
+        return [
+            (u, v, weight) for (u, v), weight in sorted(edges.items())
+        ], resolved_cutoff, unmet_nodes
+
+    @staticmethod
+    def _sorted_neighbors(index, active_indices, sim_matrix):
+        return sorted(
+            (
+                (neighbor, float(sim_matrix[index][neighbor]))
+                for neighbor in active_indices
+                if neighbor != index
+            ),
+            key=lambda candidate: (-candidate[1], candidate[0]),
+        )
+
+    @staticmethod
+    def _add_semantic_edges(G, semantic_edges):
+        for u, v, weight in semantic_edges:
+            G.add_edge(
+                f"chunk_{u}",
+                f"chunk_{v}",
+                weight=float(weight),
+                edge_type="knn_similarity",
+            )
+
+    def _apply_fixed_policy(self, G, chunks, active_indices, sim_matrix):
+        active_index_set = set(active_indices)
+        for i in active_indices:
+            scores = sim_matrix[i].copy()
+            scores[i] = -1
+            for inactive_index in range(len(chunks)):
+                if inactive_index not in active_index_set:
+                    scores[inactive_index] = -1
+            top_idx = np.argsort(scores)[-self.knn_k:][::-1]
+
+            for j in top_idx:
+                if j in active_index_set and sim_matrix[i][j] > self.sim_threshold:
+                    G.add_edge(
+                        f"chunk_{i}",
+                        f"chunk_{j}",
+                        weight=float(sim_matrix[i][j]),
+                        edge_type="knn_similarity",
+                    )

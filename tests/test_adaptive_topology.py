@@ -317,3 +317,98 @@ def test_degenerate_inputs():
     assert G_identical.has_edge("chunk_0", "chunk_1")
     assert G_identical.has_edge("chunk_0", "chunk_2")
     assert not G_identical.has_edge("chunk_1", "chunk_2")
+
+
+def test_adaptive_degree_bounds_are_enforced_together():
+    chunks = [
+        {"chunk_id": f"c{i}", "text": f"Chunk {i}", "level": "paragraph"}
+        for i in range(4)
+    ]
+    embeddings = [[1.0, 0.0]] * 4
+
+    graph = GraphBuilder(
+        policy="adaptive",
+        knn_k=3,
+        min_degree=1,
+        max_degree=1,
+        sim_threshold=0.1,
+    ).build_graph(chunks, embeddings, [], [])
+
+    metadata = graph.graph["topology_metadata"]
+    assert metadata["selected_policy"] == "adaptive"
+    assert metadata["degree_bounds_satisfied"] is True
+    assert metadata["degree_distribution"] == [1, 1, 1, 1]
+
+
+def test_impossible_adaptive_degree_bounds_fall_back_deterministically():
+    chunks = [
+        {"chunk_id": f"c{i}", "text": f"Chunk {i}", "level": "paragraph"}
+        for i in range(3)
+    ]
+    embeddings = [[1.0, 0.0]] * 3
+
+    graph = GraphBuilder(
+        policy="adaptive",
+        knn_k=1,
+        min_degree=1,
+        max_degree=1,
+        sim_threshold=0.1,
+    ).build_graph(chunks, embeddings, [], [])
+
+    metadata = graph.graph["topology_metadata"]
+    assert metadata["selected_policy"] == "fixed"
+    assert metadata["fallback_reason"].startswith(
+        "Adaptive degree bounds cannot be satisfied"
+    )
+
+
+def test_invalid_policy_and_degree_configuration_are_recorded_as_fallbacks():
+    chunks = [
+        {"chunk_id": "c0", "text": "Chunk 0", "level": "paragraph"},
+        {"chunk_id": "c1", "text": "Chunk 1", "level": "paragraph"},
+    ]
+    embeddings = [[1.0, 0.0], [1.0, 0.0]]
+
+    invalid_policy = GraphBuilder(policy="unknown", knn_k=1).build_graph(
+        chunks, embeddings, [], []
+    )
+    invalid_bounds = GraphBuilder(
+        policy="adaptive", knn_k=1, min_degree=2, max_degree=1
+    ).build_graph(chunks, embeddings, [], [])
+
+    assert invalid_policy.graph["topology_metadata"]["selected_policy"] == "fixed"
+    assert invalid_policy.graph["topology_metadata"]["fallback_reason"] == (
+        "Unsupported graph topology policy: unknown"
+    )
+    assert invalid_bounds.graph["topology_metadata"]["degree_bounds_valid"] is False
+    assert invalid_bounds.graph["topology_metadata"]["fallback_reason"] == (
+        "Invalid adaptive degree bounds"
+    )
+
+
+def test_sparse_and_dense_topologies_report_shape_guardrails():
+    chunks = [
+        {"chunk_id": f"c{i}", "text": f"Chunk {i}", "level": "paragraph"}
+        for i in range(4)
+    ]
+    sparse = GraphBuilder(
+        policy="adaptive", knn_k=1, min_degree=0, max_degree=2, sim_threshold=0.1
+    ).build_graph(
+        chunks,
+        [[1.0, 0.0, 0.0, 0.0], [0.9, 0.43589, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        [],
+        [],
+    )
+    dense = GraphBuilder(
+        policy="adaptive", knn_k=3, min_degree=1, max_degree=2, sim_threshold=0.1
+    ).build_graph(chunks, [[1.0, 0.0]] * 4, [], [])
+
+    sparse_metadata = sparse.graph["topology_metadata"]
+    dense_metadata = dense.graph["topology_metadata"]
+    assert sparse_metadata["orphan_nodes"] == ["chunk_2", "chunk_3"]
+    assert sparse_metadata["orphan_count"] == 2
+    assert sparse_metadata["sparse_guardrail_triggered"] is True
+    assert sparse_metadata["density"] == pytest.approx(1 / 6)
+    assert max(dense_metadata["degree_distribution"]) <= 2
+    assert dense_metadata["density"] <= 2 / 3
+    assert dense_metadata["dense_guardrail_triggered"] is False
