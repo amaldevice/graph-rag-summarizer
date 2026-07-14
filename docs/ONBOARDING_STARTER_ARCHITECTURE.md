@@ -2,22 +2,24 @@
 
 Compact orientation for a new agent. Read this before changing implementation code.
 
-> **Current boundary:** the project is graph-aware, but graph construction currently happens during a **Full-Pipeline Run** after Qdrant retrieval. Ingest persists vectors and payload metadata; it does not yet persist a reusable graph.
+> **Current boundary:** Ingest can publish a fenced, document-scoped persistent graph artifact. A **Full-Pipeline Run** reuses that artifact when it is enabled and valid; otherwise it builds a compatibility query graph, then falls back to vector-only context if graph construction fails. Query-Only remains retrieval-only.
 
 ## 1. Purpose and mental model
 
 This project turns long PDFs into query-grounded summaries:
 
 ```text
-PDF ──Docling──> hierarchical chunks ──embed──> Qdrant
+PDF ──Docling──> hierarchical chunks ──embed──> Qdrant + optional graph artifact
                                                 │
 query ──embed──────────────────────────────────┘
-  └─ retrieve → extract entities/relations → build graph → communities
+  └─ retrieve → reuse persistent graph (or compatibility graph) → communities
      → rank/prune evidence → map summaries → reduce final summary
-     → evaluate → quality gate → bounded feedback retry
+     → evaluate selected evidence → quality gate → bounded feedback retry
 ```
 
-Qdrant is the vector/payload store. R2 or MinIO stores extracted/rendered images. The graph is built in memory with per-run artifacts written under `output/`.
+Qdrant is the vector/payload store. R2 or MinIO stores extracted/rendered
+images and, when enabled, the persistent graph artifact/manifest. Per-run
+artifacts remain under `output/`.
 
 ## 2. Technology stack
 
@@ -46,7 +48,7 @@ Per-run choices are session overrides; the launcher does not rewrite `.env`.
 
 | Mode | Flow | Does not do |
 | --- | --- | --- |
-| `ingest` | PDF → Docling → chunks/images → embeddings → Qdrant | graph, summary, evaluation |
+| `ingest` | PDF → Docling → chunks/images → embeddings → Qdrant → optional graph artifact | summary, evaluation |
 | `query-only` | query → embedding → Qdrant ranked chunks → console/JSON | graph, summary, evaluation |
 | `full-pipeline` | retrieval → graph → summarize → evaluate → artifacts | — |
 
@@ -68,6 +70,8 @@ Profiles select infrastructure, not work:
 3. `TextEmbedder.embed_chunks()` creates vectors.
 4. `QdrantHandler.prepare_ingest()` applies the collection lifecycle.
 5. `QdrantHandler.upsert_chunks()` writes vector + payload points in bounded batches.
+6. When persistent graphs are enabled, `PersistentGraphPipeline` claims,
+   validates, and publishes the document artifact and manifest entry.
 
 Ingest operations are explicit: `append`, `replace-document`, and `replace-collection`. Legacy points without `document_id` must be rebuilt before document-safe append/replacement.
 
@@ -76,13 +80,19 @@ Ingest operations are explicit: `append`, `replace-document`, and `replace-colle
 `launcher/runners.py::run_full_pipeline` executes the stages in this order:
 
 1. **Retrieve** — embed the query and call `QdrantHandler.search_as_chunks()`.
-2. **Extract** — obtain entities and relations from retrieved chunks.
-3. **Build graph** — `GraphBuilder` creates chunk/entity nodes and mention, relation, and similarity edges.
-4. **Detect communities** — `CommunityDetector` applies Leiden modularity partitioning.
-5. **Analyze/prune** — `GraphAnalyzer` ranks nodes; `SummaryPruner` selects evidence per community and globally.
-6. **Map** — `PromptBuilder` creates NAP/CAP/CGM prompts; `LLMSummarizer` summarizes communities.
-7. **Reduce** — `HierarchicalReducer` merges community summaries into the final answer.
-8. **Evaluate/retry** — evaluator + quality checker produce a decision; `FeedbackLoopController` may retry retrieval, prompting, or reduction within a bound.
+2. **Load or build graph** — reuse a validated persistent artifact when enabled;
+   otherwise extract entities/relations and build the compatibility query graph.
+   If that graph fails, use observable vector-only context.
+3. **Use communities** — reuse persisted communities or detect them in the
+   compatibility graph.
+4. **Analyze/prune** — `GraphAnalyzer` ranks nodes; `SummaryPruner` selects
+   evidence per community and globally.
+5. **Map** — `PromptBuilder` creates NAP/CAP/CGM prompts; `LLMSummarizer`
+   summarizes communities.
+6. **Reduce** — `HierarchicalReducer` merges community summaries into the final answer.
+7. **Evaluate/retry** — evaluator evaluates the selected evidence with
+   lightweight grounded metrics; `QualityChecker` and `FeedbackLoopController`
+   may retry retrieval, prompting, or reduction within a bound.
 
 ## 5. Source map
 
@@ -94,7 +104,7 @@ Ingest operations are explicit: `append`, `replace-document`, and `replace-colle
 | `embedding/` | Text embedding, device/backend resolution, local caches |
 | `vectordb/qdrant_handler.py` | Qdrant lifecycle, payload normalization, upsert, search |
 | `storage/` | R2/MinIO selection and object upload/URL generation |
-| `graph/` | Entity/relation extraction, graph construction, communities, ranking artifacts |
+| `graph/` | Entity/relation extraction, persistent graph lifecycle, construction, communities, ranking artifacts |
 | `summarizer/` | Evidence pruning, prompts, provider routing, map/reduce |
 | `evaluation/` | Summary metrics, quality status, retry recommendation |
 | `pipeline/feedback_loop.py` | Bounded stage retry decisions and artifacts |
@@ -123,6 +133,7 @@ The selected `artifact_dir` receives:
 ```text
 graph_ranked_nodes.csv/json
 graph_summary.json
+persistent_graph_read.json (when a persistent read is unavailable)
 pruned_summary_context.csv/json
 community_map_summaries.txt/json
 final_summary.txt/json
@@ -159,7 +170,9 @@ Do not run live ingest/full-pipeline against a real collection without explicit 
 ## 9. Important boundaries
 
 - **Not Microsoft GraphRAG:** there is no GraphRAG package contract, persistent GraphRAG parquet index, or Neo4j requirement in the current flow.
-- **Not yet in runtime:** ingest-time graph persistence is accepted by ADR 0002, but the runtime does not implement it yet; current graph artifacts are still derived per Full-Pipeline Run.
+- **Persistent graph is optional:** `ENABLE_PERSISTENT_GRAPH` governs the
+  ingest/read path. A missing or invalid artifact must use the compatibility
+  fallback rather than make retrieval unavailable.
 - **Qdrant is not a graph database:** it stores vectors and payload metadata; graph topology is assembled in Python.
 - **Images are optional enrichment:** PDF access and embedding inference remain local to the machine running the launcher, even in `cloud` profile.
 - **LLM is required only for Full-Pipeline:** Query-Only and Ingest can operate without a configured provider.

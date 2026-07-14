@@ -922,7 +922,7 @@ No uncovered spec requirements remain.
 
 ## Execution Handoff
 
-Plan complete and saved to `summarizer_project/docs/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md`.
+Plan complete and archived at `summarizer_project/docs/completed/superpowers/plans/2026-07-04-dual-local-cloud-storage-qdrant-implementation.md`.
 
 Two execution options:
 

@@ -1,221 +1,75 @@
-# Flow Project — next development notes
+# Flow Project — current development handoff
 
-Date: 2026-07-06
-Context: follow-up after the flowchart-aligned Full-Pipeline Run work in PR #32.
+**Snapshot:** 2026-07-15
+**Current baseline:** `main` after PR #78 / Issue #43
 
-## Current answer
+## Current state
 
-The project is now aligned with the flowchart end-to-end in a practical sense, but not every block is full research-grade yet.
+The Full-Pipeline flow is delivered end to end. Ingest can optionally publish a
+document-scoped persistent graph artifact; a Full-Pipeline Run reuses that
+artifact when it is available and otherwise falls back to the compatibility
+query graph or vector-only context. Query-Only remains retrieval-only.
 
-The main gap from the earlier developer comment is addressed: the section after graph analysis is no longer just a quick placeholder. It now has path-aware pruning, structure-aware prompts, RAPTOR-style reduction, grounded metric statuses, and bounded feedback decisions.
+Delivered foundations include:
 
-## What is now improved after graph analysis
+- hierarchy expansion and tiny-sentence filtering (#37–#38);
+- provider availability reporting and spaCy-only graph fallback (#39);
+- persistent graph ingest, bounded relation recovery, adaptive topology,
+  deterministic community selection, and adaptive context allocation
+  (#45–#52);
+- lightweight grounded evaluation metrics (#43), including source traceability
+  and selected-evidence-only evaluation.
 
-- **Pruning / reranking**
-  - Before: mostly top-k centrality/composite score.
-  - Now: path-aware scoring with path evidence, retrieval score, graph rank, hierarchy/layout metadata.
+`./.venv/bin/pytest -q` passed **332 tests** for the merged #43 state. Live
+provider/model smoke runs remain optional because they require configured
+credentials and may download models.
 
-- **Prompting**
-  - Before: simple structure-aware prompt.
-  - Now: explicit NAP / CAP / CGM prompt instructions.
+## Remaining ready-for-agent backlog
 
-- **Map summarization**
-  - Still one map summary per community.
-  - Better because selected context now carries rank, hierarchy, and path evidence.
+| Priority | Issue | Scope | Why it remains |
+| --- | --- | --- | --- |
+| 1 | [#40](https://github.com/amaldevice/graph-rag-summarizer/issues/40) | PathRAG-grade path candidates and scoring | Current pruning consumes path evidence but does not enumerate, score, and explain explicit path candidates. |
+| 2 | [#36](https://github.com/amaldevice/graph-rag-summarizer/issues/36) | Table and figure evidence | Layout metadata exists, but table/figure evidence is not first-class selected prompt context. |
+| 3 | [#41](https://github.com/amaldevice/graph-rag-summarizer/issues/41) | Embedding-similar RAPTOR reduction groups | Multi-level reduction exists; grouping is still fixed batches. |
+| 4 | [#42](https://github.com/amaldevice/graph-rag-summarizer/issues/42) | Forced-fail feedback smoke path | Retry stages are covered deterministically, but there is no explicit safe dev/test forcing seam. |
+| 5 | [#35](https://github.com/amaldevice/graph-rag-summarizer/issues/35) | Optional SummaC/FactCC adapters | Lightweight metrics are shipped; heavier model-backed evaluators remain opt-in research work. |
 
-- **Reduce**
-  - Before: one final merge.
-  - Now: RAPTOR-style multi-level reduction when community count is larger than the group size.
+## Recommended next slice
 
-- **Evaluation**
-  - Before: ROUGE/BERTScore with reference, lexical overlap without reference.
-  - Now: adds grounded metric objects for FactCC, SummaC, G-Eval, and QA coverage.
-  - FactCC/SummaC are currently reported as unavailable unless real evaluators are configured.
+Start with **#40**. It is the only current backlog item already consumed as an
+optional signal by adaptive context allocation, and it improves explainability
+without changing the launcher contract or adding a dependency.
 
-- **Feedback loop**
-  - Before: saved the suggested next stage only.
-  - Now: can rerun from retrieval, prompt, or reduce within a bounded retry budget.
+Keep this slice bounded:
 
-## Latest run evidence
+1. Enumerate candidate paths only from retrieved/selected graph evidence.
+2. Score candidates deterministically from existing retrieval, graph, length,
+   and diversity signals.
+3. Persist selected path IDs plus rejected-path reasons.
+4. Keep current path-aware chunk scoring as the compatibility fallback.
+5. Add synthetic graph tests; do not require a live provider or a new PathRAG
+   framework.
 
-Latest artifact checked:
+## Contracts not to regress
 
-```text
-output/full_pipeline_2026-07-06T13-51-43-901349Z
-```
+- Do not change Query-Only behavior or the external launcher/operator flow.
+- Treat the persistent graph artifact as optional: compatibility and
+  vector-only fallbacks must stay observable and usable.
+- Keep selected evidence as the source for summary evaluation; do not restore
+  an explicit empty selection from raw retrieval chunks.
+- Keep heavy evaluation models optional. Missing adapters must report
+  `unavailable`, not fail a normal run.
+- Preserve bounded retries, per-attempt artifacts, query-protected evidence,
+  and deterministic tests.
 
-Observed:
+## Useful references
 
-- Selected levels: `section` + `sentence`
-- Path-aware pruning: enabled
-- Path evidence: present on most selected chunks
-- Reduction strategy: `raptor`
-- Reduction levels: 2
-- G-Eval: available, score around `0.86`
-- QA coverage: available, score around `0.4375`
-- Quality gate: PASS with warnings
-- Warnings: FactCC and SummaC unavailable
-
-
-## Flowchart status table
-
-| Flowchart block | Current status | Notes |
-|---|---:|---|
-| Input Document | ✅ | PDF ingest works through the existing Ingest Run. |
-| Preprocessing: text/layout/table/figure extraction | 🟡 | Docling extraction works and hierarchy/layout metadata exists. Table/figure handling is still basic; on-demand image mode may skip image export during ingest. |
-| Adaptive hierarchical chunking | 🟡✅ | Latest re-ingest produced `section` and `sentence` selected chunks. Still not a clean parent-child hierarchy from sentence → paragraph → section. |
-| Embedding | ✅ | Uses the current Nomic SentenceTransformer-compatible embedding path. This is accepted even though the flowchart text mentions BGE-M3/SBERT. |
-| Vector DB storage + semantic retrieval | ✅ | Qdrant storage/retrieval works. Large uploads are now batched so hierarchy-aware ingest can fit Qdrant Cloud request limits. |
-| Hybrid entity extraction | ✅/🟡 | spaCy extraction exists; LLM relation mining depends on provider/API configuration. |
-| Hierarchical graph construction | ✅ | Graph includes chunk/entity nodes, KNN edges, relation edges, and mention edges. |
-| Community detection | ✅ | Leiden-style community detection is wired and producing communities. |
-| Graph analysis | ✅ | Centrality/ranking analysis is wired and produces ranked graph artifacts. |
-| Pruning / reranking | 🟡✅ | Path-aware pruning and path evidence exist. It is still heuristic, not full paper-grade PathRAG. |
-| Structure-aware prompt | ✅ | NAP / CAP / CGM instructions are explicit in prompts. |
-| LLM summarizer map per community | ✅ | Community map summaries are generated. |
-| Hierarchical reduce | 🟡✅ | RAPTOR-style multi-level reduction exists. Grouping is currently fixed batches, not embedding-clustered. |
-| Evaluation layer | 🟡 | G-Eval and QA coverage are available. FactCC/SummaC are represented as unavailable statuses until real evaluators are wired. BERTScore remains reference-dependent. |
-| Quality check | ✅ | Threshold-based quality gate runs and emits pass/warn/fail plus suggested action. |
-| Adaptive feedback loop | 🟡✅ | Retrieval/prompt/reduce retry stages are implemented. Latest live runs passed directly, so failure-path retry needs a live forced-fail test if desired. |
-| Final summary | ✅ | Final summary artifact is produced. |
-
-## Remaining partials / yellow blocks
-
-These blocks are implemented enough for the current project flow, but not full research-grade yet.
-
-### 1. Preprocessing: table / figure / image handling
-
-- **Tracking issue:** #36 — `Promote table and figure evidence into Full-Pipeline Runs`.
-- **Why still partial:** Docling text/layout extraction is wired, but table/figure/image artifacts are not first-class summary evidence yet. On-demand image mode can also skip image export during ingest.
-- **Step-by-step if implemented:**
-  1. Define the minimal payload contract: `kind`, `page`, `bbox`, `caption`, `text`, optional `image_url`.
-  2. Preserve table/figure chunks in Docling preprocessing.
-  3. Store those fields in Qdrant payloads.
-  4. Let pruning select table/figure evidence when it matches the query.
-  5. Add prompt text that tells the LLM how to cite table/figure evidence.
-- **Pros:** Better answers for PDFs where tables/figures carry key facts.
-- **Cons:** More storage, slower ingest, and visual/table evidence can be noisy.
-- **Effect on output:** Summaries can mention table/figure-backed facts instead of only body text.
-
-### 2. Adaptive hierarchical chunking
-
-- **Tracking issue:** #37 — `Build parent-child sentence paragraph section context expansion`.
-- **Why still partial:** Current chunks carry hierarchy/layout metadata and can select `section`/`sentence`, but there is no clean parent-child tree from sentence → paragraph → section.
-- **Step-by-step if implemented:**
-  1. Add stable `parent_id`, `section_id`, and `path` metadata during ingest.
-  2. Build paragraph nodes between sentence and section.
-  3. Store all hierarchy IDs in Qdrant payloads.
-  4. During retrieval/pruning, allow child hits to pull parent context.
-  5. Test that a sentence hit can recover its paragraph/section context.
-- **Pros:** Less fragmented context and fewer orphan sentence chunks.
-- **Cons:** More ingest metadata and more retrieval expansion logic.
-- **Effect on output:** Summaries become less choppy and have better local context.
-
-### 3. Tiny sentence chunk filtering
-
-- **Tracking issue:** #38 — `Filter tiny sentence chunks before summary pruning`.
-- **Why still partial:** Sentence-level chunks are now active, so very short chunks like `Let Me.` can be selected.
-- **Step-by-step if implemented:**
-  1. Add a minimum word threshold in pruning, e.g. 8-12 words.
-  2. Exempt `section` / title-like chunks from the threshold.
-  3. Keep the filtered chunks visible in debug artifacts if needed.
-  4. Add one test proving tiny sentence chunks are skipped.
-- **Pros:** Smallest fix with clear summary-quality impact.
-- **Cons:** Could drop meaningful short phrases if the threshold is too aggressive.
-- **Effect on output:** Less filler, fewer weird one-line fragments in selected context.
-
-### 4. Hybrid entity extraction
-
-- **Tracking issue:** #39 — `Harden hybrid entity and relation extraction availability`.
-- **Why still partial:** spaCy entity extraction works, but LLM relation mining depends on provider/API config. Without it, the graph is still useful but less semantically rich.
-- **Step-by-step if implemented:**
-  1. Make relation-extraction availability explicit in run artifacts.
-  2. Keep spaCy-only graph generation as the fallback.
-  3. Add a small relation schema check before adding LLM relations to the graph.
-  4. Add tests for provider unavailable, provider available, and malformed relation output.
-- **Pros:** Richer graph edges and better path evidence.
-- **Cons:** Extra LLM cost, latency, and possible hallucinated relations.
-- **Effect on output:** Path-aware pruning can choose more meaningful evidence paths.
-
-### 5. PathRAG-grade pruning / reranking
-
-- **Tracking issue:** #40 — `Upgrade path-aware pruning toward PathRAG-grade path scoring`.
-- **Why still partial:** Current pruning is path-aware and records path evidence, but it is still heuristic. It is not a full PathRAG implementation with formal path enumeration and scoring.
-- **Step-by-step if implemented:**
-  1. Define path candidates from retrieved chunks through entity/relation/community nodes.
-  2. Score paths with retrieval similarity, graph centrality, path length, and evidence diversity.
-  3. Select chunks by best paths, not only best chunk scores.
-  4. Persist selected path IDs and rejected-path reasons in artifacts.
-  5. Add regression tests for path diversity and reranking order.
-- **Pros:** More faithful to PathRAG and better multi-hop evidence selection.
-- **Cons:** More graph traversal cost and harder-to-debug scoring.
-- **Effect on output:** Better grounding for summaries that need relationships, not just similar chunks.
-
-### 6. RAPTOR-style reduce grouping
-
-- **Tracking issue:** #41 — `Group RAPTOR-style reductions by embedding similarity`.
-- **Why still partial:** Multi-level reduction exists, but grouping is fixed batches, not embedding-clustered per level.
-- **Step-by-step if implemented:**
-  1. Embed community map summaries with the existing Nomic embedder.
-  2. Group summaries by embedding similarity per reduction level.
-  3. Reduce each group, then re-embed the intermediate summaries.
-  4. Repeat until one final summary remains.
-  5. Add tests with fake embeddings so grouping is deterministic.
-- **Pros:** Related community summaries merge together first.
-- **Cons:** More embedding calls and more complex deterministic testing.
-- **Effect on output:** Final summaries should have cleaner thematic grouping and fewer abrupt topic jumps.
-
-### 7. Evaluation layer: FactCC / SummaC and lightweight metrics
-
-- **Why still partial:** The metric slots exist, but real adapters are not wired because FactCC/SummaC can add heavy dependencies, model downloads, and compatibility risk.
-- **Tracking issue:** #35 — `Wire optional SummaC and FactCC grounded evaluation adapters`.
-- **Lightweight metrics issue:** #43 — `Add lightweight grounded evaluation metrics without heavy models`.
-- **Lightweight metric candidates:** entity consistency, number/date consistency, sentence evidence support, citation coverage, redundancy, query relevance, and evidence diversity.
-- **Implementation order:** #43 is the cheaper first pass; #35 remains the heavier optional research-evaluator pass.
-- **Step-by-step if implemented:**
-  1. Keep `grounded_metrics.factcc` and `grounded_metrics.summac` keys stable.
-  2. Add lazy optional adapters, starting with SummaC.
-  3. Return `available` + normalized score when the evaluator runs.
-  4. Return `unavailable` + clear reason when missing/disabled.
-  5. Keep unavailable metrics as warnings in the quality gate.
-  6. Add fake-adapter tests; do not require model downloads in CI.
-- **Pros:** Better factual consistency signal than lexical overlap alone.
-- **Cons:** Heavy, slower, and may be brittle on local Python/PyTorch setups.
-- **Effect on output:** Quality reports can reject or retry summaries with unsupported claims.
-
-### 8. Adaptive feedback loop live failure paths
-
-- **Tracking issue:** #42 — `Add a forced-fail smoke path for adaptive feedback reruns`.
-- **Why still partial:** Retry code exists for retrieval/prompt/reduce, but the latest live runs passed quality directly. The failure path is covered by unit behavior, not a forced live run.
-- **Step-by-step if implemented:**
-  1. Add a temporary/dev-only strict threshold or fake low metric for a smoke run.
-  2. Run Full-Pipeline once and force a quality failure.
-  3. Confirm the correct retry stage reruns.
-  4. Compare attempt artifacts before/after retry.
-  5. Remove or keep the dev-only trigger behind a clear test flag.
-- **Pros:** Proves the feedback loop works in a real run.
-- **Cons:** Costs LLM calls and can create noisy artifacts.
-- **Effect on output:** More confidence that failed summaries self-correct instead of only reporting a decision.
-
-## Recommendation
-
-Next slice should be tiny-chunk filtering. It is the smallest change with the clearest quality impact.
-
-Suggested issue title if promoted later:
-
-```text
-Filter tiny sentence chunks before path-aware summary pruning
-```
-
-Acceptance shape:
-
-- Very short sentence chunks are not selected for summary context.
-- Section/title chunks are still allowed even when short.
-- Existing hierarchy/path-aware artifacts remain unchanged.
-- Full test suite stays green.
-
-## Notes for communicating status
-
-Safe wording:
-
-> The flow is now implemented end-to-end and the after-graph-analysis stages have been upgraded. It is aligned with the flowchart at a practical implementation level, but a few pieces remain minimal/heuristic rather than full research-grade: PathRAG scoring, RAPTOR grouping, FactCC/SummaC, and tiny sentence filtering.
+- `CONTEXT.md` — canonical launcher and runtime vocabulary.
+- `docs/ONBOARDING_STARTER_ARCHITECTURE.md` — current architecture and source
+  map.
+- `docs/adr/0002-persistent-document-graph-at-ingest.md` through
+  `docs/adr/0005-query-time-adaptive-context-allocation.md` — accepted graph
+  decisions.
+- `docs/runbook-single-launcher.md` — operator contract.
+- `docs/completed/handoffs/handoff-2026-07-13-persistent-graph-implementation.md`
+  — completed PR A–D delivery record, not active work.

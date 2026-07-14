@@ -702,7 +702,7 @@ No spec gaps found.
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-07-04-graph-rag-summarizer-ingest-integration.md`.
+Plan complete and archived at `docs/completed/superpowers/plans/2026-07-04-graph-rag-summarizer-ingest-integration.md`.
 
 Two execution options:
 
