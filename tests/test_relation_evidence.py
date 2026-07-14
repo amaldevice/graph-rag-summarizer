@@ -224,6 +224,30 @@ def test_entity_support_classifies_orphans_and_query_protection():
     assert by_id["ent_flag_protected"]["query_protected"] is True
 
 
+def test_entity_support_records_graph_degree_from_duck_typed_graph():
+    class Graph:
+        nodes = {"ent_alpha": object(), "ent_beta": object()}
+        degree = {"ent_alpha": 2, "ent_beta": 0}
+
+    report = classify_entity_support(
+        [
+            {"text": "Alpha"},
+            {"text": "Beta"},
+            {"text": "Missing"},
+        ],
+        [],
+        graph=Graph(),
+    )
+
+    by_id = {entity["canonical_id"]: entity for entity in report["elements"]}
+    assert by_id["ent_alpha"]["graph_degree"] == 2
+    assert by_id["ent_alpha"]["graph_supported"] is True
+    assert by_id["ent_beta"]["graph_degree"] == 0
+    assert by_id["ent_beta"]["graph_supported"] is False
+    assert by_id["ent_missing"]["graph_degree"] == 0
+    assert by_id["ent_missing"]["graph_supported"] is False
+
+
 def test_entity_helpers_are_permutation_stable():
     entities = [
         {"text": "Acme, Inc.", "chunk_uid": "paper:2"},

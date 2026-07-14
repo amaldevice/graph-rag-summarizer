@@ -1496,7 +1496,7 @@ def build_document_graph(
         "active_evidence_count": len(active_evidence),
         "relation_status_counts": status_counts,
         "canonicalization": canonicalization,
-        "entity_support": classify_entity_support(entities, relations),
+        "entity_support": classify_entity_support(entities, relations, graph=graph),
         "community_count": len(communities),
         "modularity": modularity,
         "entity_extraction": {

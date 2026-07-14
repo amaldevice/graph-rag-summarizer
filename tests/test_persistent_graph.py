@@ -100,6 +100,7 @@ def test_document_graph_persists_weak_evidence_without_activating_its_edge():
 
     class Detector:
         def detect(self, graph):
+            graph.remove_node("ent_gamma")
             return graph, [], {}, 0.0
 
     graph, details = persistent.build_document_graph(
@@ -151,6 +152,16 @@ def test_document_graph_persists_weak_evidence_without_activating_its_edge():
     )
     assert diagnostics["entity_support"]["strongly_supported"] == ["ent_acme_inc", "ent_beta"]
     assert diagnostics["entity_support"]["weakly_supported"] == ["ent_gamma"]
+    support_by_id = {
+        item["canonical_id"]: item
+        for item in diagnostics["entity_support"]["elements"]
+    }
+    assert support_by_id["ent_acme_inc"]["graph_degree"] == 3
+    assert support_by_id["ent_acme_inc"]["graph_supported"] is True
+    assert support_by_id["ent_beta"]["graph_degree"] == 2
+    assert support_by_id["ent_beta"]["graph_supported"] is True
+    assert support_by_id["ent_gamma"]["graph_degree"] == 0
+    assert support_by_id["ent_gamma"]["graph_supported"] is False
 
 
 def test_graph_builder_normalizes_legacy_explicit_relations_before_edge_gating():
