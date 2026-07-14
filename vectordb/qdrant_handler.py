@@ -172,7 +172,8 @@ class QdrantHandler:
             must.append(HasIdCondition(has_id=[]))
         return Filter(
             must=must,
-            must_not=[
+            must_not=[FieldCondition(key="graph_tombstoned", match=MatchValue(value=True))]
+            + [
                 FieldCondition(key="document_id", match=MatchValue(value=document_id))
                 for document_id in sorted(self._denied_document_ids)
             ],
@@ -618,10 +619,8 @@ class QdrantHandler:
     def _enumerate_tombstone_controls(self) -> list[dict]:
         controls = [
             {"point_id": str(point_id), "payload": payload}
-            for point_id, payload in self._scroll_point_records(
-                Filter(must=[FieldCondition(key="graph_control_point", match=MatchValue(value="tombstone"))]),
-                include_control_points=True,
-            )
+            for point_id, payload in self._scroll_point_records(include_control_points=True)
+            if payload.get("graph_control_point") == "tombstone" or payload.get("graph_tombstoned")
         ]
         return sorted(controls, key=lambda item: item["point_id"])
 
@@ -772,7 +771,10 @@ class QdrantHandler:
             for document_id in sorted(self._denied_document_ids)
         ]
         must: list[Condition] = [IsEmptyCondition(is_empty=PayloadField(key="graph_control_point"))]
-        must_not: list[Condition] = denied + [FieldCondition(key="graph_point", match=MatchValue(value=True))]
+        must_not: list[Condition] = denied + [
+            FieldCondition(key="graph_point", match=MatchValue(value=True)),
+            FieldCondition(key="graph_tombstoned", match=MatchValue(value=True)),
+        ]
         if self._active_vector_generations is not None and not self._active_vector_generations:
             return []
         if self._active_vector_generations is not None:
@@ -802,7 +804,11 @@ class QdrantHandler:
                     continue
                 if payload.get("document_generation") != self._active_vector_generations.get(document_id):
                     continue
-                if not payload.get("vector_point") or payload.get("graph_point"):
+                if (
+                    not payload.get("vector_point")
+                    or payload.get("graph_point")
+                    or payload.get("graph_tombstoned")
+                ):
                     continue
                 filtered.append(result)
             results = filtered

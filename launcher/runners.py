@@ -53,9 +53,8 @@ def _build_ingest_graph_artifact(config, collection, document_id, chunks, vector
     """Build the baseline graph after vector upload; vectors survive graph failure."""
     status_path = _artifact_path(config.get("artifact_dir") or "output", "graph_artifact_status.json")
     lifecycle_error = None
+    from graph.persistent import GraphLifecycleError, PersistentGraphPipeline
     try:
-        from graph.persistent import GraphLifecycleError, PersistentGraphPipeline
-
         pipeline = config.get("graph_pipeline") or PersistentGraphPipeline(
             collection, object_store=config.get("graph_object_store")
         )
@@ -66,6 +65,7 @@ def _build_ingest_graph_artifact(config, collection, document_id, chunks, vector
             mode=ingest_mode,
             claim=config.get("graph_claim"),
             qdrant=config.get("qdrant"),
+            relation_provider=config.get("graph_relation_provider"),
         )
     except GraphLifecycleError as exc:
         lifecycle_error = exc
@@ -107,7 +107,12 @@ def _persistent_graph_view(collection, chunks, object_store=None):
             for chunk in document_chunks:
                 chunk["graph_denied"] = True
             continue
-        graph = reader.load(document_id, document_chunks)
+        try:
+            graph = reader.load(document_id, document_chunks)
+        except (FileNotFoundError, ValueError):
+            # Artifact loss/corruption is a document-local compatibility fallback;
+            # tombstone and manifest authorization failures remain fail-closed.
+            continue
         if graph is None:
             continue
         found = True
@@ -168,6 +173,8 @@ def _configure_query_denial(qdrant, collection, object_store=None):
                 continue
             if entry.get("status") == "pending":
                 generation = (entry.get("previous_pointer") or {}).get("document_generation")
+            elif entry.get("status") in {"partial", "unavailable", "stale"} and not entry.get("vector_ready"):
+                generation = None
             else:
                 generation = entry.get("document_generation")
             if generation is not None:
@@ -382,6 +389,7 @@ def run_ingest(config: dict) -> None:
         if graph_pipeline and graph_claim:
             control_id = qdrant.write_document_control_point(graph_claim, len(vectors[0]))
             qdrant.verify_document_control_point(control_id)
+            graph_pipeline.manifests.mark_vectors_ready(graph_claim)
         if ingest_mode == "replace-document":
             if graph_claim:
                 qdrant.finalize_replace_document(document_id, uploaded_point_ids, graph_claim)
@@ -421,6 +429,10 @@ def run_ingest(config: dict) -> None:
 
     graph_result = None
     if config.get("enable_graph_artifact", False):
+        if config.get("graph_relation_provider") is None:
+            from summarizer.provider_router import create_session
+
+            config["graph_relation_provider"] = create_session()
         print("  Building persistent document graph (optional stage)...")
         graph_result = _build_ingest_graph_artifact(
             config, collection, document_id, chunks, vectors, ingest_mode

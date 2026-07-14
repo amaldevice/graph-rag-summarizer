@@ -1,6 +1,8 @@
 import gzip
 import hashlib
 import json
+import os
+import socket
 
 import networkx as nx
 import pytest
@@ -212,6 +214,8 @@ def test_manifest_lease_can_be_taken_over_only_for_an_expired_matching_claim():
         "active_mutation_document_id": claim["document_id"],
         "active_mutation_attempt_id": claim["pending_attempt_id"],
         "active_mutation_started_at": "2000-01-01T00:00:00+00:00",
+        "active_mutation_pid": os.getpid() + 1000000,
+        "active_mutation_host": socket.gethostname(),
     })
     manifests._write(manifest, snapshot)
 
@@ -253,7 +257,7 @@ def test_backfill_rejects_incomplete_vector_metadata_without_reembedding():
     assert result == [{
         "status": "unavailable",
         "document_id": "paper",
-        "failure_reason": "vector metadata is incomplete or inconsistent; replace-document rebuild required",
+        "failure_reason": "chunk identity metadata is incomplete; rebuild required",
     }]
 
 

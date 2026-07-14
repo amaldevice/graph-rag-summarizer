@@ -17,10 +17,11 @@ from config.settings import SPACY_MODEL
 
 
 class EntityExtractor:
-    def __init__(self, groq_api_key=None, groq_model="llama-3.1-8b-instant"):
+    def __init__(self, groq_api_key=None, groq_model="llama-3.1-8b-instant", provider_router=None):
         self.nlp = spacy.load(SPACY_MODEL)
 
         self.groq_model = groq_model
+        self.provider_router = provider_router
         self.groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY")
         self.groq_client = None
 
@@ -237,6 +238,40 @@ Text:
         print(f"[EntityExtractor] Groq relation extraction failed: {last_error}")
         return []
 
+    def _call_provider_relations(self, prompt):
+        if self.provider_router is None:
+            return []
+        try:
+            content = self.provider_router.call_llm(
+                "You extract relations as strict JSON.",
+                prompt,
+            )
+            data = json.loads(content)
+            relations = []
+            seen = set()
+            for rel in data.get("relations", []):
+                head = self.clean_entity_text(str(rel.get("head", "")))
+                relation = str(rel.get("relation", "")).strip().lower()
+                tail = self.clean_entity_text(str(rel.get("tail", "")))
+                if not head or not relation or not tail or head.lower() == tail.lower():
+                    continue
+                key = (head.lower(), relation, tail.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                relations.append({
+                    "head": head,
+                    "relation": relation,
+                    "tail": tail,
+                    "source": getattr(self.provider_router, "active_provider", None) or "provider-router",
+                    "confidence": float(rel.get("confidence", 1.0)),
+                    "status": "accepted",
+                })
+            return relations
+        except Exception as exc:
+            print(f"[EntityExtractor] provider relation extraction failed: {exc}")
+            return []
+
     # ========================================================
     # EXTRACT RELATIONS
     # Prioritas: Groq LLM -> fallback rule-based co-occurrence
@@ -250,7 +285,7 @@ Text:
 
         if self._should_use_llm(chunk_text, entities):
             prompt = self._build_relation_prompt(chunk_text, entities)
-            llm_relations = self._call_groq_relations(prompt)
+            llm_relations = self._call_provider_relations(prompt) or self._call_groq_relations(prompt)
             if llm_relations:
                 return llm_relations
 
