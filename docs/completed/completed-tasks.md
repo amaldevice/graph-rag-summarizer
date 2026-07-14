@@ -2,6 +2,11 @@
 
 ## 2026-07-14
 
+- **Synced the active adaptive-graph PRD with merged PR A delivery**
+  - Recorded PR #67 (`1ecc0b4`) as the delivered persistent-ingest foundation and its automatic closure of issues #39 and #69.
+  - Kept PR B (#45–#48) as the immediate next implementation slice, with PR C/D explicitly sequenced after it.
+  - Verification: cross-checked the merged PR, linked issue status, and the persistent-graph implementation handoff; `git diff --check`.
+
 - **Completed PR A persistent-graph ADR alignment and Issue #39 delivery**
   - Aligned PR #67 with ADR 0002: #39 and #69 are PR A; #45–#48 stay with PR B.
   - Added provider-backed relation availability/mode reporting, including `graph_summary.json` observability.

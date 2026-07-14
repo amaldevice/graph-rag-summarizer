@@ -4,6 +4,12 @@ Date: 2026-07-11
 Status: Finalized as the repo-local decision record for parent issue #44
 Parent issue: https://github.com/amaldevice/graph-rag-summarizer/issues/44
 
+## Delivery Status
+
+- **PR A — persistent ingest graph foundation:** delivered by [PR #67](https://github.com/amaldevice/graph-rag-summarizer/pull/67) (`1ecc0b4`) on 2026-07-14; GitHub closed issues #39 and #69.
+- **Next delivery:** PR B — bounded global relation recovery, closing issues #45–#48 from the merged PR A baseline. The implementation sequence and PR ownership remain in `docs/handoff-2026-07-13-persistent-graph-implementation.md`.
+- **Later deliveries:** adaptive topology/community selection (#49–#51) and adaptive context allocation (#52) remain sequenced after PR B.
+
 ## Problem Statement
 
 The current Full-Pipeline Run is graph-aware, but the graph stage still depends on local extraction and fixed global constants. Relations are discovered inside one retrieved chunk at a time, broad co-occurrence fallback can connect every entity pair in a chunk with equivalent strength, chunk-similarity edges use one fixed neighbor count and threshold, Leiden accepts one fixed partition, and summary context uses fixed per-community and global top-k limits.
