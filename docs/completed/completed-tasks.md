@@ -7,6 +7,11 @@
   - Delivered bounded, query-aware community allocation with novelty selection, protected retrieval evidence, prompt-budget safety, inspectable diagnostics, and compatibility-to-vector-only fallback provenance.
   - Verification: `./.venv/bin/pytest -q` (**315 passed**); focused allocation/pipeline suite (**27 passed**); `compileall`; `git diff --check`.
 
+- **Completed PR C adaptive topology and stable community selection**
+  - Merged PR #68 (`6834ddb`) and closed issues #49–#51.
+  - Delivered bounded adaptive topology, deterministic Leiden selection/stability diagnostics, and diagnostic-only agglomerative comparison.
+  - Verification: `./.venv/bin/pytest -q` (**306 passed**); targeted 83-test suite; final audit fixes.
+
 - **Completed PR B bounded global relation recovery**
   - Merged PR #72 (`b15507a`) and closed issues #45–#48.
   - Delivered auditable relation evidence, conservative canonical entities, weak/orphan-seeded bounded candidates, validated provider fallback, verified direct cross-chunk edges, and post-recovery noise cleanup.
