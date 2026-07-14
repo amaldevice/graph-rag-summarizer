@@ -7,6 +7,7 @@
   - Added provider-backed relation availability/mode reporting, including `graph_summary.json` observability.
   - Hardened manifest/Qdrant fencing, replacement resume binding, tombstone-safe query preflight, and backfill control proofs with attempt-scoped points and crash resume.
   - Verification: `./.venv/bin/pytest -q` (**245 passed**); changed-file `py_compile`; `git diff --check`; final spec/ADR review approved.
+  - Merged as PR #67 (`1ecc0b4`); GitHub closed #39 and #69.
 
 - **Reviewed PR #67 against the persistent-graph handoff, linked issues, and ADR 0002**
   - Confirmed the persistent-artifact, manifest-CAS, tombstone-proof, generation-filter, and compatibility-fallback foundations are present.
