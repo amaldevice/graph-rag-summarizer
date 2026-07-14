@@ -248,13 +248,7 @@ class QdrantHandler:
         while True:
             points, next_offset = scroll(
                 collection_name=self.collection_name,
-                scroll_filter=Filter(
-                    must=[
-                        IsEmptyCondition(
-                            is_empty=PayloadField(key="document_id"),
-                        )
-                    ]
-                ),
+                scroll_filter=None,
                 limit=256,
                 offset=offset,
                 with_payload=True,

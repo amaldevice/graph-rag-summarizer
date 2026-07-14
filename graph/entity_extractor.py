@@ -285,7 +285,11 @@ Text:
 
         if self._should_use_llm(chunk_text, entities):
             prompt = self._build_relation_prompt(chunk_text, entities)
-            llm_relations = self._call_provider_relations(prompt) or self._call_groq_relations(prompt)
+            llm_relations = (
+                self._call_provider_relations(prompt)
+                if self.provider_router is not None
+                else self._call_groq_relations(prompt)
+            )
             if llm_relations:
                 return llm_relations
 

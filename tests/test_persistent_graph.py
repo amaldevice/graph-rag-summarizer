@@ -60,6 +60,20 @@ def test_canonical_graph_bytes_and_source_fingerprint_are_stable():
     assert deserialize_graph(first)["document_id"] == "paper"
 
 
+def test_canonical_graph_bytes_sort_relation_evidence():
+    graph = nx.Graph()
+    graph.add_node("chunk_0", type="chunk", chunk_uid="paper:chunk:0")
+    evidence = [
+        {"head": "Beta", "tail": "Gamma", "status": "accepted"},
+        {"head": "Alpha", "tail": "Beta", "status": "unverified"},
+    ]
+
+    first = serialize_graph(graph, _chunks(), "paper", 1, evidence, {}, evidence[:1])
+    second = serialize_graph(graph, _chunks(), "paper", 1, list(reversed(evidence)), {}, evidence[:1])
+
+    assert first == second
+
+
 def test_canonical_json_normalizes_ecmascript_number_ranges():
     assert canonical_json_bytes({"small": 1e-6, "large": 1e20, "huge": 1e21, "whole": 1.0}) == (
         b'{"huge":1e+21,"large":100000000000000000000,"small":0.000001,"whole":1}'
@@ -177,6 +191,22 @@ def test_append_resumes_same_pending_claim_before_duplicate_append_rejection():
     assert resumed["pending_attempt_id"] == first["pending_attempt_id"]
 
 
+def test_new_replace_operation_burns_an_incompatible_pending_reservation():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    first = manifests.reserve("paper", "op-1", "fingerprint-1", mode="replace-document")
+
+    replacement = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-document")
+
+    states = {
+        item["operation_id"]: item["state"]
+        for item in replacement["version_ledger"]
+    }
+    assert states["op-1"] == "burned"
+    assert states["op-2"] == "reserved"
+    assert replacement["pending_operation_id"] == "op-2"
+    assert replacement["pending_version"] != first["pending_version"]
+
+
 def test_pipeline_reserve_reuses_persisted_pending_operation_for_resume():
     manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
     pipeline = PersistentGraphPipeline("papers", manifests=manifests, artifacts=GraphArtifactStore(InMemoryObjectStore(), "papers"))
@@ -260,6 +290,27 @@ def test_backfill_rejects_incomplete_vector_metadata_without_reembedding():
         "document_id": "paper",
         "failure_reason": "chunk identity metadata is incomplete; rebuild required",
     }]
+
+
+def test_backfill_rejects_non_string_document_identity_even_when_qdrant_filter_cannot():
+    class MalformedQdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            assert document_id is None
+            assert include_vectors is True
+            return [{
+                "document_id": 42,
+                "chunk_id": 1,
+                "chunk_uid": "bad:chunk:1",
+                "text": "malformed",
+                "_embedding": [0.1, 0.2],
+                "document_generation": 1,
+                "vector_point": True,
+            }]
+
+    result = backfill_qdrant_collection(MalformedQdrant(), "papers")
+
+    assert result[0]["status"] == "unavailable"
+    assert "document identity" in result[0]["failure_reason"]
 
 
 def test_collection_fence_invalidates_retained_document_claims():
