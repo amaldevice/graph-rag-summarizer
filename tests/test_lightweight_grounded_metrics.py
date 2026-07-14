@@ -212,6 +212,69 @@ def test_traceable_support_does_not_require_ids_for_unrelated_selected_chunks():
     assert citation["details"]["sentence_support"][0]["chunk_id"] == "results-1"
 
 
+def test_citation_prefers_a_traceable_chunk_when_support_scores_tie():
+    result = SummaryEvaluator().evaluate_without_reference(
+        "NASA reported 42% growth in 2024.",
+        source_chunks=[
+            {"text": "NASA reported 42% growth in 2024."},
+            _source_chunks()[0],
+        ],
+        query="NASA growth",
+    )
+
+    citation = result["grounded_metrics"]["citation_coverage"]
+    assert citation["status"] == "available"
+    assert citation["details"]["sentence_support"][0]["chunk_id"] == "results-1"
+
+
+def test_citation_uses_traceable_support_when_an_idless_chunk_scores_higher():
+    result = SummaryEvaluator().evaluate_without_reference(
+        "NASA reported 42% growth in 2024.",
+        source_chunks=[
+            {"text": "NASA reported 42% growth in 2024."},
+            {"chunk_id": "traceable", "text": "NASA reported growth."},
+        ],
+        query="NASA growth",
+    )
+
+    citation = result["grounded_metrics"]["citation_coverage"]
+    assert citation["status"] == "available"
+    assert citation["details"]["sentence_support"][0] == {
+        "sentence_index": 0,
+        "sentence": "NASA reported 42% growth in 2024.",
+        "chunk_id": "traceable",
+        "support_score": 0.5,
+    }
+
+
+def test_citation_treats_zero_as_a_stable_chunk_id():
+    result = SummaryEvaluator().evaluate_without_reference(
+        "NASA reported 42% growth in 2024.",
+        source_chunks=[{"chunk_id": 0, "text": "NASA reported 42% growth in 2024."}],
+        query="NASA growth",
+    )
+
+    citation = result["grounded_metrics"]["citation_coverage"]
+    assert citation["status"] == "available"
+    assert citation["details"]["supporting_chunk_ids"] == ["0"]
+
+
+def test_citation_falls_back_from_an_empty_chunk_uid():
+    result = SummaryEvaluator().evaluate_without_reference(
+        "NASA reported 42% growth in 2024.",
+        source_chunks=[{
+            "chunk_uid": "",
+            "chunk_id": "fallback-id",
+            "text": "NASA reported 42% growth in 2024.",
+        }],
+        query="NASA growth",
+    )
+
+    citation = result["grounded_metrics"]["citation_coverage"]
+    assert citation["status"] == "available"
+    assert citation["details"]["supporting_chunk_ids"] == ["fallback-id"]
+
+
 def test_redundant_sentences_warn_without_failing_the_quality_gate():
     result = SummaryEvaluator().evaluate_without_reference(
         "NASA reported 42% growth in 2024. NASA reported 42% growth in 2024.",

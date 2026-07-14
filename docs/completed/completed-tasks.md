@@ -7,7 +7,8 @@
   - Kept quality evaluation bound to explicitly selected pruner evidence; an intentional empty selection no longer falls back to raw retrieval.
   - Added per-sentence chunk-ID traceability, careful date/number normalization, strict unsupported number/date failure, and warning-oriented redundancy/diversity decisions.
   - Added deterministic coverage for available, unavailable, pass, warning, fail, date normalization, discourse markers, selected-evidence behavior, and Full-Pipeline wiring.
-  - Verification: `./.venv/bin/pytest -q` (**328 passed**); focused suite (**30 passed**); `python -m compileall`; `git diff --check`; two-axis code review with all actionable findings addressed.
+  - Resolved the PR review traceability follow-up: citation coverage now retains the strongest stable-ID support even when an ID-less chunk scores higher, preserves `chunk_id=0`, and falls back from empty `chunk_uid` values.
+  - Verification: `./.venv/bin/pytest -q` (**332 passed**); focused suite (**34 passed**); `python -m compileall`; `git diff --check`; final two-axis review clear.
 
 ## 2026-07-14
 
