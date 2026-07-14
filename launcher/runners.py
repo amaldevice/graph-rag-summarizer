@@ -91,7 +91,11 @@ def _build_ingest_graph_artifact(config, collection, document_id, chunks, vector
 
 def _persistent_graph_view(collection, chunks, object_store=None):
     """Load namespaced persisted document graphs; return None for compatibility fallback."""
-    from graph.persistent import PersistentGraphReader, default_graph_services
+    from graph.persistent import (
+        GraphArtifactCorruptionError,
+        PersistentGraphReader,
+        default_graph_services,
+    )
     import networkx as nx
 
     document_ids = sorted({chunk.get("document_id") for chunk in chunks if chunk.get("document_id")})
@@ -109,7 +113,7 @@ def _persistent_graph_view(collection, chunks, object_store=None):
             continue
         try:
             graph = reader.load(document_id, document_chunks)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, GraphArtifactCorruptionError):
             # Artifact loss/corruption is a document-local compatibility fallback;
             # tombstone and manifest authorization failures remain fail-closed.
             continue
@@ -343,11 +347,14 @@ def run_ingest(config: dict) -> None:
     if graph_pipeline and graph_claim:
         qdrant.set_graph_claim(graph_pipeline.manifests, graph_claim)
     try:
-        qdrant.prepare_ingest(
-            ingest_mode=ingest_mode,
-            document_id=document_id,
-            vector_size=len(vectors[0]),
-        )
+        prepare_kwargs = {
+            "ingest_mode": ingest_mode,
+            "document_id": document_id,
+            "vector_size": len(vectors[0]),
+        }
+        if graph_claim is not None:
+            prepare_kwargs["claim"] = graph_claim
+        qdrant.prepare_ingest(**prepare_kwargs)
         if ingest_mode == "replace-collection":
             qdrant.capture_collection_baseline()
         if graph_pipeline and collection_tombstone_manifest:
@@ -441,14 +448,19 @@ def run_ingest(config: dict) -> None:
         qdrant.verify_collection_tombstone_proof(graph_pipeline.manifests)
         current_collection_manifest = graph_pipeline.manifests.read_snapshot().manifest
         if current_collection_manifest.get("pending_tombstone_set_digest") is not None:
+            if not graph_result or graph_result.get("status") != "available":
+                raise RuntimeError(
+                    "replacement graph was not published; tombstone cleanup remains pending and collection fence stays held"
+                )
             graph_pipeline.manifests.finalize_tombstone_cleanup(
                 collection_tombstone_manifest["collection_operation_id"],
                 collection_tombstone_manifest["collection_fence_token"],
             )
-        graph_pipeline.manifests.release_collection_fence(
-            collection_tombstone_manifest["collection_operation_id"],
-            collection_tombstone_manifest["collection_fence_token"],
-        )
+        if graph_pipeline.manifests.read_snapshot().manifest.get("pending_tombstone_set_digest") is None:
+            graph_pipeline.manifests.release_collection_fence(
+                collection_tombstone_manifest["collection_operation_id"],
+                collection_tombstone_manifest["collection_fence_token"],
+            )
 
     print(f"\n  Total chunks uploaded : {len(chunks)}")
     print(f"  Collection            : {collection}")

@@ -283,7 +283,28 @@ class QdrantHandler:
             wait=True,
         ))
 
-    def prepare_ingest(self, ingest_mode: str, document_id: str, vector_size: int) -> None:
+    def _document_points_match_claim(self, document_id: str, claim: dict) -> bool:
+        """Allow an interrupted append to reuse only its own attempt-scoped points."""
+        records = self._scroll_point_records(
+            self._document_filter(document_id),
+            include_control_points=True,
+        )
+        if not records:
+            return False
+        expected_generation = int(claim["document_generation"])
+        expected_attempt = str(claim["pending_attempt_id"])
+        for _, payload in records:
+            if payload.get("graph_tombstoned"):
+                return False
+            if payload.get("document_generation") != expected_generation:
+                return False
+            if payload.get("document_attempt_id") != expected_attempt:
+                return False
+            if payload.get("graph_control_point") not in {None, "document"}:
+                return False
+        return True
+
+    def prepare_ingest(self, ingest_mode: str, document_id: str, vector_size: int, claim: dict | None = None) -> None:
         """Apply one explicit collection lifecycle operation before upload."""
         ingest_mode = (ingest_mode or "append").strip().lower()
         if ingest_mode not in {"append", "replace-document", "replace-collection"}:
@@ -299,7 +320,9 @@ class QdrantHandler:
                     f"Collection '{self.collection_name}' contains legacy points without document_id; "
                     "use replace-collection to rebuild it before append"
                 )
-            if exists and self.document_exists(document_id):
+            if exists and self.document_exists(document_id) and not (
+                claim and self._document_points_match_claim(document_id, claim)
+            ):
                 raise ValueError(
                     f"Document '{document_id}' already exists in collection '{self.collection_name}'"
                 )

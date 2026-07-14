@@ -200,6 +200,10 @@ def deserialize_graph(data: bytes | str) -> dict:
     return json.loads(data.decode("utf-8"))
 
 
+class GraphArtifactCorruptionError(ValueError):
+    """The immutable graph artifact cannot be trusted as a query fallback."""
+
+
 class InMemoryObjectStore:
     """S3-like store used by deterministic tests and local dry runs."""
 
@@ -275,8 +279,10 @@ class S3ObjectStore:
         # ponytail: ETag If-Match is the atomic CAS; the metadata check rejects stale tokens early.
         metadata = dict(metadata or {})
         requested_fence = int(metadata.get("fence_token", 0))
+        object_exists = False
         try:
             current_metadata, current_etag = self.head(key)
+            object_exists = True
         except Exception as exc:
             if "404" not in str(exc) and "NoSuchKey" not in str(exc) and "Not Found" not in str(exc):
                 raise
@@ -284,7 +290,9 @@ class S3ObjectStore:
         current_fence = int(current_metadata.get("fence_token", 0))
         if requested_fence < current_fence:
             raise RuntimeError("object fence token is stale")
-        if current_etag and if_match is None and not if_none_match:
+        if object_exists and not current_etag:
+            raise RuntimeError("existing object has no ETag; conditional write cannot be enforced")
+        if object_exists and if_match is None and not if_none_match:
             raise RuntimeError("conditional write is required for an existing object")
         kwargs = {"Bucket": self.bucket, "Key": key, "Body": data, "Metadata": metadata or {}}
         if if_none_match:
@@ -362,18 +370,21 @@ class GraphArtifactStore:
 
     def read(self, key: str, expected_digest: str | None = None, expected_backend: dict | None = None, expected_generation: int | None = None, expected_source_fingerprint: str | None = None) -> bytes:
         compressed, metadata, _ = self.object_store.get(key)
-        data = gzip.decompress(compressed)
+        try:
+            data = gzip.decompress(compressed)
+        except (OSError, EOFError) as exc:
+            raise GraphArtifactCorruptionError("graph artifact gzip payload is corrupt") from exc
         digest = _digest(data)
         if expected_digest and digest != expected_digest:
-            raise ValueError("graph artifact digest mismatch")
+            raise GraphArtifactCorruptionError("graph artifact digest mismatch")
         if not metadata.get("artifact_digest"):
-            raise ValueError("graph artifact metadata is missing digest")
+            raise GraphArtifactCorruptionError("graph artifact metadata is missing digest")
         if metadata["artifact_digest"] != digest:
-            raise ValueError("graph artifact metadata mismatch")
+            raise GraphArtifactCorruptionError("graph artifact metadata mismatch")
         if expected_generation is not None and metadata.get("document_generation") != str(expected_generation):
-            raise ValueError("graph artifact generation mismatch")
+            raise GraphArtifactCorruptionError("graph artifact generation mismatch")
         if expected_source_fingerprint is not None and metadata.get("source_fingerprint") != str(expected_source_fingerprint):
-            raise ValueError("graph artifact source fingerprint mismatch")
+            raise GraphArtifactCorruptionError("graph artifact source fingerprint mismatch")
         if expected_backend and (
             not metadata.get("backend_kind")
             or metadata.get("backend_kind") != str(expected_backend.get("kind", ""))
@@ -383,9 +394,13 @@ class GraphArtifactStore:
         try:
             decoded = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("graph artifact is not valid JSON") from exc
-        if canonical_json_bytes(decoded) != data:
-            raise ValueError("graph artifact is not canonical JSON")
+            raise GraphArtifactCorruptionError("graph artifact is not valid JSON") from exc
+        try:
+            canonical = canonical_json_bytes(decoded)
+        except (TypeError, ValueError) as exc:
+            raise GraphArtifactCorruptionError("graph artifact is not canonical JSON") from exc
+        if canonical != data:
+            raise GraphArtifactCorruptionError("graph artifact is not canonical JSON")
         return data
 
 
@@ -1247,13 +1262,18 @@ class PersistentGraphReader:
             entry.get("document_generation"),
             entry.get("source_fingerprint"),
         )
-        artifact = deserialize_graph(data)
+        try:
+            artifact = deserialize_graph(data)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise GraphArtifactCorruptionError("graph artifact body is not valid JSON") from exc
         if (
+            not isinstance(artifact, dict)
+            or
             artifact.get("document_id") != document_id
             or artifact.get("document_generation") != entry.get("document_generation")
             or artifact.get("source_fingerprint") != entry.get("source_fingerprint")
         ):
-            raise ValueError("graph artifact body metadata mismatch")
+            raise GraphArtifactCorruptionError("graph artifact body metadata mismatch")
         if not self.manifests.revalidate(snapshot):
             raise RuntimeError("manifest changed while reading graph artifact")
         graph = graph_from_artifact(artifact, chunks)
@@ -1314,7 +1334,10 @@ def build_document_graph(
             relation.setdefault("support_chunk_uids", [chunk_uid])
             relation.setdefault("evidence_type", "explicit" if relation.get("source") not in {"rule-based", "fallback"} else "same_chunk")
             relation.setdefault("confidence", 1.0 if relation.get("source") not in {"rule-based", "fallback"} else 0.5)
-            relation.setdefault("status", "accepted")
+            relation.setdefault(
+                "status",
+                "unverified" if relation.get("source") in {"rule-based", "fallback"} else "accepted",
+            )
             relations.append(relation)
     graph = graph_builder.build_graph(chunks, embeddings, entities, relations)
     graph, communities, community_map, modularity = detector.detect(graph)

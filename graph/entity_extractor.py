@@ -123,7 +123,7 @@ class EntityExtractor:
         return entity_map, all_entities
 
     def _should_use_llm(self, chunk_text, entities):
-        if self.groq_client is None:
+        if self.groq_client is None and self.provider_router is None:
             return False
         if len(entities) < 2:
             return False
