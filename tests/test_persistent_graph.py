@@ -9,6 +9,7 @@ import pytest
 
 from graph.persistent import (
     GraphArtifactStore,
+    GraphArtifactCorruptionError,
     InMemoryObjectStore,
     ManifestStore,
     canonical_json_bytes,
@@ -365,6 +366,16 @@ def test_artifact_read_rejects_noncanonical_json_body():
 
     with pytest.raises(ValueError, match="canonical"):
         artifacts.read(key, digest)
+
+
+def test_artifact_read_classifies_gzip_corruption_for_local_fallback():
+    objects = InMemoryObjectStore()
+    artifacts = GraphArtifactStore(objects, collection="papers")
+    key = artifacts.key("paper", 1)
+    objects.put(key, b"not-gzip", if_none_match=True, metadata={"artifact_digest": "unused"})
+
+    with pytest.raises(GraphArtifactCorruptionError, match="gzip"):
+        artifacts.read(key)
 
 
 def test_pipeline_publishes_graph_and_reader_returns_temporary_view():

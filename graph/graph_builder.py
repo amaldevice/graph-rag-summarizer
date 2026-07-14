@@ -30,7 +30,10 @@ class GraphBuilder:
                 text=chunk["text"][:120]
             )
 
-        unique_entities = list(set((e["text"], e["label"]) for e in all_entities))
+        unique_entities = sorted(
+            {(e["text"], e["label"]) for e in all_entities},
+            key=lambda item: (str(item[0]).casefold(), str(item[1]).casefold()),
+        )
         for ent_text, ent_label in unique_entities:
             node_id = f'ent_{ent_text.lower().replace(" ", "_")}'
             G.add_node(node_id, type="entity", label=ent_label, text=ent_text)
@@ -78,6 +81,8 @@ class GraphBuilder:
                     )
 
         for rel in all_relations:
+            if rel.get("status") in {"rejected", "unverified"}:
+                continue
             if not rel.get("head") or not rel.get("tail") or not rel.get("relation"):
                 continue
 

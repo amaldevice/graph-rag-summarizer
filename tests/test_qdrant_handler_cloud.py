@@ -454,6 +454,41 @@ def test_prepare_ingest_append_rejects_duplicate_document() -> None:
         handler.prepare_ingest("append", "paper-a", vector_size=2)
 
 
+def test_prepare_ingest_append_accepts_points_from_the_same_interrupted_claim() -> None:
+    claim = {
+        "document_generation": 3,
+        "pending_attempt_id": "attempt-3",
+    }
+
+    class FakeClient:
+        def get_collections(self):
+            return SimpleNamespace(collections=[SimpleNamespace(name="test")])
+
+        def create_payload_index(self, **kwargs):
+            del kwargs
+
+        def scroll(self, **kwargs):
+            del kwargs
+            return [SimpleNamespace(
+                id="graph-point",
+                payload={
+                    "document_id": "paper-a",
+                    "document_generation": 3,
+                    "document_attempt_id": "attempt-3",
+                    "vector_point": True,
+                    "graph_point": True,
+                },
+            )], None
+
+        def count(self, collection_name, count_filter, exact=True):
+            del collection_name, count_filter, exact
+            return SimpleNamespace(count=1)
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+
+    handler.prepare_ingest("append", "paper-a", vector_size=2, claim=claim)
+
+
 def test_replace_document_deletes_only_stale_points_for_document() -> None:
     calls = []
 
