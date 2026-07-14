@@ -1,6 +1,9 @@
+import json
 import sys
 import types
 from pathlib import Path
+
+import networkx as nx
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -9,11 +12,13 @@ if str(ROOT_DIR) not in sys.path:
 from config import settings
 
 
-def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monkeypatch):
+def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monkeypatch, tmp_path):
     shared_session = object()
     received_sessions = []
     saved_paths = {}
     received_extractor_session = []
+    graph_inputs = {}
+    feedback_decisions = [{"final_decision": "stop"}]
 
     embedder_module = types.ModuleType("embedding.embedder")
     qdrant_module = types.ModuleType("vectordb.qdrant_handler")
@@ -60,16 +65,52 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
 
         def extract_entities(self, chunks):
             del chunks
-            return {"c1": []}, []
+            entities = [
+                {
+                    "chunk_id": "c1",
+                    "chunk_uid": "c1",
+                    "text": "Alpha",
+                    "label": "ORG",
+                    "sentence_index": 0,
+                },
+                {
+                    "chunk_id": "c1",
+                    "chunk_uid": "c1",
+                    "text": "Beta",
+                    "label": "ORG",
+                    "sentence_index": 0,
+                },
+                {
+                    "chunk_id": "c1",
+                    "chunk_uid": "c1",
+                    "text": "Gamma",
+                    "label": "ORG",
+                    "sentence_index": 0,
+                },
+            ]
+            return {"c1": entities}, entities
 
         def extract_relations_llm(self, text, entities):
             del text, entities
-            return []
+            return [
+                {"head": "Alpha", "relation": "supports", "tail": "Beta"},
+                {
+                    "head": "Alpha",
+                    "relation": "co-occurs_with",
+                    "tail": "Beta",
+                    "source": "fallback",
+                },
+            ]
 
     class FakeGraphBuilder:
         def build_graph(self, retrieved_chunks, chunk_embeddings, all_entities, all_relations):
-            del retrieved_chunks, chunk_embeddings, all_entities, all_relations
-            return object()
+            del retrieved_chunks, chunk_embeddings
+            graph_inputs["entities"] = all_entities
+            graph_inputs["relations"] = all_relations
+            graph = nx.Graph()
+            graph.add_nodes_from(entity["canonical_id"] for entity in all_entities)
+            graph.add_edge("ent_alpha", "ent_beta")
+            return graph
 
     class FakeCommunityDetector:
         def detect(self, graph):
@@ -207,7 +248,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
 
         def decide(self, quality_result, action_result, retry_state):
             del quality_result, action_result, retry_state
-            return {"final_decision": "stop"}
+            return feedback_decisions.pop(0)
 
         def save_decision(self, decision, output_path="output/feedback_loop_decision.json"):
             del decision
@@ -260,6 +301,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
 
     monkeypatch.setattr("launcher.runners._configure_query_denial", configure_query_safety)
 
+    artifact_dir = tmp_path / "run-1"
     run_full_pipeline({
         "mode": "full-pipeline",
         "profile": "local",
@@ -268,7 +310,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         "retrieval_limit": 5,
         "pdf_path": "",
         "json_output": "",
-        "artifact_dir": "output/run-1",
+        "artifact_dir": str(artifact_dir),
         "verbose": True,
     })
 
@@ -277,16 +319,198 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         ("reducer", shared_session),
     ]
     assert received_extractor_session == [shared_session]
-    assert saved_paths["graph_ranked_csv"] == "output/run-1/graph_ranked_nodes.csv"
-    assert saved_paths["graph_ranked_json"] == "output/run-1/graph_ranked_nodes.json"
-    assert saved_paths["graph_summary_json"] == "output/run-1/graph_summary.json"
+    assert saved_paths["graph_ranked_csv"] == str(artifact_dir / "graph_ranked_nodes.csv")
+    assert saved_paths["graph_ranked_json"] == str(artifact_dir / "graph_ranked_nodes.json")
+    assert saved_paths["graph_summary_json"] == str(artifact_dir / "graph_summary.json")
     assert saved_paths["graph_summary"] == {"relation_extraction": {"mode": "llm-enhanced"}}
-    assert saved_paths["pruned_json"] == "output/run-1/pruned_summary_context.json"
-    assert saved_paths["pruned_csv"] == "output/run-1/pruned_summary_context.csv"
-    assert saved_paths["map_json"] == "output/run-1/community_map_summaries.json"
-    assert saved_paths["map_txt"] == "output/run-1/community_map_summaries.txt"
-    assert saved_paths["final_json"] == "output/run-1/final_summary.json"
-    assert saved_paths["final_txt"] == "output/run-1/final_summary.txt"
-    assert saved_paths["evaluation_json"] == "output/run-1/evaluation_result.json"
-    assert saved_paths["quality_json"] == "output/run-1/quality_gate_report.json"
-    assert saved_paths["decision_json"] == "output/run-1/feedback_loop_decision.json"
+    assert saved_paths["pruned_json"] == str(artifact_dir / "pruned_summary_context.json")
+    assert saved_paths["pruned_csv"] == str(artifact_dir / "pruned_summary_context.csv")
+    assert saved_paths["map_json"] == str(artifact_dir / "community_map_summaries.json")
+    assert saved_paths["map_txt"] == str(artifact_dir / "community_map_summaries.txt")
+    assert saved_paths["final_json"] == str(artifact_dir / "final_summary.json")
+    assert saved_paths["final_txt"] == str(artifact_dir / "final_summary.txt")
+    assert saved_paths["evaluation_json"] == str(artifact_dir / "evaluation_result.json")
+    assert saved_paths["quality_json"] == str(artifact_dir / "quality_gate_report.json")
+    assert saved_paths["decision_json"] == str(artifact_dir / "feedback_loop_decision.json")
+
+    relation_evidence = json.loads((artifact_dir / "relation_evidence.json").read_text())
+    assert relation_evidence["counts"] == {
+        "raw_evidence_count": 2,
+        "active_evidence_count": 1,
+        "relation_status_counts": {"accepted": 1, "unverified": 1},
+    }
+    assert relation_evidence["active_evidence"] == [
+        relation for relation in relation_evidence["raw_evidence"]
+        if relation["relation"] == "supports"
+    ]
+    fallback = next(
+        relation for relation in relation_evidence["raw_evidence"]
+        if relation["source"] == "fallback"
+    )
+    assert fallback["evidence_type"] == "same_sentence"
+    assert fallback["support_chunk_uids"] == ["c1"]
+
+    canonicalization = json.loads((artifact_dir / "entity_canonicalization.json").read_text())
+    assert [entity["canonical_id"] for entity in canonicalization["canonical_entities"]] == [
+        "ent_alpha",
+        "ent_beta",
+        "ent_gamma",
+    ]
+    orphan_report = json.loads((artifact_dir / "orphan_node_report.json").read_text())
+    assert orphan_report["strongly_supported"] == ["ent_alpha", "ent_beta"]
+    assert orphan_report["mention_only"] == ["ent_gamma"]
+    assert orphan_report["query_protected"] == ["ent_alpha", "ent_beta", "ent_gamma"]
+    by_entity = {entity["canonical_id"]: entity for entity in orphan_report["elements"]}
+    assert by_entity["ent_alpha"]["graph_degree"] == 1
+    assert by_entity["ent_beta"]["graph_degree"] == 1
+    assert by_entity["ent_gamma"]["graph_degree"] == 0
+    assert {entity["canonical_id"] for entity in graph_inputs["entities"]} == {
+        "ent_alpha",
+        "ent_beta",
+        "ent_gamma",
+    }
+    assert graph_inputs["relations"] == relation_evidence["raw_evidence"]
+
+    persistent_dir = tmp_path / "persistent-run"
+    persisted_diagnostics = {
+        "documents": {
+            "persisted-document": {
+                "raw_evidence": [{
+                    "head": "Persisted Alpha",
+                    "relation": "supports",
+                    "tail": "Persisted Beta",
+                    "status": "accepted",
+                }],
+                "active_evidence": [{
+                    "head": "Persisted Alpha",
+                    "relation": "supports",
+                    "tail": "Persisted Beta",
+                    "status": "accepted",
+                }],
+                "diagnostics": {
+                    "raw_evidence_count": 1,
+                    "active_evidence_count": 1,
+                    "relation_status_counts": {"accepted": 1},
+                    "canonicalization": {
+                        "canonical_entities": [
+                            {
+                                "canonical_id": "ent_persisted_alpha",
+                                "chunk_uids": ["c1"],
+                            },
+                            {
+                                "canonical_id": "ent_not_retrieved",
+                                "chunk_uids": ["other-chunk"],
+                            },
+                        ],
+                    },
+                    "entity_support": {
+                        "elements": [
+                            {
+                                "canonical_id": "ent_persisted_alpha",
+                                "query_protected": False,
+                            },
+                            {
+                                "canonical_id": "ent_not_retrieved",
+                                "query_protected": False,
+                            },
+                        ],
+                        "query_protected": [],
+                    },
+                },
+            },
+        },
+    }
+
+    def persistent_graph_view(collection, chunks, object_store=None):
+        del collection, chunks, object_store
+        return nx.Graph(), [[1]], {}, 0.0, persisted_diagnostics
+
+    feedback_decisions[:] = [
+        {
+            "final_decision": "retry retrieval",
+            "stop": False,
+            "next_stage": "retrieval",
+            "updated_retry_state": {
+                "retrieval_retries": 1,
+                "prompt_retries": 0,
+                "reduce_retries": 0,
+                "total_retries": 1,
+            },
+        },
+        {"final_decision": "stop"},
+    ]
+    monkeypatch.setattr("launcher.runners._persistent_graph_view", persistent_graph_view)
+    run_full_pipeline({
+        "mode": "full-pipeline",
+        "profile": "local",
+        "collection": "test",
+        "query": "test",
+        "retrieval_limit": 5,
+        "pdf_path": "",
+        "json_output": "",
+        "artifact_dir": str(persistent_dir),
+        "enable_graph_artifact": True,
+        "verbose": True,
+    })
+
+    assert received_sessions == [
+        ("summarizer", shared_session),
+        ("reducer", shared_session),
+        ("summarizer", shared_session),
+        ("reducer", shared_session),
+    ]
+    assert received_extractor_session == [shared_session, shared_session]
+    for current_dir in (persistent_dir, persistent_dir / "attempt-1"):
+        assert json.loads((current_dir / "relation_evidence.json").read_text()) == {
+            "documents": {
+                "persisted-document": {
+                    "raw_evidence": persisted_diagnostics["documents"]["persisted-document"]["raw_evidence"],
+                    "active_evidence": persisted_diagnostics["documents"]["persisted-document"]["active_evidence"],
+                    "counts": {
+                        "raw_evidence_count": 1,
+                        "active_evidence_count": 1,
+                        "relation_status_counts": {"accepted": 1},
+                    },
+                },
+            },
+        }
+        assert json.loads((current_dir / "entity_canonicalization.json").read_text()) == {
+            "documents": {
+                "persisted-document": {
+                    "canonical_entities": [
+                        {
+                            "canonical_id": "ent_persisted_alpha",
+                            "chunk_uids": ["c1"],
+                        },
+                        {
+                            "canonical_id": "ent_not_retrieved",
+                            "chunk_uids": ["other-chunk"],
+                        },
+                    ],
+                },
+            },
+        }
+        assert json.loads((current_dir / "orphan_node_report.json").read_text()) == {
+            "documents": {
+                "persisted-document": {
+                    "elements": [
+                        {
+                            "canonical_id": "ent_persisted_alpha",
+                            "query_protected": True,
+                        },
+                        {
+                            "canonical_id": "ent_not_retrieved",
+                            "query_protected": False,
+                        },
+                    ],
+                    "query_protected": ["ent_persisted_alpha"],
+                },
+            },
+        }
+    assert persisted_diagnostics["documents"]["persisted-document"]["diagnostics"]["entity_support"] == {
+        "elements": [
+            {"canonical_id": "ent_persisted_alpha", "query_protected": False},
+            {"canonical_id": "ent_not_retrieved", "query_protected": False},
+        ],
+        "query_protected": [],
+    }
