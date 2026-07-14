@@ -111,6 +111,14 @@ class EntityExtractor:
                 entity_map[chunk_key] = []
                 continue
             doc = self.nlp(chunk["text"])
+            sentence_indexes = {}
+            try:
+                sentence_indexes = {
+                    (sentence.start_char, sentence.end_char): index
+                    for index, sentence in enumerate(doc.sents)
+                }
+            except (AttributeError, TypeError, ValueError):
+                pass
             chunk_entities = []
             seen_in_chunk = set()
 
@@ -121,19 +129,37 @@ class EntityExtractor:
                 if not self.is_valid_entity(ent_text, ent_label):
                     continue
 
+                entity_record = {
+                    "chunk_id": chunk["chunk_id"],
+                    "chunk_uid": chunk_key,
+                    "text": ent_text,
+                    "label": ent_label
+                }
+                for field in ("start_char", "end_char"):
+                    value = getattr(ent, field, None)
+                    if isinstance(value, int):
+                        entity_record[field] = value
+                try:
+                    sentence = ent.sent
+                except (AttributeError, TypeError, ValueError):
+                    sentence = None
+                if sentence is not None:
+                    sentence_start = getattr(sentence, "start_char", None)
+                    sentence_end = getattr(sentence, "end_char", None)
+                    if isinstance(sentence_start, int) and isinstance(sentence_end, int):
+                        entity_record["sentence_start_char"] = sentence_start
+                        entity_record["sentence_end_char"] = sentence_end
+                        sentence_index = sentence_indexes.get((sentence_start, sentence_end))
+                        if sentence_index is not None:
+                            entity_record["sentence_index"] = sentence_index
+                all_entities.append(entity_record)
+
                 key = (ent_text.lower(), ent_label)
                 if key in seen_in_chunk:
                     continue
 
                 seen_in_chunk.add(key)
                 chunk_entities.append((ent_text, ent_label))
-
-                all_entities.append({
-                    "chunk_id": chunk["chunk_id"],
-                    "chunk_uid": chunk_key,
-                    "text": ent_text,
-                    "label": ent_label
-                })
 
             entity_map[chunk_key] = chunk_entities
 

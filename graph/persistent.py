@@ -25,6 +25,7 @@ import networkx as nx
 
 from graph.relation_evidence import (
     canonicalize_entities,
+    classify_weak_relation_evidence,
     classify_entity_support,
     is_active_relation,
     normalize_relation_evidence,
@@ -1450,11 +1451,27 @@ def build_document_graph(
         detector = CommunityDetector()
     entity_map, extracted_entities = entity_extractor.extract_entities(chunks)
     entities, canonicalization = canonicalize_entities(extracted_entities)
+    mentions_by_chunk_uid = {}
+    for mention in extracted_entities:
+        mention_chunk_uid = mention.get("chunk_uid")
+        if mention_chunk_uid is None:
+            mention_chunk_uid = mention.get("chunk_id")
+        mentions_by_chunk_uid.setdefault(mention_chunk_uid, []).append(mention)
     relations = []
     for chunk in chunks:
         chunk_uid = chunk.get("chunk_uid", chunk.get("chunk_id"))
         local_entities = entity_map.get(chunk_uid, [])
         extracted = entity_extractor.extract_relations_llm(chunk.get("text", ""), local_entities)
+        local_mentions = mentions_by_chunk_uid.get(chunk_uid, [])
+        extracted = [
+            {
+                **relation,
+                "evidence_type": classify_weak_relation_evidence(relation, local_mentions),
+            }
+            if str(relation.get("source", "")).casefold() in {"rule-based", "fallback"}
+            else relation
+            for relation in extracted
+        ]
         relations.extend(
             normalize_relation_evidence(extracted, support_chunk_uid=chunk_uid)
         )

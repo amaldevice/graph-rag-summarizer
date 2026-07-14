@@ -18,6 +18,7 @@ _WEIGHTS = {
 }
 _WEAK_SOURCES = {"rule-based", "fallback"}
 _ACTIVE_EVIDENCE_TYPES = {"explicit", "verified"}
+NEARBY_CHARACTER_WINDOW = 120
 _CANONICAL_SEPARATORS = re.compile(r"[,.;:()\[\]{}_-]+")
 _WHITESPACE = re.compile(r"\s+")
 
@@ -44,6 +45,67 @@ def _clamp_confidence(value: Any, default: float) -> float:
 
 def _sort_key(record: Mapping[str, Any]) -> str:
     return json.dumps(record, default=str, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def classify_weak_relation_evidence(
+    relation: Mapping[str, Any],
+    entity_mentions: Iterable[Mapping[str, Any]],
+) -> str:
+    """Classify rule/fallback evidence from local entity mention positions."""
+    head = relation.get("head")
+    tail = relation.get("tail")
+    if not isinstance(head, str) or not isinstance(tail, str):
+        return "same_chunk"
+
+    normalized_head = head.strip().casefold()
+    normalized_tail = tail.strip().casefold()
+    mentions = [
+        mention for mention in entity_mentions
+        if isinstance(mention, Mapping) and isinstance(mention.get("text"), str)
+    ]
+    head_mentions = [
+        mention for mention in mentions
+        if mention["text"].strip().casefold() == normalized_head
+    ]
+    tail_mentions = [
+        mention for mention in mentions
+        if mention["text"].strip().casefold() == normalized_tail
+    ]
+    nearby = False
+    for head_mention in head_mentions:
+        for tail_mention in tail_mentions:
+            head_sentence = head_mention.get("sentence_index")
+            tail_sentence = tail_mention.get("sentence_index")
+            if head_sentence is not None and head_sentence == tail_sentence:
+                return "same_sentence"
+
+            head_sentence_range = (
+                head_mention.get("sentence_start_char"),
+                head_mention.get("sentence_end_char"),
+            )
+            tail_sentence_range = (
+                tail_mention.get("sentence_start_char"),
+                tail_mention.get("sentence_end_char"),
+            )
+            if (
+                all(isinstance(value, int) for value in head_sentence_range)
+                and head_sentence_range == tail_sentence_range
+            ):
+                return "same_sentence"
+
+            head_span = (head_mention.get("start_char"), head_mention.get("end_char"))
+            tail_span = (tail_mention.get("start_char"), tail_mention.get("end_char"))
+            if not all(isinstance(value, int) for value in (*head_span, *tail_span)):
+                continue
+            head_start, head_end = head_span
+            tail_start, tail_end = tail_span
+            if head_end < head_start or tail_end < tail_start:
+                continue
+            character_gap = max(head_start - tail_end, tail_start - head_end, 0)
+            if character_gap <= NEARBY_CHARACTER_WINDOW:
+                nearby = True
+
+    return "nearby_window" if nearby else "same_chunk"
 
 
 def normalize_relation_evidence(
