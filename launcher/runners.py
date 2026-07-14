@@ -105,6 +105,7 @@ def _persistent_graph_view(collection, chunks, object_store=None):
     reader = PersistentGraphReader(manifests, artifacts)
     merged = nx.Graph()
     found = False
+    fallback_required = False
     for document_id in document_ids:
         document_chunks = [chunk for chunk in chunks if chunk.get("document_id") == document_id]
         if not manifests.preflight(document_id)["allowed"]:
@@ -114,10 +115,13 @@ def _persistent_graph_view(collection, chunks, object_store=None):
         try:
             graph = reader.load(document_id, document_chunks)
         except (FileNotFoundError, GraphArtifactCorruptionError):
-            # Artifact loss/corruption is a document-local compatibility fallback;
-            # tombstone and manifest authorization failures remain fail-closed.
+            # Rebuild the compatibility view for the whole query when one
+            # document artifact is unavailable; tombstone and manifest
+            # authorization failures remain fail-closed.
+            fallback_required = True
             continue
         if graph is None:
+            fallback_required = True
             continue
         found = True
         mapping = {}
@@ -129,7 +133,7 @@ def _persistent_graph_view(collection, chunks, object_store=None):
             else:
                 mapping[node] = f"{document_id}::{node}"
         merged = nx.compose(merged, nx.relabel_nodes(graph, mapping, copy=True))
-    if not found:
+    if not found or fallback_required:
         return None
     communities = {}
     community_map = {}

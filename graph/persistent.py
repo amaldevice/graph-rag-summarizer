@@ -156,6 +156,7 @@ def serialize_graph(
     generation: int,
     raw_evidence: list[dict] | None = None,
     diagnostics: dict | None = None,
+    active_evidence: list[dict] | None = None,
 ) -> bytes:
     """Serialize graph structure without copying full chunk text."""
     nodes = sorted(
@@ -179,6 +180,14 @@ def serialize_graph(
             "page_no": chunk.get("page_no", chunk.get("page")),
             "source": chunk.get("source", "unknown"),
         })
+    stable_raw_evidence = sorted(
+        (_json_safe(item) for item in (raw_evidence or [])),
+        key=canonical_json_bytes,
+    )
+    stable_active_evidence = sorted(
+        (_json_safe(item) for item in (active_evidence or [])),
+        key=canonical_json_bytes,
+    )
     payload = {
         "schema_version": 1,
         "document_id": document_id,
@@ -187,7 +196,8 @@ def serialize_graph(
         "chunks": chunk_refs,
         "nodes": nodes,
         "edges": edges,
-        "raw_evidence": _json_safe(raw_evidence or []),
+        "raw_evidence": stable_raw_evidence,
+        "active_evidence": stable_active_evidence,
         "diagnostics": _json_safe(diagnostics or {}),
         "graph_metadata": _json_safe(dict(graph.graph)),
     }
@@ -421,6 +431,10 @@ class ManifestStore:
         self.object_store = object_store
         self.collection = collection
         self.backend = backend or {"kind": "unknown", "namespace": ""}
+        if not getattr(object_store, "supports_conditional_cas", False) or not getattr(object_store, "fencing_enforced", False):
+            raise RuntimeError(
+                "persistent graph manifest backend must provide conditional CAS and durable fencing"
+            )
         # ponytail: this lock only reduces same-process duplicate reads; object-store CAS is authority.
         self._lock = threading.RLock()
         self.manifest_key = str(PurePosixPath("graphs", _key_component(collection), "manifest.json"))
@@ -732,7 +746,27 @@ class ManifestStore:
             if mode == "append" and prior is not None:
                 raise ValueError(f"document '{document_id}' is already tracked; use replace-document")
             if prior and prior.get("pending_operation_id") and prior["pending_operation_id"] != operation_id:
-                raise RuntimeError("document has an active graph claim")
+                superseded_operation = prior["pending_operation_id"]
+                prior = dict(prior)
+                prior["version_ledger"] = [dict(item) for item in prior.get("version_ledger", [])]
+                for item in prior["version_ledger"]:
+                    if item.get("operation_id") == superseded_operation and item.get("state") == "reserved":
+                        item.update({"state": "burned", "updated_at": _now()})
+                prior.update({
+                    "status": "partial" if prior.get("active_artifact_key") else "unavailable",
+                    "pending_operation_id": None,
+                    "pending_generation": None,
+                    "pending_source_fingerprint": None,
+                    "pending_version": None,
+                    "pending_attempt_id": None,
+                    "pending_backend": None,
+                    "pending_artifact_key": None,
+                    "pending_artifact_digest": None,
+                    "build_attempt_id": None,
+                    "failure_reason": f"superseded by operation {operation_id}",
+                    "updated_at": _now(),
+                })
+                documents[document_id] = prior
             generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
             ledger = list(prior.get("version_ledger", [])) if prior else []
             ledger_next_version = max(
@@ -1276,15 +1310,18 @@ class PersistentGraphReader:
             raise GraphArtifactCorruptionError("graph artifact body metadata mismatch")
         if not self.manifests.revalidate(snapshot):
             raise RuntimeError("manifest changed while reading graph artifact")
-        graph = graph_from_artifact(artifact, chunks)
-        if chunks:
-            by_uid = {chunk.get("chunk_uid"): index for index, chunk in enumerate(chunks)}
-            mapping = {
-                node: f"chunk_{by_uid[attrs.get('chunk_uid')]}"
-                for node, attrs in graph.nodes(data=True)
-                if attrs.get("type") == "chunk" and attrs.get("chunk_uid") in by_uid
-            }
-            graph = nx.relabel_nodes(graph, mapping, copy=True)
+        try:
+            graph = graph_from_artifact(artifact, chunks)
+            if chunks:
+                by_uid = {chunk.get("chunk_uid"): index for index, chunk in enumerate(chunks)}
+                mapping = {
+                    node: f"chunk_{by_uid[attrs.get('chunk_uid')]}"
+                    for node, attrs in graph.nodes(data=True)
+                    if attrs.get("type") == "chunk" and attrs.get("chunk_uid") in by_uid
+                }
+                graph = nx.relabel_nodes(graph, mapping, copy=True)
+        except (KeyError, TypeError, ValueError, nx.NetworkXError) as exc:
+            raise GraphArtifactCorruptionError("graph artifact graph structure is invalid") from exc
         return graph
 
 
@@ -1339,14 +1376,28 @@ def build_document_graph(
                 "unverified" if relation.get("source") in {"rule-based", "fallback"} else "accepted",
             )
             relations.append(relation)
+    relations.sort(key=canonical_json_bytes)
     graph = graph_builder.build_graph(chunks, embeddings, entities, relations)
     graph, communities, community_map, modularity = detector.detect(graph)
+    active_evidence = [
+        relation for relation in relations
+        if relation.get("status") not in {"rejected", "unverified"}
+    ]
+    status_counts = {
+        status: sum(1 for relation in relations if relation.get("status") == status)
+        for status in sorted({relation.get("status", "unknown") for relation in relations})
+    }
     diagnostics = {
         "entity_count": len(entities),
         "local_relation_count": len(relations),
+        "active_evidence_count": len(active_evidence),
+        "relation_status_counts": status_counts,
         "community_count": len(communities),
         "modularity": modularity,
-        "entity_extraction": {"status": "available"},
+        "entity_extraction": {
+            "status": "available" if entities else "unavailable",
+            "entity_count": len(entities),
+        },
         "topology": graph.graph.get("topology", {}),
         "community_selection": graph.graph.get("community_selection", {}),
     }
@@ -1355,6 +1406,7 @@ def build_document_graph(
         "community_map": community_map,
         "modularity": modularity,
         "raw_evidence": relations,
+        "active_evidence": active_evidence,
         "diagnostics": diagnostics,
     }
 
@@ -1394,10 +1446,24 @@ class PersistentGraphPipeline:
             operation_id = prior["pending_operation_id"]
         if operation_id is None:
             operation_id = f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
+        if claim is not None and (
+            claim.get("document_id") != document_id
+            or claim.get("source_fingerprint") != fingerprint
+            or claim.get("operation_id") != operation_id
+        ):
+            raise GraphLifecycleError("caller inputs do not match the persisted graph claim")
         claim = claim or self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
         try:
             graph, details = build_document_graph(chunks, embeddings, document_id, **kwargs)
-            canonical = serialize_graph(graph, chunks, document_id, claim["document_generation"], details["raw_evidence"], details["diagnostics"])
+            canonical = serialize_graph(
+                graph,
+                chunks,
+                document_id,
+                claim["document_generation"],
+                details["raw_evidence"],
+                details["diagnostics"],
+                details.get("active_evidence"),
+            )
             artifact_key, digest = self.artifacts.write(claim, canonical)
             # Read-back validates gzip, immutable bytes, metadata, and digest
             # before the manifest's active pointer is changed.
@@ -1485,8 +1551,13 @@ def backfill_qdrant_collection(qdrant, collection: str, *, object_store=None, do
         grouped.setdefault(chunk.get("document_id"), []).append(chunk)
     pipeline = PersistentGraphPipeline(collection, object_store=object_store)
     results = []
-    for current_document_id, document_chunks in sorted(grouped.items()):
-        if not current_document_id:
+    for current_document_id, document_chunks in sorted(grouped.items(), key=lambda item: str(item[0])):
+        if not isinstance(current_document_id, str) or not current_document_id.strip():
+            results.append({
+                "status": "unavailable",
+                "document_id": current_document_id,
+                "failure_reason": "document identity metadata is incomplete; rebuild required",
+            })
             continue
         if any(
             not isinstance(chunk.get("chunk_uid"), str)
