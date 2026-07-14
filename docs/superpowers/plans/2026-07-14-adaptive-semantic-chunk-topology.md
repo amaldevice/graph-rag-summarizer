@@ -61,14 +61,14 @@
 **Files:**
 - Modify: `graph/graph_builder.py`
 
-- [ ] **Step 1: Modify `GraphBuilder.__init__` to load settings defaults while preserving backward-compatible signature.**
-- [ ] **Step 2: Implement `_build_semantic_edges` and `_apply_fixed_policy` helpers.**
-- [ ] **Step 3: Implement data-dependent similarity cutoff derivation (`mean + 0.5 * std_dev` of active similarities).**
-- [ ] **Step 4: Implement mutual-kNN candidate generation.**
-- [ ] **Step 5: Implement min/max degree bounding per node using stable graph-node ordering.**
-- [ ] **Step 6: Store metadata in `G.graph["topology_metadata"]`.**
+- [x] **Step 1: Modify `GraphBuilder.__init__` to load settings defaults while preserving backward-compatible signature.**
+- [x] **Step 2: Implement `_build_semantic_edges` and `_apply_fixed_policy` helpers.**
+- [x] **Step 3: Implement data-dependent similarity cutoff derivation (`mean + 0.5 * std_dev` of active similarities).**
+- [x] **Step 4: Implement mutual-kNN candidate generation.**
+- [x] **Step 5: Implement min/max degree bounding per node using stable graph-node ordering.**
+- [x] **Step 6: Store metadata in `G.graph["topology_metadata"]`.**
 
-- [ ] **Step 7: Verify compiling:**
+- [x] **Step 7: Verify compiling:**
   Run: `uv run python -m py_compile graph/graph_builder.py`
   Expected: PASS
 
