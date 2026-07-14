@@ -89,21 +89,110 @@ def _build_ingest_graph_artifact(config, collection, document_id, chunks, vector
     return result
 
 
-def _persistent_graph_view(collection, chunks, object_store=None):
-    """Load namespaced persisted document graphs; return None for compatibility fallback."""
+def _validated_persistent_graph_artifact(manifests, artifacts, document_id, chunks):
+    """Return one validated query graph and its immutable artifact body."""
     from graph.persistent import (
         GraphArtifactCorruptionError,
-        PersistentGraphReader,
-        default_graph_services,
+        deserialize_graph,
+        graph_from_artifact,
     )
+    import networkx as nx
+
+    snapshot = manifests.read_snapshot()
+    entry = snapshot.manifest.get("documents", {}).get(document_id)
+    if not entry or entry.get("status") != "available" or not entry.get("active_artifact_key"):
+        return None
+    data = artifacts.read(
+        entry["active_artifact_key"],
+        entry.get("artifact_digest"),
+        entry.get("backend"),
+        entry.get("document_generation"),
+        entry.get("source_fingerprint"),
+    )
+    try:
+        artifact = deserialize_graph(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GraphArtifactCorruptionError("graph artifact body is not valid JSON") from exc
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("document_id") != document_id
+        or artifact.get("document_generation") != entry.get("document_generation")
+        or artifact.get("source_fingerprint") != entry.get("source_fingerprint")
+    ):
+        raise GraphArtifactCorruptionError("graph artifact body metadata mismatch")
+    if not manifests.revalidate(snapshot):
+        raise RuntimeError("manifest changed while reading graph artifact")
+    try:
+        graph = graph_from_artifact(artifact, chunks)
+        if chunks:
+            by_uid = {chunk.get("chunk_uid"): index for index, chunk in enumerate(chunks)}
+            mapping = {
+                node: f"chunk_{by_uid[attrs.get('chunk_uid')]}"
+                for node, attrs in graph.nodes(data=True)
+                if attrs.get("type") == "chunk" and attrs.get("chunk_uid") in by_uid
+            }
+            graph = nx.relabel_nodes(graph, mapping, copy=True)
+    except (KeyError, TypeError, ValueError, nx.NetworkXError) as exc:
+        raise GraphArtifactCorruptionError("graph artifact graph structure is invalid") from exc
+    if not isinstance(artifact.get("raw_evidence", []), list):
+        raise GraphArtifactCorruptionError("graph artifact relation evidence is invalid")
+    if not isinstance(artifact.get("active_evidence", []), list):
+        raise GraphArtifactCorruptionError("graph artifact active evidence is invalid")
+    if not isinstance(artifact.get("diagnostics", {}), dict):
+        raise GraphArtifactCorruptionError("graph artifact diagnostics are invalid")
+    return graph, artifact
+
+
+def _with_current_query_protection(entity_support, canonicalization, retrieved_chunks):
+    """Overlay query-time protection without changing immutable artifact diagnostics."""
+    current_chunk_uids = {
+        str(chunk.get("chunk_uid", chunk.get("chunk_id")))
+        for chunk in retrieved_chunks
+        if chunk.get("chunk_uid", chunk.get("chunk_id")) is not None
+    }
+    protected_ids = set()
+    if isinstance(canonicalization, dict):
+        canonical_entities = canonicalization.get("canonical_entities", [])
+        if isinstance(canonical_entities, list):
+            for entity in canonical_entities:
+                if not isinstance(entity, dict) or not entity.get("canonical_id"):
+                    continue
+                chunk_uids = entity.get("chunk_uids", [])
+                if isinstance(chunk_uids, str):
+                    chunk_uids = [chunk_uids]
+                if isinstance(chunk_uids, list) and current_chunk_uids.intersection(
+                    str(chunk_uid) for chunk_uid in chunk_uids if chunk_uid is not None
+                ):
+                    protected_ids.add(str(entity["canonical_id"]))
+
+    if not isinstance(entity_support, dict):
+        return entity_support
+    report = dict(entity_support)
+    elements = entity_support.get("elements", [])
+    if isinstance(elements, list):
+        report["elements"] = [
+            {
+                **element,
+                "query_protected": str(element.get("canonical_id")) in protected_ids,
+            }
+            if isinstance(element, dict) else element
+            for element in elements
+        ]
+    report["query_protected"] = sorted(protected_ids)
+    return report
+
+
+def _persistent_graph_view(collection, chunks, object_store=None):
+    """Load namespaced persisted document graphs; return None for compatibility fallback."""
+    from graph.persistent import GraphArtifactCorruptionError, default_graph_services
     import networkx as nx
 
     document_ids = sorted({chunk.get("document_id") for chunk in chunks if chunk.get("document_id")})
     if not document_ids:
         return None
     manifests, artifacts = default_graph_services(collection, object_store)
-    reader = PersistentGraphReader(manifests, artifacts)
     merged = nx.Graph()
+    diagnostics_by_document = {}
     found = False
     fallback_required = False
     for document_id in document_ids:
@@ -113,17 +202,25 @@ def _persistent_graph_view(collection, chunks, object_store=None):
                 chunk["graph_denied"] = True
             continue
         try:
-            graph = reader.load(document_id, document_chunks)
+            loaded = _validated_persistent_graph_artifact(
+                manifests, artifacts, document_id, document_chunks
+            )
         except (FileNotFoundError, GraphArtifactCorruptionError):
             # Rebuild the compatibility view for the whole query when one
             # document artifact is unavailable; tombstone and manifest
             # authorization failures remain fail-closed.
             fallback_required = True
             continue
-        if graph is None:
+        if loaded is None:
             fallback_required = True
             continue
+        graph, artifact = loaded
         found = True
+        diagnostics_by_document[document_id] = {
+            "raw_evidence": artifact.get("raw_evidence", []),
+            "active_evidence": artifact.get("active_evidence", []),
+            "diagnostics": artifact.get("diagnostics", {}),
+        }
         mapping = {}
         for node, attrs in graph.nodes(data=True):
             if attrs.get("type") == "chunk":
@@ -141,7 +238,13 @@ def _persistent_graph_view(collection, chunks, object_store=None):
         community = attrs.get("community", -1)
         community_map[node] = community
         communities.setdefault(community, []).append(node)
-    return merged, communities, community_map, float(merged.graph.get("modularity", 0.0))
+    return (
+        merged,
+        communities,
+        community_map,
+        float(merged.graph.get("modularity", 0.0)),
+        {"documents": diagnostics_by_document},
+    )
 
 
 def _configure_query_denial(qdrant, collection, object_store=None):
@@ -549,6 +652,13 @@ def run_full_pipeline(config: dict) -> None:
     from graph.graph_builder import GraphBuilder
     from graph.community_detector import CommunityDetector
     from graph.graph_analyzer import GraphAnalyzer
+    from graph.relation_evidence import (
+        canonicalize_entities,
+        classify_entity_support,
+        classify_weak_relation_evidence,
+        is_active_relation,
+        normalize_relation_evidence,
+    )
     from summarizer.pruner import SummaryPruner
     from summarizer.prompt_builder import PromptBuilder
     from summarizer.llm_summarizer import LLMSummarizer
@@ -664,15 +774,53 @@ def run_full_pipeline(config: dict) -> None:
 
             if persistent_view is None:
                 _print_stage(2, 8, "extract entities and relations", verbose, f"Chunk count: {len(retrieved_chunks)}")
-                entity_map, all_entities = extractor.extract_entities(retrieved_chunks)
+                entity_map, extracted_entities = extractor.extract_entities(retrieved_chunks)
+                all_entities, canonicalization = canonicalize_entities(extracted_entities)
+                mentions_by_chunk_uid = {}
+                for mention in extracted_entities:
+                    mention_chunk_uid = mention.get("chunk_uid", mention.get("chunk_id"))
+                    mentions_by_chunk_uid.setdefault(mention_chunk_uid, []).append(mention)
                 all_relations = []
                 for chunk in retrieved_chunks:
+                    chunk_uid = chunk.get("chunk_uid", chunk["chunk_id"])
                     rels = extractor.extract_relations_llm(
                         chunk["text"],
-                        entity_map.get(chunk.get("chunk_uid", chunk["chunk_id"]), []),
+                        entity_map.get(chunk_uid, []),
                     )
-                    all_relations.extend(rels)
-
+                    rels = [
+                        {
+                            **relation,
+                            "evidence_type": classify_weak_relation_evidence(
+                                relation,
+                                mentions_by_chunk_uid.get(chunk_uid, []),
+                            ),
+                        }
+                        if str(relation.get("source", "")).casefold() in {"rule-based", "fallback"}
+                        else relation
+                        for relation in rels
+                    ]
+                    all_relations.extend(
+                        normalize_relation_evidence(rels, support_chunk_uid=chunk_uid)
+                    )
+                all_relations = normalize_relation_evidence(all_relations)
+                active_evidence = [
+                    relation for relation in all_relations
+                    if is_active_relation(relation)
+                ]
+                status_counts = {
+                    status: sum(
+                        1 for relation in all_relations
+                        if relation.get("status", "unknown") == status
+                    )
+                    for status in sorted({
+                        relation.get("status", "unknown") for relation in all_relations
+                    })
+                }
+                query_protected_chunk_uids = {
+                    chunk.get("chunk_uid", chunk.get("chunk_id"))
+                    for chunk in retrieved_chunks
+                    if chunk.get("chunk_uid", chunk.get("chunk_id")) is not None
+                }
                 _print_stage(3, 8, "build graph", verbose, [
                     f"Entities: {len(all_entities)}",
                     f"Relations: {len(all_relations)}",
@@ -682,11 +830,71 @@ def run_full_pipeline(config: dict) -> None:
 
                 _print_stage(4, 8, "detect communities", verbose)
                 G, communities, community_map, modularity = detector.detect(G)
+                entity_support = classify_entity_support(
+                    all_entities,
+                    all_relations,
+                    graph=G,
+                    query_protected_chunk_uids=query_protected_chunk_uids,
+                )
+                _write_json_artifact(_artifact_path(current_dir, "relation_evidence.json"), {
+                    "raw_evidence": all_relations,
+                    "active_evidence": active_evidence,
+                    "counts": {
+                        "raw_evidence_count": len(all_relations),
+                        "active_evidence_count": len(active_evidence),
+                        "relation_status_counts": status_counts,
+                    },
+                })
+                _write_json_artifact(
+                    _artifact_path(current_dir, "entity_canonicalization.json"),
+                    canonicalization,
+                )
+                _write_json_artifact(
+                    _artifact_path(current_dir, "orphan_node_report.json"),
+                    entity_support,
+                )
             else:
                 _print_stage(2, 8, "load persistent graph artifact", verbose)
-                G, communities, community_map, modularity = persistent_view
+                G, communities, community_map, modularity, persisted_diagnostics = persistent_view
                 _print_stage(3, 8, "reuse persisted graph", verbose, f"Communities: {len(communities)}")
                 _print_stage(4, 8, "use persisted communities", verbose)
+                persisted_documents = persisted_diagnostics["documents"]
+                _write_json_artifact(_artifact_path(current_dir, "relation_evidence.json"), {
+                    "documents": {
+                        document_id: {
+                            "raw_evidence": details["raw_evidence"],
+                            "active_evidence": details["active_evidence"],
+                            "counts": {
+                                "raw_evidence_count": details["diagnostics"].get(
+                                    "raw_evidence_count", len(details["raw_evidence"])
+                                ),
+                                "active_evidence_count": details["diagnostics"].get(
+                                    "active_evidence_count", len(details["active_evidence"])
+                                ),
+                                "relation_status_counts": details["diagnostics"].get(
+                                    "relation_status_counts", {}
+                                ),
+                            },
+                        }
+                        for document_id, details in sorted(persisted_documents.items())
+                    },
+                })
+                _write_json_artifact(_artifact_path(current_dir, "entity_canonicalization.json"), {
+                    "documents": {
+                        document_id: details["diagnostics"].get("canonicalization", {})
+                        for document_id, details in sorted(persisted_documents.items())
+                    },
+                })
+                _write_json_artifact(_artifact_path(current_dir, "orphan_node_report.json"), {
+                    "documents": {
+                        document_id: _with_current_query_protection(
+                            details["diagnostics"].get("entity_support", {}),
+                            details["diagnostics"].get("canonicalization", {}),
+                            retrieved_chunks,
+                        )
+                        for document_id, details in sorted(persisted_documents.items())
+                    },
+                })
 
             _print_stage(5, 8, "rank graph and prune context", verbose, [
                 f"Communities: {len(communities)}",
