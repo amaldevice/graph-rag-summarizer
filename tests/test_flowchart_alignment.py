@@ -342,7 +342,7 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
         def analyze(self, graph): return pd.DataFrame([{"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 1.0, "text_preview": "alpha"}])
         def save_ranked_csv(self, ranked, output_path): return output_path
         def save_ranked_json(self, ranked, output_path): return output_path
-        def save_summary_json(self, ranked, communities, modularity, output_path, relation_extraction_mode="unavailable"): return output_path
+        def save_summary_json(self, ranked, communities, modularity, output_path, relation_extraction_mode="unavailable", *args, **kwargs): return output_path
 
     class FakePruner:
         def __init__(self, top_k_per_community, top_k_global): pass

@@ -148,6 +148,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             modularity,
             output_path="output/graph_summary.json",
             relation_extraction_mode="unavailable",
+            *args, **kwargs,
         ):
             del ranked, communities, modularity
             saved_paths["graph_summary_json"] = output_path

@@ -80,11 +80,11 @@
 - Modify: `graph/graph_analyzer.py`
 - Modify: `launcher/runners.py`
 
-- [ ] **Step 1: Modify `GraphAnalyzer.save_summary_json` to accept an optional `graph=None` parameter.**
-- [ ] **Step 2: If `graph` is provided and has `topology_metadata` in its `.graph` attribute, include it in the exported JSON under the key `"topology_metadata"`.**
-- [ ] **Step 3: Update `launcher/runners.py` to pass `G` when calling `analyzer.save_summary_json(ranked, communities, modularity, ..., graph=G)`.**
+- [x] **Step 1: Modify `GraphAnalyzer.save_summary_json` to accept an optional `graph=None` parameter.**
+- [x] **Step 2: If `graph` is provided and has `topology_metadata` in its `.graph` attribute, include it in the exported JSON under the key `"topology_metadata"`.**
+- [x] **Step 3: Update `launcher/runners.py` to pass `G` when calling `analyzer.save_summary_json(ranked, communities, modularity, ..., graph=G)`.**
 
-- [ ] **Step 4: Verify compiling:**
+- [x] **Step 4: Verify compiling:**
   Run: `uv run python -m py_compile graph/graph_analyzer.py launcher/runners.py`
   Expected: PASS
 

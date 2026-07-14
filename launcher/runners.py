@@ -954,13 +954,7 @@ def run_full_pipeline(config: dict) -> None:
             analyzer.save_ranked_csv(ranked, _artifact_path(current_dir, "graph_ranked_nodes.csv"))
             analyzer.save_ranked_json(ranked, _artifact_path(current_dir, "graph_ranked_nodes.json"))
             relation_extraction_mode = getattr(extractor, "relation_extraction_mode", "unavailable")
-            analyzer.save_summary_json(
-                ranked,
-                communities,
-                modularity,
-                _artifact_path(current_dir, "graph_summary.json"),
-                relation_extraction_mode=relation_extraction_mode,
-            )
+            analyzer.save_summary_json(ranked, communities, modularity, _artifact_path(current_dir, "graph_summary.json"), relation_extraction_mode=relation_extraction_mode, graph=G)
 
             print(f"\n  Communities : {len(communities)}")
             print(f"  Modularity  : {modularity:.4f}")
