@@ -162,7 +162,6 @@ def _configure_query_denial(qdrant, collection, object_store=None):
         document_id: entry["document_generation"]
         for document_id, entry in snapshot.manifest.get("documents", {}).items()
         if entry.get("status") != "tombstoned" and entry.get("document_generation") is not None
-        and entry.get("status") in {"available", "partial"}
     })
     qdrant.set_active_graph_selectors({
         document_id: {
@@ -311,7 +310,8 @@ def run_ingest(config: dict) -> None:
     qdrant = QdrantHandler(collection_name=collection)
     config["qdrant"] = qdrant
     if graph_pipeline and ingest_mode == "replace-collection":
-        collection_operation_id = config.get("collection_operation_id") or (
+        persisted_operation_id = graph_pipeline.manifests.read_snapshot().manifest.get("collection_operation_id")
+        collection_operation_id = config.get("collection_operation_id") or persisted_operation_id or (
             f"replace-collection:{collection}:{document_id}:{uuid.uuid4()}"
         )
         collection_tombstone_manifest = graph_pipeline.manifests.tombstone_documents(
