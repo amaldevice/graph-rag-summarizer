@@ -1536,6 +1536,7 @@ def build_document_graph(
     except TypeError:
         # Backward-compatible seam for injected test/custom detectors.
         graph, communities, community_map, modularity = detector.detect(graph)
+    graph.graph["modularity"] = float(modularity)
     active_evidence = [
         relation for relation in relations
         if is_active_relation(relation)
@@ -1590,7 +1591,7 @@ def build_document_graph(
         "relation_extraction": {
             "mode": relation_extraction_mode,
         },
-        "topology": graph.graph.get("topology", {}),
+        "topology": graph.graph.get("topology_metadata", {}),
         "community_selection": graph.graph.get("community_selection", {}),
         "embedding_cluster_comparison": graph.graph.get("embedding_cluster_comparison", {}),
     }

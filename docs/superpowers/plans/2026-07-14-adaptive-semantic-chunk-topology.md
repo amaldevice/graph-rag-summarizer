@@ -118,7 +118,7 @@
 
 - **Risk: Adaptive topology yields too sparse or disjoint graphs, fragmenting communities.**
   - Mitigation: Enforcing `min_degree` (default to 1) guarantees every chunk node connects to at least its closest neighbor, avoiding isolated singletons unless similarity is below baseline `sim_threshold`.
-  
+
 - **Risk: Uncontrolled dense connectivity in large documents.**
   - Mitigation: Enforcing `max_degree` (default to 5) caps the semantic degree, avoiding excessive density and keeping downstream Leiden community discovery fast.
 
