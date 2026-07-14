@@ -2,6 +2,11 @@
 
 ## 2026-07-14
 
+- **Completed PR D query-time adaptive context allocation**
+  - Merged PR #75 (`44e2e25`) and closed issue #52.
+  - Delivered bounded, query-aware community allocation with novelty selection, protected retrieval evidence, prompt-budget safety, inspectable diagnostics, and compatibility-to-vector-only fallback provenance.
+  - Verification: `./.venv/bin/pytest -q` (**315 passed**); focused allocation/pipeline suite (**27 passed**); `compileall`; `git diff --check`.
+
 - **Completed PR B bounded global relation recovery**
   - Merged PR #72 (`b15507a`) and closed issues #45–#48.
   - Delivered auditable relation evidence, conservative canonical entities, weak/orphan-seeded bounded candidates, validated provider fallback, verified direct cross-chunk edges, and post-recovery noise cleanup.
