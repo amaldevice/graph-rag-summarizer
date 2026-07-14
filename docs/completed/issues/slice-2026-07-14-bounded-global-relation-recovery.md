@@ -25,6 +25,6 @@ No adaptive topology/community selection (#49–#51), context allocation (#52), 
 
 - [x] Scope, ADR ownership, existing seams, and a 245-test baseline confirmed.
 - [x] M1 — relation-evidence contract, canonical entities, and support diagnostics (#45–#46).
-- [ ] M2 — bounded candidates, verification outcomes, and post-recovery cleanup (#47–#48).
-- [ ] M3 — persistent/Full-Pipeline artifact wiring and regression coverage.
-- [ ] M4 — targeted tests, full suite, independent review, and PR readiness.
+- [x] M2 — bounded candidates, verification outcomes, and post-recovery cleanup (#47–#48).
+- [x] M3 — persistent/Full-Pipeline artifact wiring and regression coverage.
+- [x] M4 — targeted tests, full suite, independent review, and PR readiness.

@@ -2,6 +2,12 @@
 
 ## 2026-07-14
 
+- **Completed PR B bounded global relation recovery**
+  - Merged PR #72 (`b15507a`) and closed issues #45–#48.
+  - Delivered auditable relation evidence, conservative canonical entities, weak/orphan-seeded bounded candidates, validated provider fallback, verified direct cross-chunk edges, and post-recovery noise cleanup.
+  - Persisted recovery diagnostics and attempt-scoped compatibility-fallback artifacts.
+  - Verification: `./.venv/bin/pytest -q` (**278 passed**); changed-file `py_compile`; `git diff --check`; two-axis code review.
+
 - **Synced the active adaptive-graph PRD with merged PR A delivery**
   - Recorded PR #67 (`1ecc0b4`) as the delivered persistent-ingest foundation and its automatic closure of issues #39 and #69.
   - Kept PR B (#45–#48) as the immediate next implementation slice, with PR C/D explicitly sequenced after it.
