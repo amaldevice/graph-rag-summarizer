@@ -61,6 +61,175 @@ def test_canonical_graph_bytes_and_source_fingerprint_are_stable():
     assert deserialize_graph(first)["document_id"] == "paper"
 
 
+def test_document_graph_persists_weak_evidence_without_activating_its_edge():
+    class Extractor:
+        relation_extraction_mode = "spacy-only"
+
+        def extract_entities(self, chunks):
+            del chunks
+            return {
+                "paper:chunk:0": [
+                    {"text": "Acme, Inc."},
+                    {"text": "Gamma"},
+                ],
+                "paper:chunk:1": [
+                    {"text": "  acme inc  "},
+                    {"text": "Beta"},
+                ],
+            }, [
+                {"chunk_uid": "paper:chunk:0", "text": "Acme, Inc.", "label": "ORG"},
+                {"chunk_uid": "paper:chunk:0", "text": "Gamma", "label": "ORG"},
+                {"chunk_uid": "paper:chunk:1", "text": "  acme inc  ", "label": "ORG"},
+                {"chunk_uid": "paper:chunk:1", "text": "Beta", "label": "ORG"},
+            ]
+
+        def extract_relations_llm(self, text, entities):
+            del entities
+            if text == "weak":
+                return [{
+                    "head": "Acme, Inc.",
+                    "relation": "co-occurs_with",
+                    "tail": "Gamma",
+                    "source": "rule-based",
+                }]
+            return [{
+                "head": "acme inc",
+                "relation": "supports",
+                "tail": "Beta",
+            }]
+
+    class Detector:
+        def detect(self, graph):
+            return graph, [], {}, 0.0
+
+    graph, details = persistent.build_document_graph(
+        [
+            {"chunk_id": 0, "chunk_uid": "paper:chunk:0", "text": "weak"},
+            {"chunk_id": 1, "chunk_uid": "paper:chunk:1", "text": "explicit"},
+        ],
+        [[1.0, 0.0], [0.0, 1.0]],
+        "paper",
+        entity_extractor=Extractor(),
+        detector=Detector(),
+    )
+
+    weak = next(item for item in details["raw_evidence"] if item["source"] == "rule-based")
+    explicit = next(item for item in details["raw_evidence"] if item["relation"] == "supports")
+
+    assert weak["support_chunk_uids"] == ["paper:chunk:0"]
+    assert weak["evidence_type"] == "same_chunk"
+    assert weak["status"] == "unverified"
+    assert weak not in details["active_evidence"]
+    assert not graph.has_edge("ent_acme_inc", "ent_gamma")
+
+    assert details["active_evidence"] == [explicit]
+    assert explicit["support_chunk_uids"] == ["paper:chunk:1"]
+    assert explicit["evidence_type"] == "explicit"
+    assert explicit["resolved_weight"] == 1.0
+    assert graph["ent_acme_inc"]["ent_beta"] == {
+        "relation": "supports",
+        "source": "llm",
+        "scope": "local",
+        "confidence": 1.0,
+        "support_chunk_uids": ["paper:chunk:1"],
+        "evidence_type": "explicit",
+        "verification_state": "accepted",
+        "status": "accepted",
+        "resolved_weight": 1.0,
+        "weight": 1.0,
+        "relation_evidence": [explicit],
+        "evidence_count": 1,
+        "edge_type": "entity_relation",
+    }
+    diagnostics = details["diagnostics"]
+    assert diagnostics["raw_evidence_count"] == 2
+    assert diagnostics["active_evidence_count"] == 1
+    assert any(
+        item["canonical_id"] == "ent_acme_inc"
+        and item["aliases"] == ["  acme inc  ", "Acme, Inc."]
+        for item in diagnostics["canonicalization"]["canonical_entities"]
+    )
+    assert diagnostics["entity_support"]["strongly_supported"] == ["ent_acme_inc", "ent_beta"]
+    assert diagnostics["entity_support"]["weakly_supported"] == ["ent_gamma"]
+
+
+def test_graph_builder_normalizes_legacy_explicit_relations_before_edge_gating():
+    from graph.graph_builder import GraphBuilder
+
+    graph = GraphBuilder(knn_k=1, sim_threshold=1.0).build_graph(
+        chunks=[{"chunk_id": 0, "text": "entities"}],
+        chunk_embeddings=[[1.0, 0.0]],
+        all_entities=[
+            {"chunk_id": 0, "text": "Alpha", "label": "ORG"},
+            {"chunk_id": 0, "text": "Beta", "label": "ORG"},
+            {"chunk_id": 0, "text": "Gamma", "label": "ORG"},
+        ],
+        all_relations=[
+            {"head": "Alpha", "relation": "supports", "tail": "Beta"},
+            {
+                "head": "Alpha",
+                "relation": "co-occurs_with",
+                "tail": "Gamma",
+                "source": "rule-based",
+            },
+        ],
+    )
+
+    assert graph["ent_alpha"]["ent_beta"]["edge_type"] == "entity_relation"
+    assert graph["ent_alpha"]["ent_beta"]["resolved_weight"] == 1.0
+    assert not graph.has_edge("ent_alpha", "ent_gamma")
+
+
+def test_graph_builder_coalesces_active_pair_evidence_deterministically():
+    from graph.graph_builder import GraphBuilder
+
+    kwargs = {
+        "chunks": [{"chunk_id": 0, "text": "entities"}],
+        "chunk_embeddings": [[1.0, 0.0]],
+        "all_entities": [
+            {"chunk_id": 0, "text": "Alpha", "label": "ORG"},
+            {"chunk_id": 0, "text": "Beta", "label": "ORG"},
+        ],
+    }
+    evidence = [
+        {
+            "head": "Alpha",
+            "relation": "supports",
+            "tail": "Beta",
+            "source": "provider",
+            "support_chunk_uids": ["paper:chunk:2"],
+        },
+        {
+            "head": "Beta",
+            "relation": "confirms",
+            "tail": "Alpha",
+            "support_chunk_uids": ["paper:chunk:1"],
+            "evidence_type": "verified",
+        },
+    ]
+
+    first = GraphBuilder(knn_k=1, sim_threshold=1.0).build_graph(
+        **kwargs,
+        all_relations=evidence,
+    )
+    second = GraphBuilder(knn_k=1, sim_threshold=1.0).build_graph(
+        **kwargs,
+        all_relations=list(reversed(evidence)),
+    )
+
+    first_edge = first["ent_alpha"]["ent_beta"]
+    assert first_edge == second["ent_alpha"]["ent_beta"]
+    assert first_edge["evidence_count"] == 2
+    assert first_edge["support_chunk_uids"] == ["paper:chunk:1", "paper:chunk:2"]
+    assert {
+        (item["head"], item["relation"], item["tail"])
+        for item in first_edge["relation_evidence"]
+    } == {
+        ("Alpha", "supports", "Beta"),
+        ("Beta", "confirms", "Alpha"),
+    }
+
+
 def test_canonical_graph_bytes_sort_relation_evidence():
     graph = nx.Graph()
     graph.add_node("chunk_0", type="chunk", chunk_uid="paper:chunk:0")
