@@ -390,6 +390,24 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         "status": "available",
         "active_partition_replaced": False,
     }
+    assert json.loads((artifact_dir / "context_allocation.json").read_text()) == {
+        "strategy": "adaptive_character_budget",
+        "character_budget": 0,
+        "consumed_characters": 0,
+        "remaining_characters": 0,
+        "path_signal_status": "unavailable",
+        "communities": [],
+        "selected_chunks": [],
+        "rejected_chunks": [],
+        "runner_context": {
+            "attempt": 0,
+            "allocator_status": "unavailable",
+            "graph_source": "compatibility_query_graph",
+            "fallback_status": "persistent_graph_disabled",
+            "fallback_reason": "",
+            "query_protected_chunk_uids": ["c1"],
+        },
+    }
 
     canonicalization = json.loads((artifact_dir / "entity_canonicalization.json").read_text())
     assert [entity["canonical_id"] for entity in canonicalization["canonical_entities"]] == [
@@ -601,6 +619,15 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
                     "active_partition_replaced": False,
                 },
             },
+        }
+        allocation = json.loads((current_dir / "context_allocation.json").read_text())
+        assert allocation["runner_context"] == {
+            "attempt": 0 if current_dir == persistent_dir else 1,
+            "allocator_status": "unavailable",
+            "graph_source": "persistent_graph",
+            "fallback_status": "not_used",
+            "fallback_reason": "",
+            "query_protected_chunk_uids": ["c1"],
         }
     assert persisted_diagnostics == persisted_diagnostics_before
     assert persisted_diagnostics["documents"]["persisted-document"]["diagnostics"]["entity_support"] == {

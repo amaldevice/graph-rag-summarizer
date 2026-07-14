@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 import types
@@ -303,10 +304,11 @@ def test_feedback_controller_maps_actions_to_retry_stages():
     assert reduce["next_stage"] == "reduce"
 
 
-def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
+def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_path):
     from config import settings
 
     calls = {"retrieval": 0, "graph": 0, "summarize": 0, "reduce": 0, "decision": 0}
+    graph_failure = {"enabled": False}
     modules = {name: types.ModuleType(name) for name in [
         "embedding.embedder", "vectordb.qdrant_handler", "preprocessing.docling_loader",
         "graph.entity_extractor", "graph.graph_builder", "graph.community_detector",
@@ -333,7 +335,9 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
     class FakeGraphBuilder:
         def build_graph(self, *args):
             calls["graph"] += 1
-            return object()
+            if graph_failure["enabled"]:
+                raise RuntimeError("compatibility graph unavailable")
+            return nx.Graph()
 
     class FakeDetector:
         def detect(self, graph): return graph, {0: ["chunk_0"]}, {}, 0.1
@@ -396,7 +400,9 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
     modules["graph.graph_builder"].GraphBuilder = FakeGraphBuilder
     modules["graph.community_detector"].CommunityDetector = FakeDetector
     modules["graph.graph_analyzer"].GraphAnalyzer = FakeAnalyzer
-    modules["summarizer.pruner"].SummaryPruner = FakePruner
+    # Keep the new allocator real at the runner seam; other pipeline stages
+    # remain fakes so the retry assertion stays isolated.
+    modules["summarizer.pruner"].SummaryPruner = SummaryPruner
     modules["summarizer.prompt_builder"].PromptBuilder = FakePromptBuilder
     modules["summarizer.provider_router"].create_session = lambda: object()
     modules["summarizer.llm_summarizer"].LLMSummarizer = FakeSummarizer
@@ -410,12 +416,43 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
 
     from launcher.runners import run_full_pipeline
     monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
-    run_full_pipeline({"collection": "c", "query": "q", "retrieval_limit": 3, "artifact_dir": "output/test", "verbose": False})
+    artifact_dir = tmp_path / "test"
+    run_full_pipeline({"collection": "c", "query": "q", "retrieval_limit": 3, "artifact_dir": str(artifact_dir), "verbose": False})
 
     assert calls["retrieval"] == 1
     assert calls["graph"] == 1
     assert calls["summarize"] == 2
     assert calls["reduce"] == 2
+    for current_dir, attempt in ((artifact_dir, 0), (artifact_dir / "attempt-1", 1)):
+        allocation = json.loads((current_dir / "context_allocation.json").read_text())
+        assert allocation["character_budget"] == 12_000
+        assert allocation["runner_context"] == {
+            "attempt": attempt,
+            "allocator_status": "available",
+            "graph_source": "compatibility_query_graph",
+            "fallback_status": "persistent_graph_disabled",
+            "fallback_reason": "",
+            "query_protected_chunk_uids": ["1"],
+        }
+
+    graph_failure["enabled"] = True
+    fallback_dir = tmp_path / "vector-only"
+    run_full_pipeline({"collection": "c", "query": "q", "retrieval_limit": 3, "artifact_dir": str(fallback_dir), "verbose": False})
+
+    fallback = json.loads((fallback_dir / "context_allocation.json").read_text())
+    assert fallback["runner_context"] == {
+        "attempt": 0,
+        "allocator_status": "available",
+        "graph_source": "vector_only",
+        "fallback_status": "compatibility_graph_failed",
+        "fallback_reason": "RuntimeError: compatibility graph unavailable",
+        "query_protected_chunk_uids": ["1"],
+    }
+    assert json.loads((fallback_dir / "graph_fallback.json").read_text()) == {
+        "graph_source": "vector_only",
+        "fallback_status": "compatibility_graph_failed",
+        "fallback_reason": "RuntimeError: compatibility graph unavailable",
+    }
 
 
 def test_docling_chunk_text_adds_hierarchy_for_sections_and_sentences():
