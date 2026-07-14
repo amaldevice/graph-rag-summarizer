@@ -14,13 +14,13 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/45
 
 **Blocked by:** None — can start immediately.
 
-- [ ] Existing local relation records normalize into one backward-compatible evidence contract.
-- [ ] Relation artifacts distinguish source, local/cross-chunk scope, confidence, evidence chunks, evidence type, and verification state.
-- [ ] The fallback no longer represents every entity pair as an equally strong semantic relation.
-- [ ] Same-sentence, nearby-window, and same-chunk-only evidence receive distinct monotonically weaker default weights.
-- [ ] Full-Pipeline artifacts expose relation evidence and resolved weights.
-- [ ] Deterministic tests cover legacy records, explicit relations, and each weak co-occurrence level.
-- [ ] Extraction availability and malformed local-output handling remain owned by #39.
+- [x] Existing local relation records normalize into one backward-compatible evidence contract.
+- [x] Relation artifacts distinguish source, local/cross-chunk scope, confidence, evidence chunks, evidence type, and verification state.
+- [x] The fallback no longer represents every entity pair as an equally strong semantic relation.
+- [x] Same-sentence, nearby-window, and same-chunk-only evidence receive distinct monotonically weaker default weights.
+- [x] Full-Pipeline artifacts expose relation evidence and resolved weights.
+- [x] Deterministic tests cover legacy records, explicit relations, and each weak co-occurrence level.
+- [x] Extraction availability and malformed local-output handling remain owned by #39.
 
 ## 2. #46 — Canonicalize entities and report weak or orphan graph regions
 
@@ -30,13 +30,13 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/46
 
 **Blocked by:** #45 — relation evidence is required to classify support consistently.
 
-- [ ] Case, whitespace, punctuation, and obvious surface variants receive stable canonical identities.
-- [ ] Original mentions, canonicalization confidence, and unresolved aliases remain inspectable.
-- [ ] Embedding proximity alone never merges two entities.
-- [ ] Graph elements receive deterministic support classifications based on evidence strength, mention frequency, graph support, retrieval relevance, and query matching.
-- [ ] Query-relevant chunks are marked as protected even when they have no recognized entity relation.
-- [ ] Canonicalization and weak/orphan reports are written to the Full-Pipeline artifact directory.
-- [ ] Tests cover safe merges, unresolved aliases, false-merge protection, support categories, and query protection.
+- [x] Case, whitespace, punctuation, and obvious surface variants receive stable canonical identities.
+- [x] Original mentions, canonicalization confidence, and unresolved aliases remain inspectable.
+- [x] Embedding proximity alone never merges two entities.
+- [x] Graph elements receive deterministic support classifications based on evidence strength, mention frequency, graph support, retrieval relevance, and query matching.
+- [x] Query-relevant chunks are marked as protected even when they have no recognized entity relation.
+- [x] Canonicalization and weak/orphan reports are written to the Full-Pipeline artifact directory.
+- [x] Tests cover safe merges, unresolved aliases, false-merge protection, support categories, and query protection.
 
 ## 3. #47 — Generate bounded cross-chunk relation candidates
 
@@ -46,13 +46,13 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/47
 
 **Blocked by:** #46 — candidate triggers require canonical identities and support classifications.
 
-- [ ] Candidate triggers are named and recorded with their supporting chunks and entities.
-- [ ] Per-entity, per-chunk, and total-run Stable Default budgets prevent all-pairs expansion.
-- [ ] Candidate ordering and budget truncation are deterministic.
-- [ ] Weak/orphan regions can request recovery candidates without bypassing total budgets.
-- [ ] Candidate artifacts include generated, deduplicated, and budget-rejected entries with reasons.
-- [ ] No candidate is inserted into the active graph before verification.
-- [ ] Tests cover every initial trigger, deduplication, deterministic ordering, and all budget levels.
+- [x] Candidate triggers are named and recorded with their supporting chunks and entities.
+- [x] Per-entity, per-chunk, and total-run Stable Default budgets prevent all-pairs expansion.
+- [x] Candidate ordering and budget truncation are deterministic.
+- [x] Weak/orphan regions can request recovery candidates without bypassing total budgets.
+- [x] Candidate artifacts include generated, deduplicated, and budget-rejected entries with reasons.
+- [x] No candidate is inserted into the active graph before verification.
+- [x] Tests cover every initial trigger, deduplication, deterministic ordering, and all budget levels.
 
 ## 4. #48 — Verify cross-chunk candidates and recover supported graph regions
 
@@ -62,14 +62,14 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/48
 
 **Blocked by:** #47 and #39.
 
-- [ ] Verification returns accepted, rejected, or insufficient evidence with confidence and evidence chunk identities.
-- [ ] Provider or verification unavailability leaves candidates unapplied and still allows the Full-Pipeline Run to complete.
-- [ ] Accepted global relations carry stronger evidence weight than weak co-occurrence and preserve their provenance.
-- [ ] Rejected, insufficient, and unavailable outcomes remain inspectable; malformed local extraction handling remains owned by #39.
-- [ ] Unsupported entity noise is removed only after recovery and only with a recorded reason.
-- [ ] Query-protected chunks are never removed solely because relation recovery failed.
-- [ ] Candidate and verification calls remain bounded and attempt-scoped during feedback reruns.
-- [ ] Tests cover accepted, rejected, insufficient, unavailable, bounded-call, cleanup, and query-protection behavior without live providers.
+- [x] Verification returns accepted, rejected, or insufficient evidence with confidence and evidence chunk identities.
+- [x] Provider or verification unavailability leaves candidates unapplied and still allows the Full-Pipeline Run to complete.
+- [x] Accepted global relations carry stronger evidence weight than weak co-occurrence and preserve their provenance.
+- [x] Rejected, insufficient, and unavailable outcomes remain inspectable; malformed local extraction handling remains owned by #39.
+- [x] Unsupported entity noise is removed only after recovery and only with a recorded reason.
+- [x] Query-protected chunks are never removed solely because relation recovery failed.
+- [x] Candidate and verification calls remain bounded and attempt-scoped during feedback reruns.
+- [x] Tests cover accepted, rejected, insufficient, unavailable, bounded-call, cleanup, and query-protection behavior without live providers.
 
 ## 5. #49 — Build adaptive semantic chunk topology with bounded degree
 
@@ -128,16 +128,16 @@ URL: https://github.com/amaldevice/graph-rag-summarizer/issues/52
 
 **Blocked by:** #50 — adaptive allocation requires the selected community partition. #51 is diagnostic and does not block delivery.
 
-- [ ] Community importance combines normalized query similarity, retrieval-score mass, graph importance, validated relation support, unique evidence coverage, and section diversity.
-- [ ] Relevant communities receive bounded minimum coverage and no community can consume the entire total budget.
-- [ ] Communities below the safe relevance floor may receive no budget only with a recorded reason.
-- [ ] Selection respects a token budget or conservative character approximation and stops at exhaustion or low marginal gain.
-- [ ] An MMR-like novelty signal reduces repeated evidence.
-- [ ] Query-protected chunks remain eligible when graph relation signals are weak.
-- [ ] Optional normalized path scores from #40 can be consumed without implementing path candidates or path reranking here.
-- [ ] Enhanced context artifacts contain allocations, per-signal values, selected/rejected chunks, and inclusion/rejection reasons.
-- [ ] Seam-focused runner tests keep the context allocator real while faking unrelated stages, plus one compact tiny-fixture regression proves the graph-to-community-to-context handoff.
-- [ ] Regression tests preserve Query-Only, the external launcher/operator contract, and Qdrant document-safe identity/payload behavior, while covering the internal optional ingest graph-artifact stage from ADR 0002 plus Full-Pipeline provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retries.
+- [x] Community importance combines normalized query similarity, retrieval-score mass, graph importance, validated relation support, unique evidence coverage, and section diversity.
+- [x] Relevant communities receive bounded minimum coverage and no community can consume the entire total budget.
+- [x] Communities below the safe relevance floor may receive no budget only with a recorded reason.
+- [x] Selection respects a token budget or conservative character approximation and stops at exhaustion or low marginal gain.
+- [x] An MMR-like novelty signal reduces repeated evidence.
+- [x] Query-protected chunks remain eligible when graph relation signals are weak.
+- [x] Optional normalized path scores from #40 can be consumed without implementing path candidates or path reranking here.
+- [x] Enhanced context artifacts contain allocations, per-signal values, selected/rejected chunks, and inclusion/rejection reasons.
+- [x] Seam-focused runner tests keep the context allocator real while faking unrelated stages, plus one compact tiny-fixture regression proves the graph-to-community-to-context handoff.
+- [x] Regression tests preserve Query-Only, the external launcher/operator contract, and Qdrant document-safe identity/payload behavior, while covering the internal optional ingest graph-artifact stage from ADR 0002 plus Full-Pipeline provider fallback, Shared LLM Session, hierarchical reduction, evaluation, and bounded retries.
 
 ## Dependency graph
 

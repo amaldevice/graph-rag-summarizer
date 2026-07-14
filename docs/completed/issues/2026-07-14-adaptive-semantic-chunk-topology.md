@@ -1,5 +1,7 @@
 # Adaptive Semantic Chunk Topology Implementation Plan
 
+**Status:** Completed by PR #68 on 2026-07-14.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement an adaptive mutual-kNN semantic chunk topology with data-dependent similarity cutoffs and degree bounds (min/max degree) as the default policy, while keeping the current fixed kNN policy available as a baseline and fallback.

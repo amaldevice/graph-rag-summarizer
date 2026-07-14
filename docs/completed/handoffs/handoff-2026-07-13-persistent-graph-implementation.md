@@ -1,5 +1,7 @@
 # Handoff: Persistent Document-Scoped Graph Implementation
 
+**Status:** Completed on 2026-07-14. PRs A–D merged as #67, #72, #68, and #75; issue #40 remains separate backlog.
+
 Implementation handoff for the architecture route completed by Wayfinder. This document is an execution map, not a replacement for the PRD or ADRs.
 
 ## Mission
@@ -13,7 +15,7 @@ The destination is reached when a document can be ingested once, its graph can b
 Read these first; do not re-open the architecture decisions from scratch:
 
 - [Issue #44 — adaptive global graph construction](https://github.com/amaldevice/graph-rag-summarizer/issues/44)
-- `docs/prd-2026-07-11-adaptive-global-graph-construction.md`
+- `docs/completed/prd/prd-2026-07-11-adaptive-global-graph-construction.md`
 - `docs/adr/0002-persistent-document-graph-at-ingest.md`
 - `docs/adr/0003-bounded-global-relation-recovery.md`
 - `docs/adr/0004-adaptive-topology-and-stable-community-selection.md`

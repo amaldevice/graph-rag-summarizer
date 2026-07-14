@@ -7,6 +7,11 @@
   - Delivered bounded, query-aware community allocation with novelty selection, protected retrieval evidence, prompt-budget safety, inspectable diagnostics, and compatibility-to-vector-only fallback provenance.
   - Verification: `./.venv/bin/pytest -q` (**315 passed**); focused allocation/pipeline suite (**27 passed**); `compileall`; `git diff --check`.
 
+- **Archived completed adaptive-graph delivery artifacts**
+  - Moved the completed PRD, issue-slice plan, PR C topology plan, and PR A–D handoff into `docs/completed/`.
+  - Kept ADR 0002–0005 as live architecture records and retained issue #40 as the separate PathRAG backlog.
+  - Verification: confirmed the merged PRs (#67, #72, #68, #75), closed delivery issues (#39, #45–#52, #69), and `git diff --check`.
+
 - **Completed PR C adaptive topology and stable community selection**
   - Merged PR #68 (`6834ddb`) and closed issues #49–#51.
   - Delivered bounded adaptive topology, deterministic Leiden selection/stability diagnostics, and diagnostic-only agglomerative comparison.
@@ -61,7 +66,7 @@
 ## 2026-07-12
 
 - **Created the end-to-end implementation handoff for persistent graph construction**
-  - Added `docs/handoff-2026-07-13-persistent-graph-implementation.md` with the target ingest/query flow, storage and lifecycle contract, PR A–D implementation sequence, issue/merge policy, desired outputs, verification contract, and suggested execution skills.
+  - Added `docs/completed/handoffs/handoff-2026-07-13-persistent-graph-implementation.md` with the target ingest/query flow, storage and lifecycle contract, PR A–D implementation sequence, issue/merge policy, desired outputs, verification contract, and suggested execution skills.
   - Referenced the adaptive graph PRD, ADR stack, Wayfinder map/decisions, and implementation issues without duplicating their canonical content.
   - Verification: handoff structure/reference check and `git diff --check`.
 
@@ -122,7 +127,7 @@
 
 - **Kept the Issue #44 planning artifacts active in the root `docs/` area**
   - Moved the PRD and published slice breakdown out of the completed archive because Issue #44 and its implementation program remain active.
-  - Active files: `docs/prd-2026-07-11-adaptive-global-graph-construction.md` and `docs/slice-2026-07-11-adaptive-global-graph-construction.md`.
+  - Archived after delivery: `docs/completed/prd/prd-2026-07-11-adaptive-global-graph-construction.md` and `docs/completed/issues/slice-2026-07-11-adaptive-global-graph-construction.md`.
   - Verification: confirmed both active paths exist, both archived paths are absent, and `git diff --check` passes.
 
 - **Finalized Issue #44 as a repo-local PRD and published eight vertical slices**
