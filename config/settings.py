@@ -115,7 +115,6 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
-<<<<<<< HEAD
 # --- PERSISTENT GRAPH STABLE DEFAULTS ---
 ENABLE_PERSISTENT_GRAPH = os.getenv("ENABLE_PERSISTENT_GRAPH", "True").lower() == "true"
 
@@ -125,7 +124,6 @@ GRAPH_KNN_K = int(os.getenv("GRAPH_KNN_K", 3))
 GRAPH_SIM_THRESHOLD = float(os.getenv("GRAPH_SIM_THRESHOLD", 0.3))
 GRAPH_MIN_DEGREE = int(os.getenv("GRAPH_MIN_DEGREE", 1))
 GRAPH_MAX_DEGREE = int(os.getenv("GRAPH_MAX_DEGREE", 5))
-=======
 # --- GRAPH TOPOLOGY ---
 GRAPH_TOPOLOGY_POLICY = os.getenv("GRAPH_TOPOLOGY_POLICY", "adaptive").strip().lower()
 GRAPH_KNN_K = int(os.getenv("GRAPH_KNN_K", 3))
@@ -133,4 +131,3 @@ GRAPH_SIM_THRESHOLD = float(os.getenv("GRAPH_SIM_THRESHOLD", 0.3))
 GRAPH_MIN_DEGREE = int(os.getenv("GRAPH_MIN_DEGREE", 1))
 GRAPH_MAX_DEGREE = int(os.getenv("GRAPH_MAX_DEGREE", 5))
 
->>>>>>> 13b647c (feat: add configuration keys for graph topology)
