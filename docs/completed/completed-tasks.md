@@ -1,5 +1,14 @@
 # Completed Tasks
 
+## 2026-07-15
+
+- **Implemented Issue #43 lightweight grounded evaluation metrics (PR #78, pending review)**
+  - Added entity, number/date, sentence-support, citation-coverage, redundancy, query-relevance, and evidence-diversity signals without a new model dependency.
+  - Kept quality evaluation bound to explicitly selected pruner evidence; an intentional empty selection no longer falls back to raw retrieval.
+  - Added per-sentence chunk-ID traceability, careful date/number normalization, strict unsupported number/date failure, and warning-oriented redundancy/diversity decisions.
+  - Added deterministic coverage for available, unavailable, pass, warning, fail, date normalization, discourse markers, selected-evidence behavior, and Full-Pipeline wiring.
+  - Verification: `./.venv/bin/pytest -q` (**328 passed**); focused suite (**30 passed**); `python -m compileall`; `git diff --check`; two-axis code review with all actionable findings addressed.
+
 ## 2026-07-14
 
 - **Completed PR D query-time adaptive context allocation**
