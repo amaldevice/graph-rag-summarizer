@@ -5,13 +5,5 @@
 - PR C — adaptive topology and stable community selection (`feat/adaptive-topology-community`)
 - PR D — query-time adaptive context allocation (`feat/adaptive-context-allocation`)
 
-## In Progress
-- Execute `docs/handoff-2026-07-13-persistent-graph-implementation.md` end to end:
-  - [x] **Phase 0 — land the decisions** (Merged PR #62, #63, #64, #65, #66)
-  - [ ] **PR A — persistent ingest graph foundation** (In Progress — implementing review blockers before merge)
-
-### PR A review blockers
-- Durable cross-process manifest/Qdrant fencing and full-snapshot CAS.
-- Qdrant deny-control enumeration, proof digest validation, and ordered fail-closed preflight.
-- Server-side active generation/attempt filters for vector and graph planes.
-- Tombstone/version-ledger resume and replacement lifecycle completion.
+## Ready for Review
+- [x] **PR A — persistent ingest graph foundation**: ADR 0002 alignment and Issue #39 implementation complete on PR #67; #45–#48 remain scoped to PR B.

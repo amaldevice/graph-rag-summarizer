@@ -40,6 +40,9 @@ def test_query_only_does_not_import_groq(monkeypatch):
         def __init__(self, collection_name="test"):
             pass
 
+        def revalidate_query_authorization(self):
+            pass
+
         def search_as_chunks(self, query_vector, limit):
             return [
                 {"chunk_id": 1, "text": "chunk one", "page_no": 1, "score": 0.9, "rank": 1},
@@ -53,6 +56,7 @@ def test_query_only_does_not_import_groq(monkeypatch):
     monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
 
     from launcher.runners import run_query_only
+    monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
 
     config = {
         "mode": "query-only",
@@ -81,6 +85,9 @@ def test_query_only_produces_json_artifact(tmp_path, monkeypatch):
         def __init__(self, collection_name="test"):
             pass
 
+        def revalidate_query_authorization(self):
+            pass
+
         def search_as_chunks(self, query_vector, limit):
             return [
                 {"chunk_id": 1, "text": "hello world", "page_no": 1, "score": 0.95, "rank": 1},
@@ -93,6 +100,7 @@ def test_query_only_produces_json_artifact(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
 
     from launcher.runners import run_query_only
+    monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
 
     json_path = str(tmp_path / "query_results.json")
     config = {
@@ -130,6 +138,9 @@ def test_query_only_handles_empty_results(monkeypatch):
         def __init__(self, collection_name="test"):
             pass
 
+        def revalidate_query_authorization(self):
+            pass
+
         def search_as_chunks(self, query_vector, limit):
             return []
 
@@ -140,6 +151,7 @@ def test_query_only_handles_empty_results(monkeypatch):
     monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
 
     from launcher.runners import run_query_only
+    monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
 
     config = {
         "mode": "query-only",
@@ -166,6 +178,9 @@ def test_query_only_prints_stage_progress(monkeypatch, capsys):
         def __init__(self, collection_name="test"):
             pass
 
+        def revalidate_query_authorization(self):
+            pass
+
         def search_as_chunks(self, query_vector, limit):
             return [
                 {"chunk_id": 1, "text": "hello world", "page_no": 1, "score": 0.95, "rank": 1},
@@ -178,6 +193,7 @@ def test_query_only_prints_stage_progress(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
 
     from launcher.runners import run_query_only
+    monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
 
     run_query_only(
         {
@@ -195,3 +211,57 @@ def test_query_only_prints_stage_progress(monkeypatch, capsys):
     assert "Stage 1/3" in output
     assert "Stage 2/3" in output
     assert "Stage 3/3" in output
+
+
+def test_query_only_enforces_tombstone_preflight_when_graph_artifacts_are_disabled(monkeypatch):
+    """The artifact flag cannot bypass persistent document denial."""
+    embedder_module = types.ModuleType("embedding.embedder")
+    qdrant_module = types.ModuleType("vectordb.qdrant_handler")
+    configured = []
+
+    class FakeEmbedder:
+        def embed_text(self, text):
+            del text
+            return [0.1, 0.2]
+
+    class FakeQdrantHandler:
+        def __init__(self, collection_name="test"):
+            del collection_name
+            self.denied_document_ids = set()
+
+        def set_denied_document_ids(self, document_ids):
+            self.denied_document_ids = set(document_ids)
+
+        def search_as_chunks(self, query_vector, limit):
+            del query_vector, limit
+            assert self.denied_document_ids == {"tombstoned-paper"}
+            return [{"chunk_id": 1, "document_id": "active-paper", "text": "safe", "page_no": 1}]
+
+        def revalidate_query_authorization(self):
+            configured.append("revalidated")
+
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module.QdrantHandler = FakeQdrantHandler
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+
+    from launcher.runners import run_query_only
+
+    def configure_query_safety(qdrant, collection, object_store=None):
+        del collection, object_store
+        configured.append("configured")
+        qdrant.set_denied_document_ids(["tombstoned-paper"])
+
+    monkeypatch.setattr("launcher.runners._configure_query_denial", configure_query_safety)
+
+    run_query_only({
+        "mode": "query-only",
+        "profile": "local",
+        "collection": "test_col",
+        "query": "test query",
+        "retrieval_limit": 5,
+        "json_output": "",
+        "enable_graph_artifact": False,
+    })
+
+    assert configured == ["configured", "revalidated"]

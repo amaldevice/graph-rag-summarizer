@@ -173,7 +173,8 @@ def _configure_query_denial(qdrant, collection, object_store=None):
     qdrant.set_query_authorization(manifests, snapshot)
     manifest_entries = snapshot.manifest.get("documents", {})
     if not manifest_entries:
-        qdrant.set_active_vector_generations(None)
+        # Without a manifest there is no authoritative current generation.
+        qdrant.set_active_vector_generations({})
     else:
         active_vector_generations = {}
         for document_id, entry in manifest_entries.items():
@@ -194,7 +195,7 @@ def _configure_query_denial(qdrant, collection, object_store=None):
             "document_attempt_id": entry["document_attempt_id"],
         }
         for document_id, entry in snapshot.manifest.get("documents", {}).items()
-        if entry.get("status") in {"available", "partial"}
+        if entry.get("status") == "available"
         and entry.get("document_generation") is not None
         and entry.get("document_attempt_id") is not None
     })
@@ -222,15 +223,16 @@ def run_query_only(config: dict) -> None:
     ])
     qdrant = QdrantHandler(collection_name=collection)
     config["qdrant"] = qdrant
-    if config.get("enable_graph_artifact", False):
-        _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
+    # Query authorization is a safety boundary, not a graph-rendering feature.
+    # Disabling graph artifacts may skip graph reads, but must not re-expose a
+    # document that a collection replacement has tombstoned.
+    _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
     embedder = TextEmbedder()
     query_vector = embedder.embed_text(query)
 
     _print_stage(2, 3, "retrieve chunks", verbose, f"Retrieval limit: {retrieval_limit}")
     chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
-    if config.get("enable_graph_artifact", False):
-        qdrant.revalidate_query_authorization()
+    qdrant.revalidate_query_authorization()
 
     print(f"\n  Retrieved chunks: {len(chunks)}")
 
@@ -313,7 +315,7 @@ def run_ingest(config: dict) -> None:
     collection_tombstone_manifest = None
     if config.get("enable_graph_artifact", False):
         try:
-            from graph.persistent import PersistentGraphPipeline
+            from graph.persistent import PersistentGraphPipeline, source_fingerprint
 
             graph_pipeline = PersistentGraphPipeline(
                 collection, object_store=config.get("graph_object_store")
@@ -340,7 +342,7 @@ def run_ingest(config: dict) -> None:
             f"replace-collection:{collection}:{document_id}:{uuid.uuid4()}"
         )
         collection_tombstone_manifest = graph_pipeline.manifests.tombstone_documents(
-            {document_id}, collection_operation_id
+            {document_id: source_fingerprint(chunks, document_id)}, collection_operation_id
         )
         qdrant.set_collection_claim(
             graph_pipeline.manifests,
@@ -348,8 +350,74 @@ def run_ingest(config: dict) -> None:
             collection_tombstone_manifest["collection_fence_token"],
             collection_tombstone_manifest["collection_attempt_id"],
         )
+        existing_entry = graph_pipeline.manifests.get(document_id)
+        if (
+            existing_entry
+            and existing_entry.get("status") == "available"
+            and existing_entry.get("source_fingerprint") == source_fingerprint(chunks, document_id)
+            and isinstance(existing_entry.get("document_attempt_id"), str)
+            and existing_entry["document_attempt_id"]
+            and existing_entry.get("collection_fence_token") == collection_tombstone_manifest.get("collection_fence_token")
+            and existing_entry.get("collection_attempt_id") == collection_tombstone_manifest.get("collection_attempt_id")
+            and collection_tombstone_manifest.get("pending_tombstone_set_digest") is None
+        ):
+            artifact_key = existing_entry.get("active_artifact_key")
+            artifact_digest = existing_entry.get("artifact_digest")
+            artifact_backend = existing_entry.get("backend")
+            document_generation = existing_entry.get("document_generation")
+            if not (
+                isinstance(artifact_key, str)
+                and artifact_key
+                and isinstance(artifact_digest, str)
+                and artifact_digest
+                and isinstance(artifact_backend, dict)
+                and isinstance(artifact_backend.get("kind"), str)
+                and artifact_backend["kind"]
+                and isinstance(artifact_backend.get("namespace"), str)
+                and artifact_backend["namespace"]
+                and isinstance(document_generation, int)
+                and not isinstance(document_generation, bool)
+                and document_generation > 0
+            ):
+                raise RuntimeError("completed replace-collection resume has an incomplete artifact tuple")
+            try:
+                graph_pipeline.artifacts.read(
+                    artifact_key,
+                    artifact_digest,
+                    artifact_backend,
+                    document_generation,
+                    existing_entry["source_fingerprint"],
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "completed replace-collection resume artifact validation failed"
+                ) from exc
+            qdrant.verify_collection_tombstone_proof(graph_pipeline.manifests)
+            current_collection_manifest = graph_pipeline.manifests.read_snapshot().manifest
+            if (
+                current_collection_manifest.get("collection_operation_id")
+                != collection_tombstone_manifest.get("collection_operation_id")
+                or current_collection_manifest.get("collection_fence_token")
+                != collection_tombstone_manifest.get("collection_fence_token")
+                or current_collection_manifest.get("collection_attempt_id")
+                != collection_tombstone_manifest.get("collection_attempt_id")
+                or current_collection_manifest.get("pending_tombstone_set_digest") is not None
+            ):
+                raise RuntimeError("completed replace-collection resume lost its collection fence")
+            graph_pipeline.manifests.release_collection_fence(
+                current_collection_manifest["collection_operation_id"],
+                current_collection_manifest["collection_fence_token"],
+            )
+            print("  Resumed completed replace-collection graph publication.")
+            print(f"\n  Total chunks uploaded : {len(chunks)}")
+            print(f"  Collection            : {collection}")
+            print("  Graph artifact status : available")
+            print("  Ingest complete.")
+            return
+
     if graph_pipeline and graph_claim:
         qdrant.set_graph_claim(graph_pipeline.manifests, graph_claim)
+
     try:
         prepare_kwargs = {
             "ingest_mode": ingest_mode,
@@ -513,15 +581,18 @@ def run_full_pipeline(config: dict) -> None:
 
     embedder = TextEmbedder()
     qdrant = QdrantHandler(collection_name=collection)
-    if config.get("enable_graph_artifact", False):
-        _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
-    extractor = EntityExtractor()
+    # Keep tombstone and generation authorization enabled even when callers
+    # opt out of graph artifact reads.
+    _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
+    session = create_session()
+    # Relation extraction shares the configured provider router and its
+    # sequential fallback chain with summarization and reduction.
+    extractor = EntityExtractor(provider_router=session)
     graph_builder = GraphBuilder()
     detector = CommunityDetector()
     analyzer = GraphAnalyzer()
     pruner = SummaryPruner(top_k_per_community=3, top_k_global=10)
     prompt_builder = PromptBuilder(max_chars_per_chunk=1200)
-    session = create_session()
     if verbose:
         resolved_chain = session.resolve_chain() if hasattr(session, "resolve_chain") else []
         if resolved_chain:
@@ -560,8 +631,7 @@ def run_full_pipeline(config: dict) -> None:
             ])
             query_vector = embedder.embed_text(query)
             retrieved_chunks = qdrant.search_as_chunks(query_vector, limit=retrieval_limit)
-            if config.get("enable_graph_artifact", False):
-                qdrant.revalidate_query_authorization()
+            qdrant.revalidate_query_authorization()
             expand_parent_context = getattr(qdrant, "expand_parent_context", None)
             if callable(expand_parent_context):
                 expanded_chunks = expand_parent_context(retrieved_chunks, max_depth=2)
@@ -587,8 +657,7 @@ def run_full_pipeline(config: dict) -> None:
                     persistent_graph_read_failed = True
                     for chunk in retrieved_chunks:
                         chunk["graph_denied"] = True
-            if config.get("enable_graph_artifact", False):
-                qdrant.revalidate_query_authorization()
+            qdrant.revalidate_query_authorization()
             retrieved_chunks = [chunk for chunk in retrieved_chunks if not chunk.get("graph_denied")]
             if persistent_graph_read_failed:
                 raise RuntimeError("persistent graph preflight failed; compatibility fallback denied")
@@ -626,7 +695,14 @@ def run_full_pipeline(config: dict) -> None:
             ranked = analyzer.analyze(G)
             analyzer.save_ranked_csv(ranked, _artifact_path(current_dir, "graph_ranked_nodes.csv"))
             analyzer.save_ranked_json(ranked, _artifact_path(current_dir, "graph_ranked_nodes.json"))
-            analyzer.save_summary_json(ranked, communities, modularity, _artifact_path(current_dir, "graph_summary.json"))
+            relation_extraction_mode = getattr(extractor, "relation_extraction_mode", "unavailable")
+            analyzer.save_summary_json(
+                ranked,
+                communities,
+                modularity,
+                _artifact_path(current_dir, "graph_summary.json"),
+                relation_extraction_mode=relation_extraction_mode,
+            )
 
             print(f"\n  Communities : {len(communities)}")
             print(f"  Modularity  : {modularity:.4f}")

@@ -13,6 +13,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
     shared_session = object()
     received_sessions = []
     saved_paths = {}
+    received_extractor_session = []
 
     embedder_module = types.ModuleType("embedding.embedder")
     qdrant_module = types.ModuleType("vectordb.qdrant_handler")
@@ -38,12 +39,25 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
     class FakeQdrantHandler:
         def __init__(self, collection_name="test"):
             del collection_name
+            self.denied_document_ids = set()
+
+        def set_denied_document_ids(self, document_ids):
+            self.denied_document_ids = set(document_ids)
+
+        def revalidate_query_authorization(self):
+            pass
 
         def search_as_chunks(self, query_vector, limit: int):
             del query_vector, limit
+            assert "tombstoned" in self.denied_document_ids
             return [{"chunk_id": "c1", "text": "chunk text", "page_no": 1}]
 
     class FakeEntityExtractor:
+        relation_extraction_mode = "llm-enhanced"
+
+        def __init__(self, provider_router=None):
+            received_extractor_session.append(provider_router)
+
         def extract_entities(self, chunks):
             del chunks
             return {"c1": []}, []
@@ -85,9 +99,17 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
             saved_paths["graph_ranked_json"] = output_path
             return output_path
 
-        def save_summary_json(self, ranked, communities, modularity, output_path="output/graph_summary.json"):
+        def save_summary_json(
+            self,
+            ranked,
+            communities,
+            modularity,
+            output_path="output/graph_summary.json",
+            relation_extraction_mode="unavailable",
+        ):
             del ranked, communities, modularity
             saved_paths["graph_summary_json"] = output_path
+            saved_paths["graph_summary"] = {"relation_extraction": {"mode": relation_extraction_mode}}
             return output_path
 
     class FakeSummaryPruner:
@@ -232,6 +254,12 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
 
     from launcher.runners import run_full_pipeline
 
+    def configure_query_safety(qdrant, collection, object_store=None):
+        del collection, object_store
+        qdrant.set_denied_document_ids(["tombstoned"])
+
+    monkeypatch.setattr("launcher.runners._configure_query_denial", configure_query_safety)
+
     run_full_pipeline({
         "mode": "full-pipeline",
         "profile": "local",
@@ -248,9 +276,11 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         ("summarizer", shared_session),
         ("reducer", shared_session),
     ]
+    assert received_extractor_session == [shared_session]
     assert saved_paths["graph_ranked_csv"] == "output/run-1/graph_ranked_nodes.csv"
     assert saved_paths["graph_ranked_json"] == "output/run-1/graph_ranked_nodes.json"
     assert saved_paths["graph_summary_json"] == "output/run-1/graph_summary.json"
+    assert saved_paths["graph_summary"] == {"relation_extraction": {"mode": "llm-enhanced"}}
     assert saved_paths["pruned_json"] == "output/run-1/pruned_summary_context.json"
     assert saved_paths["pruned_csv"] == "output/run-1/pruned_summary_context.csv"
     assert saved_paths["map_json"] == "output/run-1/community_map_summaries.json"

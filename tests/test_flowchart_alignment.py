@@ -320,11 +320,13 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
 
     class FakeQdrant:
         def __init__(self, collection_name="test"): pass
+        def revalidate_query_authorization(self): pass
         def search_as_chunks(self, query_vector, limit):
             calls["retrieval"] += 1
             return [{"chunk_id": 1, "text": "alpha beta", "page_no": 1, "score": 0.9}]
 
     class FakeExtractor:
+        def __init__(self, provider_router=None): pass
         def extract_entities(self, chunks): return {1: []}, []
         def extract_relations_llm(self, text, entities): return []
 
@@ -340,7 +342,7 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
         def analyze(self, graph): return pd.DataFrame([{"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 1.0, "text_preview": "alpha"}])
         def save_ranked_csv(self, ranked, output_path): return output_path
         def save_ranked_json(self, ranked, output_path): return output_path
-        def save_summary_json(self, ranked, communities, modularity, output_path): return output_path
+        def save_summary_json(self, ranked, communities, modularity, output_path, relation_extraction_mode="unavailable"): return output_path
 
     class FakePruner:
         def __init__(self, top_k_per_community, top_k_global): pass
@@ -407,6 +409,7 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_ON_DEMAND_PAGE_RENDER", False)
 
     from launcher.runners import run_full_pipeline
+    monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
     run_full_pipeline({"collection": "c", "query": "q", "retrieval_limit": 3, "artifact_dir": "output/test", "verbose": False})
 
     assert calls["retrieval"] == 1

@@ -102,6 +102,9 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
         def __init__(self, collection_name="test"):
             pass
 
+        def revalidate_query_authorization(self):
+            pass
+
         def search_as_chunks(self, query_vector, limit: int):
             del query_vector, limit
             return [{"chunk_id": "c1", "text": "chunk text", "page_no": 1}]
@@ -116,6 +119,9 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             return {}
 
     class FakeEntityExtractor:
+        def __init__(self, provider_router=None):
+            del provider_router
+
         def extract_entities(self, chunks):
             del chunks
             return {"c1": []}, []
@@ -155,8 +161,15 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             del ranked
             return output_path
 
-        def save_summary_json(self, ranked, communities, modularity, output_path="output/graph_summary.json"):
-            del ranked, communities, modularity
+        def save_summary_json(
+            self,
+            ranked,
+            communities,
+            modularity,
+            output_path="output/graph_summary.json",
+            relation_extraction_mode="unavailable",
+        ):
+            del ranked, communities, modularity, relation_extraction_mode
             return output_path
 
     class FakeSummaryPruner:
@@ -296,6 +309,8 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
     monkeypatch.setattr(settings, "ENABLE_ON_DEMAND_PAGE_RENDER", False)
 
     from launcher.runners import run_full_pipeline
+
+    monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
 
     run_full_pipeline({
         "mode": "full-pipeline",
