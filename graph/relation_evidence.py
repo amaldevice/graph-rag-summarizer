@@ -231,10 +231,51 @@ def canonicalize_entities(
     }
 
 
+def _graph_degree(graph: Any, canonical_id: str) -> int:
+    """Return a non-negative node degree from a graph-like object."""
+    if graph is None:
+        return 0
+
+    has_node = getattr(graph, "has_node", None)
+    if callable(has_node):
+        try:
+            if not has_node(canonical_id):
+                return 0
+        except Exception:
+            return 0
+    else:
+        nodes = getattr(graph, "nodes", None)
+        if nodes is not None:
+            try:
+                if canonical_id not in nodes:
+                    return 0
+            except Exception:
+                return 0
+
+    degree = getattr(graph, "degree", None)
+    if degree is None:
+        return 0
+    try:
+        value = degree[canonical_id]
+    except Exception:
+        if not callable(degree):
+            return 0
+        try:
+            value = degree(canonical_id)
+        except Exception:
+            return 0
+
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def classify_entity_support(
     entities: Iterable[Mapping[str, Any]],
     relations: Iterable[Mapping[str, Any]],
     *,
+    graph: Any | None = None,
     query_protected_chunk_uids: Iterable[str] = (),
 ) -> dict[str, list[Any]]:
     """Classify canonical entity support without changing graph topology."""
@@ -251,6 +292,8 @@ def classify_entity_support(
             "support": "mention_only",
             "isolated_noise_candidate": False,
             "query_protected": False,
+            "graph_degree": 0,
+            "graph_supported": False,
         })
         element["mention_count"] += 1
         chunk_uids = _support_chunk_ids(entity.get("chunk_uid"))
@@ -285,6 +328,8 @@ def classify_entity_support(
         element["isolated_noise_candidate"] = (
             element["mention_count"] == 1 and canonical_id not in relation_ids
         )
+        element["graph_degree"] = _graph_degree(graph, canonical_id)
+        element["graph_supported"] = element["graph_degree"] > 0
 
     ordered_elements = sorted(elements.values(), key=_sort_key)
     report: dict[str, list[Any]] = {
