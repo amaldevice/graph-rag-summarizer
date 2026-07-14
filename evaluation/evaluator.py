@@ -180,7 +180,8 @@ class SummaryEvaluator:
 
     @staticmethod
     def _chunk_id(chunk: Dict):
-        return chunk.get("chunk_uid") or chunk.get("chunk_id")
+        chunk_uid = chunk.get("chunk_uid")
+        return chunk_uid if chunk_uid not in (None, "") else chunk.get("chunk_id")
 
     @staticmethod
     def _entities(text: str) -> set[str]:
@@ -247,12 +248,23 @@ class SummaryEvaluator:
                 len(sentence_words & source_words) / len(sentence_words) if sentence_words else 0.0
                 for source_words in source_vocabularies
             ]
-            index = max(range(len(scores)), key=scores.__getitem__)
+            index = max(
+                range(len(scores)),
+                key=lambda candidate: (scores[candidate], self._chunk_id(source_chunks[candidate]) is not None),
+            )
+            traceable_candidates = [
+                candidate
+                for candidate, candidate_score in enumerate(scores)
+                if candidate_score >= 0.5 and self._chunk_id(source_chunks[candidate]) is not None
+            ]
+            citation_index = max(traceable_candidates, key=scores.__getitem__) if traceable_candidates else None
             supports.append({
                 "sentence_index": sentence_index,
                 "sentence": sentence,
                 "chunk_index": index,
                 "score": scores[index],
+                "citation_chunk_index": citation_index,
+                "citation_score": scores[citation_index] if citation_index is not None else None,
             })
 
         score = sum(item["score"] >= 0.5 for item in supports) / len(supports)
@@ -263,13 +275,16 @@ class SummaryEvaluator:
             return self._unavailable("No sentence support available")
         sentence_support = []
         for item in supports:
-            chunk_id = self._chunk_id(source_chunks[item["chunk_index"]])
-            if item["score"] >= 0.5 and chunk_id is not None:
+            citation_index = item["citation_chunk_index"]
+            if citation_index is None:
+                continue
+            chunk_id = self._chunk_id(source_chunks[citation_index])
+            if item["citation_score"] is not None:
                 sentence_support.append({
                     "sentence_index": item["sentence_index"],
                     "sentence": item["sentence"],
                     "chunk_id": str(chunk_id),
-                    "support_score": item["score"],
+                    "support_score": item["citation_score"],
                 })
         if not sentence_support:
             return self._unavailable("No supported summary sentences have stable chunk IDs")
