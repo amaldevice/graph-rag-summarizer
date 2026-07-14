@@ -139,8 +139,18 @@ def test_graph_claim_uses_attempt_points_and_readback_control_proof() -> None:
             return [objects[str(point_id)] for point_id in ids if str(point_id) in objects]
 
         def scroll(self, **kwargs):
-            del kwargs
-            return list(objects.values()), None
+            scroll_filter = kwargs.get("scroll_filter")
+            conditions = getattr(scroll_filter, "must", []) if scroll_filter else []
+
+            def matches(point):
+                payload = point.payload or {}
+                return all(
+                    payload.get(condition.key) == condition.match.value
+                    for condition in conditions
+                    if hasattr(condition, "key") and hasattr(condition, "match")
+                )
+
+            return [point for point in objects.values() if matches(point)], None
 
     from graph.persistent import InMemoryObjectStore, ManifestStore
 
@@ -162,6 +172,242 @@ def test_graph_claim_uses_attempt_points_and_readback_control_proof() -> None:
     assert point_ids[0] != stable_point_id("paper-a", 1)
     assert objects[point_ids[0]].payload["document_generation"] == claim["document_generation"]
     assert objects[control_id].payload["point_count"] == 1
+
+
+def test_backfill_materializes_the_standard_document_control_proof() -> None:
+    objects = {}
+
+    class FakeClient:
+        def upsert(self, collection_name, points) -> None:
+            del collection_name
+            for point in points:
+                objects[str(point.id)] = point
+
+        def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+            del collection_name, with_payload, with_vectors
+            return [objects[str(point_id)] for point_id in ids if str(point_id) in objects]
+
+        def scroll(self, **kwargs):
+            scroll_filter = kwargs.get("scroll_filter")
+            conditions = getattr(scroll_filter, "must", []) if scroll_filter else []
+
+            def matches(point):
+                payload = point.payload or {}
+                return all(
+                    payload.get(condition.key) == condition.match.value
+                    for condition in conditions
+                    if hasattr(condition, "key") and hasattr(condition, "match")
+                )
+
+            return [point for point in objects.values() if matches(point)], None
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+    objects["chunk-1"] = SimpleNamespace(
+        id="chunk-1",
+        vector=[0.1, 0.2],
+        payload={
+            "document_id": "paper-a",
+            "chunk_id": 1,
+            "chunk_uid": "paper-a:chunk:1",
+            "text": "hello",
+            "vector_point": True,
+            "graph_point": False,
+            "document_generation": 2,
+        },
+    )
+    from graph.persistent import InMemoryObjectStore, ManifestStore, source_fingerprint
+
+    chunks = handler.scroll_document_chunks(document_id="paper-a", include_vectors=True)
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve(
+        "paper-a",
+        "backfill:papers:paper-a",
+        source_fingerprint(chunks, "paper-a"),
+        document_generation=2,
+    )
+
+    handler.materialize_backfill_claim(manifests, claim)
+    handler.verify_graph_claim_current(claim)
+
+    control = next(point for point in objects.values() if point.payload.get("graph_control_point") == "document")
+    assert control.id == handler._last_control_id
+    attempted_chunk = next(point for point in objects.values() if point.payload.get("source_point_id") == "chunk-1")
+    assert attempted_chunk.id != "chunk-1"
+    assert attempted_chunk.payload["document_attempt_id"] == claim["pending_attempt_id"]
+    assert objects["chunk-1"].payload["backfill_retired"] is True
+    assert objects["chunk-1"].payload["vector_point"] is False
+    assert manifests.get("paper-a")["vector_ready"] is True
+
+    attempted_chunk.payload["document_generation"] = 3
+
+    with pytest.raises(RuntimeError, match="point-set proof"):
+        handler.verify_graph_claim_current(claim)
+
+
+def test_backfill_retries_partial_materialization_with_same_attempt_points() -> None:
+    objects = {}
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.fail_after_attempt_upsert = True
+            self.materialized_vectors = []
+            self.embedding_calls = 0
+
+        def upsert(self, collection_name, points) -> None:
+            del collection_name
+            points = list(points)
+            for point in points:
+                objects[str(point.id)] = point
+            if any(point.payload.get("source_point_id") == "chunk-1" for point in points):
+                self.materialized_vectors.append([list(point.vector) for point in points])
+                if self.fail_after_attempt_upsert:
+                    self.fail_after_attempt_upsert = False
+                    raise RuntimeError("interrupted after attempt upsert")
+
+        def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+            del collection_name, with_payload, with_vectors
+            return [objects[str(point_id)] for point_id in ids if str(point_id) in objects]
+
+        def scroll(self, **kwargs):
+            scroll_filter = kwargs.get("scroll_filter")
+            conditions = getattr(scroll_filter, "must", []) if scroll_filter else []
+
+            def matches(point):
+                payload = point.payload or {}
+                return all(
+                    payload.get(condition.key) == condition.match.value
+                    for condition in conditions
+                    if hasattr(condition, "key") and hasattr(condition, "match")
+                )
+
+            return [point for point in objects.values() if matches(point)], None
+
+    client = FakeClient()
+    handler = QdrantHandler(client=client, collection_name="papers")
+    objects["chunk-1"] = SimpleNamespace(
+        id="chunk-1",
+        vector=[0.1, 0.2],
+        payload={
+            "document_id": "paper-a",
+            "chunk_id": 1,
+            "chunk_uid": "paper-a:chunk:1",
+            "text": "hello",
+            "vector_point": True,
+            "graph_point": False,
+            "document_generation": 2,
+        },
+    )
+    from graph.persistent import InMemoryObjectStore, ManifestStore, source_fingerprint
+
+    chunks = handler.scroll_document_chunks(document_id="paper-a", include_vectors=True)
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve(
+        "paper-a",
+        "backfill:papers:paper-a",
+        source_fingerprint(chunks, "paper-a"),
+        document_generation=2,
+    )
+
+    with pytest.raises(RuntimeError, match="interrupted after attempt upsert"):
+        handler.materialize_backfill_claim(manifests, claim)
+
+    partial_attempt = next(point for point in objects.values() if point.payload.get("source_point_id") == "chunk-1")
+    assert objects["chunk-1"].payload.get("backfill_retired") is None
+
+    handler.materialize_backfill_claim(manifests, claim)
+    handler.verify_graph_claim_current(claim)
+
+    retry_attempts = [point for point in objects.values() if point.payload.get("source_point_id") == "chunk-1"]
+    assert [point.id for point in retry_attempts] == [partial_attempt.id]
+    assert client.materialized_vectors == [[[0.1, 0.2]], [[0.1, 0.2]]]
+    assert client.embedding_calls == 0
+    assert objects["chunk-1"].payload["backfill_retired"] is True
+    assert manifests.get("paper-a")["vector_ready"] is True
+
+
+def test_backfill_retires_stale_attempt_duplicate_before_reproof() -> None:
+    objects = {}
+
+    class FakeClient:
+        def upsert(self, collection_name, points) -> None:
+            del collection_name
+            for point in points:
+                objects[str(point.id)] = point
+
+        def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+            del collection_name, with_payload, with_vectors
+            return [objects[str(point_id)] for point_id in ids if str(point_id) in objects]
+
+        def scroll(self, **kwargs):
+            scroll_filter = kwargs.get("scroll_filter")
+            conditions = getattr(scroll_filter, "must", []) if scroll_filter else []
+
+            def matches(point):
+                payload = point.payload or {}
+                return all(
+                    payload.get(condition.key) == condition.match.value
+                    for condition in conditions
+                    if hasattr(condition, "key") and hasattr(condition, "match")
+                )
+
+            return [point for point in objects.values() if matches(point)], None
+
+    source_payload = {
+        "document_id": "paper-a",
+        "chunk_id": 1,
+        "chunk_uid": "paper-a:chunk:1",
+        "text": "hello",
+        "vector_point": True,
+        "graph_point": False,
+        "document_generation": 2,
+    }
+    handler = QdrantHandler(client=FakeClient(), collection_name="papers")
+    objects["chunk-1"] = SimpleNamespace(
+        id="chunk-1",
+        vector=[0.1, 0.2],
+        payload=source_payload,
+    )
+    from graph.persistent import InMemoryObjectStore, ManifestStore, source_fingerprint
+
+    source_fingerprint_value = source_fingerprint(
+        [handler._normalize_chunk_payload(source_payload, fallback_chunk_id="chunk-1")],
+        "paper-a",
+    )
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve(
+        "paper-a",
+        "backfill:papers:paper-a",
+        source_fingerprint_value,
+        document_generation=2,
+    )
+    stale_attempt_id = "8e5e4a42-f96d-5d85-a65d-c6ca4267b412"
+    objects[stale_attempt_id] = SimpleNamespace(
+        id=stale_attempt_id,
+        vector=[0.1, 0.2],
+        payload={
+            **source_payload,
+            "source_point_id": "chunk-1",
+            "source_fingerprint": source_fingerprint_value,
+            "document_attempt_id": "old-attempt",
+            "document_fence_token": 1,
+            "collection_fence_token": 0,
+            "collection_attempt_id": None,
+        },
+    )
+
+    handler.materialize_backfill_claim(manifests, claim)
+    handler.verify_graph_claim_current(claim)
+
+    active_attempts = [
+        point for point in objects.values()
+        if point.payload.get("document_attempt_id") == claim["pending_attempt_id"]
+        and point.payload.get("vector_point") is True
+    ]
+    assert len(active_attempts) == 1
+    assert active_attempts[0].payload["source_point_id"] == "chunk-1"
+    assert objects["chunk-1"].payload["backfill_retired"] is True
+    assert objects[stale_attempt_id].payload["backfill_retired"] is True
+    assert manifests.get("paper-a")["vector_ready"] is True
 
 
 def test_tombstone_proof_enumerates_the_complete_qdrant_deny_set() -> None:
@@ -557,6 +803,29 @@ def test_prepare_ingest_rejects_legacy_points_for_document_operations() -> None:
 
     with pytest.raises(ValueError, match="legacy points"):
         handler.prepare_ingest("replace-document", "paper-a", vector_size=2)
+
+
+def test_legacy_scan_continues_after_legacy_point_to_detect_later_pagination_failure() -> None:
+    class FakeClient:
+        calls = 0
+
+        def create_payload_index(self, **kwargs):
+            del kwargs
+
+        def scroll(self, **kwargs):
+            del kwargs
+            self.calls += 1
+            if self.calls == 1:
+                return [
+                    SimpleNamespace(id="legacy", payload={"text": "legacy"}),
+                    SimpleNamespace(id="control", payload={"graph_control_point": "tombstone"}),
+                ], "cursor"
+            return [], "cursor"
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+
+    with pytest.raises(RuntimeError, match="repeated offset"):
+        handler.has_legacy_points()
 
 
 def test_two_document_append_points_keep_distinct_ids() -> None:

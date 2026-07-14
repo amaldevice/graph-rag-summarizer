@@ -4,8 +4,9 @@
 # Support indexing mode and retrieval mode
 # ============================================================
 
-import os
 import hashlib
+import math
+import os
 from uuid import NAMESPACE_URL, uuid5
 from typing import Any
 
@@ -245,6 +246,7 @@ class QdrantHandler:
         self._ensure_document_id_index()
         offset = None
         seen_offsets = set()
+        legacy_found = False
         while True:
             points, next_offset = scroll(
                 collection_name=self.collection_name,
@@ -258,12 +260,12 @@ class QdrantHandler:
                 raise RuntimeError("Qdrant legacy scan returned no page")
             for point in points:
                 payload = point.payload or {}
-                if payload.get("graph_control_point"):
+                if payload.get("graph_control_point") or payload.get("backfill_retired"):
                     continue
                 if not isinstance(payload.get("document_id"), str) or not payload["document_id"].strip():
-                    return True
+                    legacy_found = True
             if next_offset is None:
-                return False
+                return legacy_found
             marker = str(next_offset)
             if marker in seen_offsets:
                 raise RuntimeError("Qdrant legacy scan returned a repeated offset")
@@ -567,6 +569,215 @@ class QdrantHandler:
         if not getattr(self, "_last_control_id", None):
             raise RuntimeError("document control proof is missing")
         self.verify_document_control_point(self._last_control_id)
+
+    def _scroll_backfill_points(self, document_id: str) -> list[tuple[str | int, dict, list[float]]]:
+        """Read every ordinary-vector point with its original id, payload, and vector."""
+        scroll = getattr(self.client, "scroll", None)
+        if scroll is None:
+            raise RuntimeError("Qdrant cannot read vectors for the backfill control proof")
+        offset = None
+        seen_offsets = set()
+        records = []
+        while True:
+            points, next_offset = scroll(
+                collection_name=self.collection_name,
+                scroll_filter=self._document_filter(document_id),
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            if points is None:
+                raise RuntimeError("Qdrant backfill control scan returned no page")
+            for point in points:
+                payload = dict(point.payload or {})
+                if payload.get("graph_control_point") or payload.get("backfill_retired"):
+                    continue
+                vector = getattr(point, "vector", None)
+                if (
+                    not isinstance(vector, (list, tuple))
+                    or not vector
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)
+                        for value in vector
+                    )
+                ):
+                    raise RuntimeError("Qdrant backfill point has no valid stored vector")
+                records.append((point.id, payload, list(vector)))
+            if next_offset is None:
+                break
+            marker = str(next_offset)
+            if marker in seen_offsets:
+                raise RuntimeError("Qdrant backfill control scan returned a repeated offset")
+            seen_offsets.add(marker)
+            offset = next_offset
+        return records
+
+    def materialize_backfill_claim(self, manifests, claim: dict) -> None:
+        """Attach an attempt-scoped, read-back document proof to existing vectors.
+
+        The vectors are re-used byte-for-byte (no embedding call).  Their
+        payloads gain the pending attempt/fence provenance required by the
+        normal document-control proof before the graph artifact may publish.
+        """
+        from graph.persistent import source_fingerprint
+
+        document_id = claim.get("document_id")
+        generation = claim.get("document_generation")
+        if (
+            not isinstance(document_id, str)
+            or not document_id
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation <= 0
+        ):
+            raise RuntimeError("backfill graph claim is malformed")
+        records = self._scroll_backfill_points(document_id)
+        if not records or len({str(point_id) for point_id, _, _ in records}) != len(records):
+            raise RuntimeError("Qdrant backfill control scan is incomplete")
+
+        # A failed materialization can leave deterministic attempt points in
+        # Qdrant before their source points are retired.  On retry, retain
+        # those points as the canonical record for their source/chunk pair;
+        # otherwise the source fingerprint would include the same chunk twice.
+        validated_records = []
+        vector_size = None
+
+        def source_identity(payload: dict, point_id: str | int) -> str | int:
+            source_point_id = payload.get("source_point_id", point_id)
+            if source_point_id is None:
+                source_point_id = point_id
+            if (
+                isinstance(source_point_id, bool)
+                or not isinstance(source_point_id, (str, int))
+                or (isinstance(source_point_id, str) and not source_point_id)
+            ):
+                raise RuntimeError("Qdrant backfill point has no stable source identity")
+            return source_point_id
+
+        for point_id, payload, vector in records:
+            if (
+                payload.get("document_id") != document_id
+                or payload.get("document_generation") != generation
+                or payload.get("vector_point") is not True
+                or payload.get("graph_point") is True
+                or payload.get("graph_tombstoned")
+            ):
+                raise RuntimeError("Qdrant backfill payload no longer matches the graph claim")
+            if vector_size is None:
+                vector_size = len(vector)
+            elif len(vector) != vector_size:
+                raise RuntimeError("Qdrant backfill vectors have inconsistent dimensions")
+            chunk_uid = payload.get("chunk_uid")
+            if not isinstance(chunk_uid, str) or not chunk_uid:
+                raise RuntimeError("Qdrant backfill point has no stable chunk identity")
+            attempt_point_id = str(uuid5(
+                NAMESPACE_URL,
+                f"ingest-point:{self.collection_name}:{document_id}:{generation}:{claim['pending_attempt_id']}:{chunk_uid}",
+            ))
+            source_point_id = source_identity(payload, point_id)
+            validated_records.append((
+                point_id,
+                payload,
+                vector,
+                source_point_id,
+                chunk_uid,
+                attempt_point_id,
+            ))
+
+            if payload.get("document_attempt_id") != claim["pending_attempt_id"]:
+                continue
+            if (
+                str(point_id) != attempt_point_id
+                or payload.get("source_fingerprint") != claim["source_fingerprint"]
+                or payload.get("document_fence_token") != claim["document_fence_token"]
+                or payload.get("collection_fence_token") != claim["collection_fence_token"]
+                or payload.get("collection_attempt_id") != claim.get("collection_attempt_id")
+            ):
+                raise RuntimeError("Qdrant backfill attempt provenance no longer matches the graph claim")
+
+        records_by_source = {}
+        for record in validated_records:
+            records_by_source.setdefault((str(record[3]), record[4]), []).append(record)
+
+        canonical_records = {}
+        for key, group in records_by_source.items():
+            current_attempts = [
+                record for record in group
+                if record[1].get("document_attempt_id") == claim["pending_attempt_id"]
+            ]
+            if len(current_attempts) > 1:
+                raise RuntimeError("Qdrant backfill attempt has duplicate source materializations")
+            if current_attempts:
+                canonical_records[key] = current_attempts[0]
+                continue
+            original_sources = [
+                record for record in group
+                if str(record[0]) == str(record[3])
+            ]
+            if len(original_sources) == 1:
+                canonical_records[key] = original_sources[0]
+            elif not original_sources and len(group) == 1:
+                canonical_records[key] = group[0]
+            else:
+                raise RuntimeError("Qdrant backfill source materialization is ambiguous")
+
+        normalized_chunks = []
+        points = []
+        retired_points = []
+        for key in sorted(records_by_source):
+            group = records_by_source[key]
+            point_id, payload, vector, source_point_id, chunk_uid, attempt_point_id = canonical_records[key]
+            same_attempt = payload.get("document_attempt_id") == claim["pending_attempt_id"]
+            normalized_chunks.append(self._normalize_chunk_payload(payload, fallback_chunk_id=point_id))
+            updated_payload = dict(payload)
+            updated_payload.update({
+                "source_point_id": source_point_id,
+                "source_fingerprint": claim["source_fingerprint"],
+                "document_attempt_id": claim["pending_attempt_id"],
+                "document_fence_token": claim["document_fence_token"],
+                "collection_fence_token": claim["collection_fence_token"],
+                "collection_attempt_id": claim.get("collection_attempt_id"),
+            })
+            points.append(PointStruct(id=attempt_point_id, vector=vector, payload=updated_payload))
+            for retired_id, retired_source, retired_vector, _, _, _ in group:
+                if same_attempt and str(retired_id) == attempt_point_id:
+                    continue
+                if str(retired_id) == attempt_point_id:
+                    raise RuntimeError("Qdrant backfill attempt point collides with a stale source")
+                retired_payload = dict(retired_source)
+                retired_payload.update({
+                    "vector_point": False,
+                    "graph_point": False,
+                    "backfill_retired": True,
+                })
+                retired_points.append(PointStruct(
+                    id=retired_id,
+                    vector=retired_vector,
+                    payload=retired_payload,
+                ))
+        if source_fingerprint(normalized_chunks, document_id) != claim.get("source_fingerprint"):
+            raise RuntimeError("Qdrant backfill source fingerprint no longer matches the graph claim")
+
+        self.set_graph_claim(manifests, claim)
+        self._last_graph_points = [
+            (str(point.id), dict(point.payload or {})) for point in points
+        ]
+        self._mutate(lambda: self.client.upsert(
+            collection_name=self.collection_name,
+            points=points,
+        ))
+        control_id = self.write_document_control_point(claim, vector_size)
+        self.verify_document_control_point(control_id)
+        if retired_points:
+            self._mutate(lambda: self.client.upsert(
+                collection_name=self.collection_name,
+                points=retired_points,
+            ))
+        self.verify_graph_claim_current(claim)
+        manifests.mark_vectors_ready(claim)
 
     def write_tombstone_control_points(
         self,
@@ -874,7 +1085,7 @@ class QdrantHandler:
                 raise RuntimeError("Qdrant backfill scan returned no page")
             for point in points:
                 payload = point.payload or {}
-                if payload.get("graph_control_point"):
+                if payload.get("graph_control_point") or payload.get("backfill_retired"):
                     continue
                 if not payload.get("document_id"):
                     raise ValueError("legacy point without document_id cannot be backfilled")

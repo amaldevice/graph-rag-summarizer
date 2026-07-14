@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import os
 import socket
 import threading
@@ -449,6 +450,7 @@ class ManifestStore:
             "collection_fence_token": 0,
             "collection_operation_id": None,
             "collection_attempt_id": None,
+            "collection_retained_documents": None,
             "active_mutation_id": None,
             "active_mutation_scope": None,
             "active_mutation_operation_id": None,
@@ -729,23 +731,81 @@ class ManifestStore:
             and int(manifest.get("collection_fence_token", 0)) == int(fence_token)
         )
 
-    def reserve(self, document_id: str, operation_id: str, source_fingerprint_value: str, *, mode: str = "append") -> dict:
+    @staticmethod
+    def _collection_fence_allows_reservation(
+        manifest: dict,
+        document_id: str,
+        operation_id: str,
+        source_fingerprint_value: str,
+        mode: str,
+    ) -> bool:
+        """Allow only the replacement target bound to the current collection fence."""
+        active_operation = manifest.get("collection_operation_id")
+        if active_operation is None:
+            return True
+        attempt_id = manifest.get("collection_attempt_id")
+        retained_documents = manifest.get("collection_retained_documents")
+        return bool(
+            mode == "replace-collection"
+            and operation_id == active_operation
+            and isinstance(attempt_id, str)
+            and attempt_id
+            and isinstance(retained_documents, dict)
+            and retained_documents.get(document_id) == source_fingerprint_value
+            and manifest.get("pending_tombstone_set_digest") in {"pending", None}
+        )
+
+    def reserve(
+        self,
+        document_id: str,
+        operation_id: str,
+        source_fingerprint_value: str,
+        *,
+        mode: str = "append",
+        document_generation: int | None = None,
+    ) -> dict:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
             documents = dict(manifest.get("documents", {}))
             prior = documents.get(document_id)
+            if not self._collection_fence_allows_reservation(
+                manifest,
+                document_id,
+                operation_id,
+                source_fingerprint_value,
+                mode,
+            ):
+                raise RuntimeError("collection replacement fence rejects unrelated document reservation")
+            if document_generation is not None and (
+                isinstance(document_generation, bool)
+                or not isinstance(document_generation, int)
+                or document_generation <= 0
+            ):
+                raise ValueError("document generation must be a positive integer")
+            if prior and document_generation is not None:
+                prior_generation = prior.get("document_generation")
+                if (
+                    isinstance(prior_generation, bool)
+                    or not isinstance(prior_generation, int)
+                    or prior_generation != document_generation
+                ):
+                    raise ValueError("manifest document generation conflicts with the backfill generation")
             if (
                 prior
                 and prior.get("pending_operation_id") == operation_id
                 and prior.get("pending_source_fingerprint") == source_fingerprint_value
+                and self._claim_matches_collection(manifest, prior)
             ):
                 return prior
             if manifest.get("active_mutation_id") is not None:
                 raise RuntimeError("a Qdrant mutation is already fenced")
             if mode == "append" and prior is not None:
                 raise ValueError(f"document '{document_id}' is already tracked; use replace-document")
-            if prior and prior.get("pending_operation_id") and prior["pending_operation_id"] != operation_id:
+            if prior and prior.get("pending_operation_id") and (
+                prior["pending_operation_id"] != operation_id
+                or not self._claim_matches_collection(manifest, prior)
+            ):
                 superseded_operation = prior["pending_operation_id"]
                 prior = dict(prior)
                 prior["version_ledger"] = [dict(item) for item in prior.get("version_ledger", [])]
@@ -767,7 +827,9 @@ class ManifestStore:
                     "updated_at": _now(),
                 })
                 documents[document_id] = prior
-            generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
+            generation = document_generation if document_generation is not None else (
+                int(prior.get("document_generation", 0)) + 1 if prior else 1
+            )
             ledger = list(prior.get("version_ledger", [])) if prior else []
             ledger_next_version = max(
                 (int(item.get("version", 0)) for item in ledger),
@@ -958,8 +1020,23 @@ class ManifestStore:
             self._write(manifest, snapshot)
             return current
 
-    def tombstone_documents(self, retained_document_ids: set[str], operation_id: str) -> dict:
-        """Make omitted replace-collection documents non-discoverable."""
+    @staticmethod
+    def _retained_document_fingerprints(retained_documents: dict[str, str]) -> dict[str, str]:
+        """Validate the immutable replacement target set before acquiring its fence."""
+        if not isinstance(retained_documents, dict):
+            raise TypeError("replace-collection retained documents must map IDs to source fingerprints")
+        normalized = {}
+        for document_id, fingerprint in retained_documents.items():
+            if not isinstance(document_id, str) or not document_id:
+                raise ValueError("replace-collection retained document IDs must be non-empty strings")
+            if not isinstance(fingerprint, str) or not fingerprint:
+                raise ValueError("replace-collection source fingerprints must be non-empty strings")
+            normalized[document_id] = fingerprint
+        return dict(sorted(normalized.items()))
+
+    def tombstone_documents(self, retained_documents: dict[str, str], operation_id: str) -> dict:
+        """Make omitted documents non-discoverable and bind the replacement target set."""
+        retained_document_fingerprints = self._retained_document_fingerprints(retained_documents)
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
@@ -967,6 +1044,8 @@ class ManifestStore:
             if active_operation:
                 if active_operation != operation_id:
                     raise RuntimeError("collection has an active tombstone operation")
+                if manifest.get("collection_retained_documents") != retained_document_fingerprints:
+                    raise RuntimeError("collection replacement target does not match the active fence")
                 return manifest
             if manifest.get("active_mutation_id") is not None:
                 raise RuntimeError("a Qdrant mutation is already fenced")
@@ -974,7 +1053,7 @@ class ManifestStore:
             cleanup_ids = []
             manifest["tombstone_epoch"] = int(manifest.get("tombstone_epoch", 0)) + 1
             for document_id, entry in documents.items():
-                if document_id in retained_document_ids:
+                if document_id in retained_document_fingerprints:
                     if entry.get("status") == "tombstoned":
                         entry = dict(entry)
                         cleanup_ids.append(str(uuid.uuid5(
@@ -1033,6 +1112,7 @@ class ManifestStore:
             manifest["collection_fence_token"] = int(manifest.get("collection_fence_token", 0)) + 1
             manifest["collection_operation_id"] = operation_id
             manifest["collection_attempt_id"] = f"{operation_id}:{uuid.uuid4()}"
+            manifest["collection_retained_documents"] = retained_document_fingerprints
             manifest["pending_tombstone_cleanup_ids"] = sorted(cleanup_ids)
             manifest["pending_tombstone_set_digest"] = "pending"
             self._write(manifest, snapshot)
@@ -1142,6 +1222,7 @@ class ManifestStore:
                 raise RuntimeError("stale collection fence cannot be released")
             manifest["collection_operation_id"] = None
             manifest["collection_attempt_id"] = None
+            manifest["collection_retained_documents"] = None
             self._write(manifest, snapshot)
             return manifest
 
@@ -1387,6 +1468,9 @@ def build_document_graph(
         status: sum(1 for relation in relations if relation.get("status") == status)
         for status in sorted({relation.get("status", "unknown") for relation in relations})
     }
+    relation_extraction_mode = getattr(entity_extractor, "relation_extraction_mode", "unavailable")
+    if relation_extraction_mode not in {"spacy-only", "llm-enhanced", "unavailable"}:
+        relation_extraction_mode = "unavailable"
     diagnostics = {
         "entity_count": len(entities),
         "local_relation_count": len(relations),
@@ -1397,6 +1481,9 @@ def build_document_graph(
         "entity_extraction": {
             "status": "available" if entities else "unavailable",
             "entity_count": len(entities),
+        },
+        "relation_extraction": {
+            "mode": relation_extraction_mode,
         },
         "topology": graph.graph.get("topology", {}),
         "community_selection": graph.graph.get("community_selection", {}),
@@ -1425,6 +1512,10 @@ class PersistentGraphPipeline:
     def reserve(self, chunks, document_id, *, mode="append", operation_id=None):
         fingerprint = source_fingerprint(chunks, document_id)
         prior = self.manifests.get(document_id)
+        if operation_id is None and mode == "replace-collection":
+            active_collection_operation = self.manifests.read_snapshot().manifest.get("collection_operation_id")
+            if active_collection_operation is not None:
+                operation_id = active_collection_operation
         if operation_id is None and prior and (
             prior.get("pending_operation_id")
             and prior.get("pending_source_fingerprint") == fingerprint
@@ -1435,10 +1526,27 @@ class PersistentGraphPipeline:
             operation_id = f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
         return self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
 
-    def build_and_publish(self, chunks, embeddings, document_id, *, mode="append", operation_id=None, claim=None, qdrant=None, **kwargs):
+    def build_and_publish(
+        self,
+        chunks,
+        embeddings,
+        document_id,
+        *,
+        mode="append",
+        operation_id=None,
+        claim=None,
+        qdrant=None,
+        qdrant_claim_preparer=None,
+        document_generation=None,
+        **kwargs,
+    ):
         fingerprint = source_fingerprint(chunks, document_id)
         prior = self.manifests.get(document_id)
-        generation = claim.get("document_generation") if claim else (int(prior.get("document_generation", 0)) + 1 if prior else 1)
+        generation = claim.get("document_generation") if claim else (
+            document_generation if document_generation is not None else (
+                int(prior.get("document_generation", 0)) + 1 if prior else 1
+            )
+        )
         if operation_id is None and prior and (
             prior.get("pending_operation_id")
             and prior.get("pending_source_fingerprint") == fingerprint
@@ -1450,10 +1558,42 @@ class PersistentGraphPipeline:
             claim.get("document_id") != document_id
             or claim.get("source_fingerprint") != fingerprint
             or claim.get("operation_id") != operation_id
+            or (
+                document_generation is not None
+                and claim.get("document_generation") != document_generation
+            )
         ):
             raise GraphLifecycleError("caller inputs do not match the persisted graph claim")
-        claim = claim or self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
+        claim = claim or self.manifests.reserve(
+            document_id,
+            operation_id,
+            fingerprint,
+            mode=mode,
+            document_generation=document_generation,
+        )
+
+        def verify_qdrant_claim() -> None:
+            if qdrant is None:
+                return
+            verifier = getattr(qdrant, "verify_graph_claim_current", None)
+            if not callable(verifier):
+                raise RuntimeError(
+                    "Qdrant cannot validate the graph claim before graph publication"
+                )
+            verifier(claim)
+
+        def prepare_qdrant_claim() -> None:
+            if qdrant is None or qdrant_claim_preparer is None:
+                return
+            preparer = getattr(qdrant, qdrant_claim_preparer, None)
+            if not callable(preparer):
+                raise RuntimeError(
+                    f"Qdrant cannot prepare {qdrant_claim_preparer} before graph publication"
+                )
+            preparer(self.manifests, claim)
+
         try:
+            prepare_qdrant_claim()
             graph, details = build_document_graph(chunks, embeddings, document_id, **kwargs)
             canonical = serialize_graph(
                 graph,
@@ -1475,11 +1615,11 @@ class PersistentGraphPipeline:
                 claim["source_fingerprint"],
             )
             if qdrant is not None:
-                qdrant.verify_graph_claim_current(claim)
+                verify_qdrant_claim()
                 self.manifests.assert_claim_current(claim)
             self.manifests.bind_artifact(claim, artifact_key, digest)
             if qdrant is not None:
-                qdrant.verify_graph_claim_current(claim)
+                verify_qdrant_claim()
                 self.manifests.assert_claim_current(claim)
                 verify_tombstones = getattr(qdrant, "verify_collection_tombstone_proof", None)
                 if callable(verify_tombstones):
@@ -1492,7 +1632,7 @@ class PersistentGraphPipeline:
                 claim_is_stale = False
                 if qdrant is not None:
                     try:
-                        qdrant.verify_graph_claim_current(claim)
+                        verify_qdrant_claim()
                     except Exception as qdrant_exc:
                         claim_is_stale = True
                         failure_reason = f"{failure_reason}; Qdrant validation: {qdrant_exc}"
@@ -1502,10 +1642,46 @@ class PersistentGraphPipeline:
                 raise GraphLifecycleError("graph failure status CAS failed; claim remains fail-closed") from fail_exc
             return {"status": entry.get("status", "unavailable"), "entry": entry, "failure_reason": str(exc)}
 
-    def backfill(self, chunks, embeddings, document_id, **kwargs):
+    def backfill(
+        self,
+        chunks,
+        embeddings,
+        document_id,
+        *,
+        document_generation=None,
+        qdrant=None,
+        **kwargs,
+    ):
         """Backfill uses payloads and stored vectors; it never re-embeds text."""
+        if (
+            isinstance(document_generation, bool)
+            or not isinstance(document_generation, int)
+            or document_generation <= 0
+        ):
+            return {
+                "status": "unavailable",
+                "failure_reason": "document generation metadata is incomplete or inconsistent; rebuild required",
+            }
         fingerprint = source_fingerprint(chunks, document_id)
         prior = self.manifests.get(document_id)
+        if prior and prior.get("status") == "tombstoned":
+            return {
+                "status": "unavailable",
+                "entry": prior,
+                "failure_reason": "document is tombstoned; rebuild or re-ingest with replace-document required",
+            }
+        if prior:
+            prior_generation = prior.get("document_generation")
+            if (
+                isinstance(prior_generation, bool)
+                or not isinstance(prior_generation, int)
+                or prior_generation != document_generation
+            ):
+                return {
+                    "status": "unavailable",
+                    "entry": prior,
+                    "failure_reason": "manifest document generation conflicts with Qdrant; rebuild required",
+                }
         if (
             prior
             and prior.get("status") == "available"
@@ -1539,19 +1715,35 @@ class PersistentGraphPipeline:
             mode="replace-document" if prior else "append",
             operation_id=operation_id,
             claim=claim,
+            qdrant=qdrant,
+            qdrant_claim_preparer="materialize_backfill_claim",
+            document_generation=document_generation,
             **kwargs,
         )
 
 
 def backfill_qdrant_collection(qdrant, collection: str, *, object_store=None, document_id: str | None = None, **kwargs) -> list[dict]:
     """Build graph artifacts from existing payloads; no embedding call is made."""
-    chunks = qdrant.scroll_document_chunks(document_id=document_id, include_vectors=True)
+    try:
+        chunks = qdrant.scroll_document_chunks(document_id=document_id, include_vectors=True)
+    except ValueError:
+        return [{
+            "status": "unavailable",
+            "document_id": None,
+            "failure_reason": "legacy Qdrant payload cannot be backfilled; rebuild required",
+        }]
+
     grouped = {}
-    for chunk in chunks:
-        grouped.setdefault(chunk.get("document_id"), []).append(chunk)
-    pipeline = PersistentGraphPipeline(collection, object_store=object_store)
     results = []
-    for current_document_id, document_chunks in sorted(grouped.items(), key=lambda item: str(item[0])):
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            results.append({
+                "status": "unavailable",
+                "document_id": None,
+                "failure_reason": "Qdrant payload is malformed; rebuild required",
+            })
+            continue
+        current_document_id = chunk.get("document_id")
         if not isinstance(current_document_id, str) or not current_document_id.strip():
             results.append({
                 "status": "unavailable",
@@ -1559,9 +1751,27 @@ def backfill_qdrant_collection(qdrant, collection: str, *, object_store=None, do
                 "failure_reason": "document identity metadata is incomplete; rebuild required",
             })
             continue
+        grouped.setdefault(current_document_id, []).append(chunk)
+
+    def valid_stored_vector(vector: Any) -> bool:
+        if not isinstance(vector, (list, tuple)) or not vector:
+            return False
+        for value in vector:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False
+            try:
+                if not math.isfinite(value):
+                    return False
+            except OverflowError:
+                return False
+        return True
+
+    pipeline = None
+    for current_document_id, document_chunks in sorted(grouped.items(), key=lambda item: str(item[0])):
         if any(
             not isinstance(chunk.get("chunk_uid"), str)
             or not chunk["chunk_uid"].strip()
+            or isinstance(chunk.get("chunk_id"), bool)
             or not isinstance(chunk.get("chunk_id"), int)
             for chunk in document_chunks
         ):
@@ -1571,25 +1781,50 @@ def backfill_qdrant_collection(qdrant, collection: str, *, object_store=None, do
                 "failure_reason": "chunk identity metadata is incomplete; rebuild required",
             })
             continue
-        generations = {chunk.get("document_generation") for chunk in document_chunks}
-        if (
-            any(chunk.get("vector_point") is not True for chunk in document_chunks)
-            or len(generations) != 1
-            or next(iter(generations), None) is None
-        ):
+        if any(chunk.get("vector_point") is not True for chunk in document_chunks):
             results.append({
                 "status": "unavailable",
                 "document_id": current_document_id,
                 "failure_reason": "vector metadata is incomplete or inconsistent; replace-document rebuild required",
             })
             continue
-        vectors = [chunk.pop("_embedding", None) for chunk in document_chunks]
-        if not all(vector is not None for vector in vectors):
+        generations = [chunk.get("document_generation") for chunk in document_chunks]
+        if (
+            any(
+                isinstance(generation, bool)
+                or not isinstance(generation, int)
+                or generation <= 0
+                for generation in generations
+            )
+            or len(set(generations)) != 1
+        ):
             results.append({
                 "status": "unavailable",
                 "document_id": current_document_id,
-                "failure_reason": "stored vectors are incomplete; rebuild required",
+                "failure_reason": "document generation metadata is incomplete or inconsistent; rebuild required",
             })
             continue
-        results.append(pipeline.backfill(document_chunks, vectors, current_document_id, **kwargs))
+        vectors = [chunk.get("_embedding") for chunk in document_chunks]
+        if (
+            not all(valid_stored_vector(vector) for vector in vectors)
+            or len({len(vector) for vector in vectors}) != 1
+        ):
+            results.append({
+                "status": "unavailable",
+                "document_id": current_document_id,
+                "failure_reason": "stored vectors are incomplete, invalid, or inconsistent; rebuild required",
+            })
+            continue
+        if pipeline is None:
+            pipeline = PersistentGraphPipeline(collection, object_store=object_store)
+        results.append(
+            pipeline.backfill(
+                document_chunks,
+                vectors,
+                current_document_id,
+                document_generation=generations[0],
+                qdrant=qdrant,
+                **kwargs,
+            )
+        )
     return results

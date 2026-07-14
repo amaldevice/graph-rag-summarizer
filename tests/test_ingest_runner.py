@@ -253,3 +253,412 @@ def test_on_demand_images_do_not_cross_document_boundaries(monkeypatch, tmp_path
     result = _maybe_render_images(custom_id_chunks, str(local_pdf))
     assert "image_url" not in result[0]
     assert "does not match the local PDF" in capsys.readouterr().out
+
+
+def test_query_authorization_fails_closed_without_manifest_entries(monkeypatch):
+    from graph import persistent
+    from launcher.runners import _configure_query_denial
+
+    snapshot = _types.SimpleNamespace(manifest={
+        "documents": {},
+        "tombstone_set_digest": "empty-proof",
+        "pending_tombstone_set_digest": None,
+        "collection_operation_id": None,
+    })
+
+    class FakeManifests:
+        def read_snapshot(self):
+            return snapshot
+
+        def tombstone_controls(self, manifest):
+            assert manifest is snapshot.manifest
+            return []
+
+        def revalidate(self, candidate):
+            return candidate is snapshot
+
+    class FakeQdrant:
+        def verify_tombstone_control_points(self, controls, expected_digest):
+            assert controls == []
+            assert expected_digest == "empty-proof"
+
+        def set_denied_document_ids(self, document_ids):
+            self.denied = document_ids
+
+        def set_query_authorization(self, manifests, candidate):
+            self.authorization = (manifests, candidate)
+
+        def set_active_vector_generations(self, generations):
+            self.active_vectors = generations
+
+        def set_active_graph_selectors(self, selectors):
+            self.active_graphs = selectors
+
+    manifests = FakeManifests()
+    monkeypatch.setattr(persistent, "default_graph_services", lambda collection, object_store: (manifests, None))
+    qdrant = FakeQdrant()
+
+    _configure_query_denial(qdrant, "papers")
+
+    assert qdrant.denied == []
+    assert qdrant.active_vectors == {}
+    assert qdrant.active_graphs == {}
+
+
+def test_query_authorization_limits_graph_to_available_entries_and_keeps_vector_fallback(monkeypatch):
+    from graph import persistent
+    from launcher.runners import _configure_query_denial
+
+    documents = {
+        "available": {
+            "status": "available",
+            "document_generation": 1,
+            "document_attempt_id": "available-attempt",
+            "vector_ready": True,
+        },
+        "partial": {
+            "status": "partial",
+            "document_generation": 2,
+            "document_attempt_id": "partial-attempt",
+            "vector_ready": True,
+        },
+        "pending": {
+            "status": "pending",
+            "document_generation": 3,
+            "document_attempt_id": "pending-attempt",
+            "previous_pointer": {"document_generation": 2},
+            "vector_ready": False,
+        },
+        "stale": {
+            "status": "stale",
+            "document_generation": 4,
+            "document_attempt_id": "stale-attempt",
+            "vector_ready": True,
+        },
+        "unavailable": {
+            "status": "unavailable",
+            "document_generation": 5,
+            "document_attempt_id": "unavailable-attempt",
+            "vector_ready": True,
+        },
+        "not-ready": {
+            "status": "unavailable",
+            "document_generation": 6,
+            "document_attempt_id": "not-ready-attempt",
+            "vector_ready": False,
+        },
+        "tombstoned": {
+            "status": "tombstoned",
+            "document_generation": 7,
+            "document_attempt_id": "tombstone-attempt",
+            "vector_ready": True,
+        },
+    }
+    snapshot = _types.SimpleNamespace(manifest={
+        "documents": documents,
+        "tombstone_set_digest": "proof",
+        "pending_tombstone_set_digest": None,
+        "collection_operation_id": None,
+    })
+
+    class FakeManifests:
+        def read_snapshot(self):
+            return snapshot
+
+        def tombstone_controls(self, manifest):
+            return []
+
+        def revalidate(self, candidate):
+            return candidate is snapshot
+
+    class FakeQdrant:
+        def verify_tombstone_control_points(self, controls, expected_digest):
+            assert controls == []
+            assert expected_digest == "proof"
+
+        def set_denied_document_ids(self, document_ids):
+            self.denied = document_ids
+
+        def set_query_authorization(self, manifests, candidate):
+            del manifests, candidate
+
+        def set_active_vector_generations(self, generations):
+            self.active_vectors = generations
+
+        def set_active_graph_selectors(self, selectors):
+            self.active_graphs = selectors
+
+    manifests = FakeManifests()
+    monkeypatch.setattr(persistent, "default_graph_services", lambda collection, object_store: (manifests, None))
+    qdrant = FakeQdrant()
+
+    _configure_query_denial(qdrant, "papers")
+
+    assert qdrant.denied == ["tombstoned"]
+    assert qdrant.active_vectors == {
+        "available": 1,
+        "partial": 2,
+        "pending": 2,
+        "stale": 4,
+        "unavailable": 5,
+    }
+    assert qdrant.active_graphs == {
+        "available": {
+            "document_generation": 1,
+            "document_attempt_id": "available-attempt",
+        },
+    }
+
+
+def test_graph_claim_is_attached_before_normal_ingest_qdrant_mutation(monkeypatch, tmp_path):
+    from graph import persistent
+    from launcher.runners import run_ingest
+
+    dummy_pdf = tmp_path / "paper.pdf"
+    dummy_pdf.write_text("not a real pdf")
+    events = []
+    claim = {"pending_attempt_id": "attempt-1"}
+
+    class FakeManifests:
+        def mark_vectors_ready(self, candidate):
+            assert candidate is claim
+            events.append("mark-vectors-ready")
+
+    class FakePipeline:
+        def __init__(self, collection, object_store=None):
+            assert collection == "papers"
+            assert object_store is None
+            self.manifests = FakeManifests()
+
+        def reserve(self, chunks, document_id, mode):
+            assert document_id == "paper-a"
+            assert mode == "append"
+            events.append("reserve")
+            return claim
+
+        def build_and_publish(self, chunks, vectors, document_id, **kwargs):
+            assert len(chunks) == len(vectors) == 1
+            assert document_id == "paper-a"
+            assert kwargs["claim"] is claim
+            return {"status": "available"}
+
+    class FakeLoader:
+        def process_pdf(self, pdf_path):
+            assert pdf_path == str(dummy_pdf)
+            return {"chunks": [{"chunk_id": 1, "text": "hello"}]}
+
+    class FakeEmbedder:
+        def embed_chunks(self, chunks):
+            assert chunks[0]["document_id"] == "paper-a"
+            return [[0.1, 0.2]]
+
+    class FakeQdrant:
+        def __init__(self, collection_name):
+            assert collection_name == "papers"
+
+        def set_graph_claim(self, manifests, candidate):
+            assert isinstance(manifests, FakeManifests)
+            assert candidate is claim
+            events.append("set-graph-claim")
+
+        def prepare_ingest(self, **kwargs):
+            assert kwargs["claim"] is claim
+            events.append("prepare-ingest")
+
+        def upsert_chunks(self, chunks, vectors):
+            assert len(chunks) == len(vectors) == 1
+            events.append("upsert")
+            return ["new-point"]
+
+        def write_document_control_point(self, candidate, vector_size):
+            assert candidate is claim
+            assert vector_size == 2
+            events.append("write-document-control")
+            return "document-control"
+
+        def verify_document_control_point(self, control_id):
+            assert control_id == "document-control"
+            events.append("verify-document-control")
+
+    loader_module = _types.ModuleType("preprocessing.docling_loader")
+    loader_module.DoclingLoader = FakeLoader
+    embedder_module = _types.ModuleType("embedding.embedder")
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module = _types.ModuleType("vectordb.qdrant_handler")
+    qdrant_module.QdrantHandler = FakeQdrant
+    monkeypatch.setitem(sys.modules, "preprocessing.docling_loader", loader_module)
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", FakePipeline)
+
+    run_ingest({
+        "collection": "papers",
+        "pdf_path": str(dummy_pdf),
+        "document_id": "paper-a",
+        "ingest_mode": "append",
+        "enable_graph_artifact": True,
+        "graph_relation_provider": object(),
+        "artifact_dir": str(tmp_path),
+    })
+
+    assert events.index("set-graph-claim") < events.index("prepare-ingest")
+
+
+@pytest.mark.parametrize(
+    ("artifact_fields", "artifact_error", "error_match"),
+    [
+        (
+            {
+                "active_artifact_key": "graphs/papers/paper-a/v1/graph.json.gz",
+                "artifact_digest": "artifact-digest",
+                "backend": {"kind": "memory", "namespace": "test"},
+                "document_generation": 1,
+            },
+            None,
+            None,
+        ),
+        ({}, None, "incomplete artifact tuple"),
+        (
+            {
+                "active_artifact_key": "graphs/papers/paper-a/v1/graph.json.gz",
+                "artifact_digest": "artifact-digest",
+                "backend": {"kind": "memory", "namespace": "test"},
+                "document_generation": 1,
+            },
+            ValueError("corrupt graph artifact"),
+            "artifact validation failed",
+        ),
+    ],
+    ids=["valid-artifact", "missing-artifact", "invalid-artifact"],
+)
+def test_completed_replace_collection_resume_validates_artifact_before_release(
+    monkeypatch,
+    tmp_path,
+    artifact_fields,
+    artifact_error,
+    error_match,
+):
+    from graph import persistent
+    from launcher.runners import run_ingest
+
+    dummy_pdf = tmp_path / "paper.pdf"
+    dummy_pdf.write_text("not a real pdf")
+    events = []
+    entry = {
+        "status": "available",
+        "source_fingerprint": "source-fingerprint",
+        "document_attempt_id": "document-attempt",
+        "collection_fence_token": 7,
+        "collection_attempt_id": "replace-1-attempt",
+    }
+    entry.update(artifact_fields)
+    manifest = {
+        "collection_operation_id": "replace-1",
+        "collection_fence_token": 7,
+        "collection_attempt_id": "replace-1-attempt",
+        "pending_tombstone_set_digest": None,
+        "documents": {
+            "paper-a": entry,
+        },
+    }
+
+    class FakeManifests:
+        def read_snapshot(self):
+            return _types.SimpleNamespace(manifest=manifest)
+
+        def tombstone_documents(self, retained_documents, operation_id):
+            assert retained_documents == {"paper-a": "source-fingerprint"}
+            assert operation_id == "replace-1"
+            events.append("tombstone-documents")
+            return manifest
+
+        def get(self, document_id):
+            return manifest["documents"].get(document_id)
+
+        def release_collection_fence(self, operation_id, fence_token):
+            events.append(("release-collection-fence", operation_id, fence_token))
+
+    class FakePipeline:
+        def __init__(self, collection, object_store=None):
+            assert collection == "papers"
+            self.manifests = FakeManifests()
+            self.artifacts = FakeArtifacts()
+
+        def reserve(self, *args, **kwargs):
+            raise AssertionError("completed resume must not reserve another document claim")
+
+    class FakeArtifacts:
+        def read(self, key, digest, backend, generation, source_fingerprint):
+            events.append(("artifact-read", key, digest, backend, generation, source_fingerprint))
+            if artifact_error:
+                raise artifact_error
+            return b"{}"
+
+    class FakeLoader:
+        def process_pdf(self, pdf_path):
+            assert pdf_path == str(dummy_pdf)
+            return {"chunks": [{"chunk_id": 1, "text": "hello"}]}
+
+    class FakeEmbedder:
+        def embed_chunks(self, chunks):
+            assert chunks[0]["document_id"] == "paper-a"
+            return [[0.1, 0.2]]
+
+    class FakeQdrant:
+        def __init__(self, collection_name):
+            assert collection_name == "papers"
+
+        def set_collection_claim(self, manifests, operation_id, fence_token, attempt_id):
+            assert isinstance(manifests, FakeManifests)
+            assert (operation_id, fence_token, attempt_id) == ("replace-1", 7, "replace-1-attempt")
+            events.append("set-collection-claim")
+
+        def verify_collection_tombstone_proof(self, manifests):
+            assert isinstance(manifests, FakeManifests)
+            events.append("verify-collection-proof")
+
+        def prepare_ingest(self, **kwargs):
+            raise AssertionError("completed resume must not mutate Qdrant")
+
+    loader_module = _types.ModuleType("preprocessing.docling_loader")
+    loader_module.DoclingLoader = FakeLoader
+    embedder_module = _types.ModuleType("embedding.embedder")
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module = _types.ModuleType("vectordb.qdrant_handler")
+    qdrant_module.QdrantHandler = FakeQdrant
+    monkeypatch.setitem(sys.modules, "preprocessing.docling_loader", loader_module)
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", FakePipeline)
+    monkeypatch.setattr(persistent, "source_fingerprint", lambda chunks, document_id: "source-fingerprint")
+
+    config = {
+        "collection": "papers",
+        "pdf_path": str(dummy_pdf),
+        "document_id": "paper-a",
+        "ingest_mode": "replace-collection",
+        "enable_graph_artifact": True,
+    }
+    if error_match:
+        with pytest.raises(RuntimeError, match=error_match):
+            run_ingest(config)
+        assert "verify-collection-proof" not in events
+        assert not any(event[0] == "release-collection-fence" for event in events if isinstance(event, tuple))
+        return
+
+    run_ingest(config)
+
+    assert events == [
+        "tombstone-documents",
+        "set-collection-claim",
+        (
+            "artifact-read",
+            "graphs/papers/paper-a/v1/graph.json.gz",
+            "artifact-digest",
+            {"kind": "memory", "namespace": "test"},
+            1,
+            "source-fingerprint",
+        ),
+        "verify-collection-proof",
+        ("release-collection-fence", "replace-1", 7),
+    ]

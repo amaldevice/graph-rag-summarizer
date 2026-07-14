@@ -130,21 +130,20 @@ main
 
 **Branch:** `feat/ingest-graph-foundation` from updated `main`  
 **Target:** `main`  
-**Issues:** close #39, #45, #46 plus a new implementation issue for the persistent graph artifact/backfill contract.
+**Issues:** close #39 and #69.
 
-The new implementation issue is necessary because Wayfinder #58 is a resolved decision ticket, not a code-delivery issue.
+#69 is the persistent graph artifact/backfill delivery issue because Wayfinder #58 is a resolved decision ticket, not a code-delivery issue. Issues #45 and #46 are delivered with PR B under ADR 0002's ownership split.
 
 #### What to do
 
 1. Preserve the existing launcher and document-safe Qdrant identity contract.
 2. Build graph input from every chunk in the ingested document, not from a query result.
-3. Add hybrid entity/relation availability reporting and structured raw relation evidence.
+3. Add hybrid entity/relation availability reporting and preserve structured raw relation evidence separately from the active graph.
 4. Keep optional LLM extraction on the existing provider fallback chain; no provider must be mandatory for ingest.
-5. Canonicalize entity identities conservatively and classify weak/orphan regions.
-6. Build the active graph with the current fixed topology/Leiden baseline. Adaptive topology is intentionally deferred to PR C.
-7. Persist the versioned `graph.json.gz` artifact and update the active manifest only after validation.
-8. Add graph status and independent backfill/rebuild behavior.
-9. Keep image export/storage unchanged except for documenting the separate `images/` prefix.
+5. Build the active graph with the current fixed topology/Leiden baseline. Adaptive topology is intentionally deferred to PR C.
+6. Persist the versioned `graph.json.gz` artifact and update the active manifest only after validation.
+7. Add graph status and independent backfill/rebuild behavior.
+8. Keep image export/storage unchanged except for documenting the separate `images/` prefix.
 
 #### Desired outputs
 
@@ -159,11 +158,13 @@ The new implementation issue is necessary because Wayfinder #58 is a resolved de
 
 **Branch:** `feat/global-relation-recovery` from merged PR A  
 **Target:** `main`  
-**Issues:** close #47 and #48. #39 remains the extraction reliability foundation from PR A.
+**Issues:** close #45, #46, #47, and #48. #39 remains the extraction reliability foundation from PR A.
 
 #### What to do
 
-- Start from weak/orphan regions within one document.
+- Define the backward-compatible local relation-evidence contract, including confidence, scope, evidence type, support chunk IDs, verification state, and resolved weak-edge weights.
+- Canonicalize conservative entity surface variants, preserve aliases/confidence, and report deterministic weak/orphan/query-protected support classifications.
+- Start recovery from weak/orphan regions within one document.
 - Generate candidates only from bounded semantic-neighbor and hierarchy/section neighborhoods.
 - Enforce stable per-region and per-document candidate caps.
 - Verify using bounded evidence windows, not the whole document.

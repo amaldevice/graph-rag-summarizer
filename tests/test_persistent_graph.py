@@ -7,6 +7,7 @@ import socket
 import networkx as nx
 import pytest
 
+import graph.persistent as persistent
 from graph.persistent import (
     GraphArtifactStore,
     GraphArtifactCorruptionError,
@@ -270,6 +271,322 @@ def test_reserve_rebuilds_next_version_from_ledger_when_counter_is_stale():
     assert first["version_ledger"][0]["version"] == 1
 
 
+def _backfill_chunk(document_id="paper", chunk_id=1, generation=1, vector=None):
+    return {
+        "document_id": document_id,
+        "chunk_id": chunk_id,
+        "chunk_uid": f"{document_id}:chunk:{chunk_id}",
+        "text": f"chunk {chunk_id}",
+        "document_generation": generation,
+        "vector_point": True,
+        "_embedding": [0.1, 0.2] if vector is None else vector,
+    }
+
+
+def test_backfill_converts_legacy_qdrant_scan_error_without_initializing_pipeline(monkeypatch):
+    class LegacyQdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            assert document_id is None
+            assert include_vectors is True
+            raise ValueError("legacy point without document_id cannot be backfilled")
+
+    def unexpected_pipeline(*args, **kwargs):
+        raise AssertionError("pipeline must not initialize for a legacy scan error")
+
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", unexpected_pipeline)
+
+    assert backfill_qdrant_collection(LegacyQdrant(), "papers") == [{
+        "status": "unavailable",
+        "document_id": None,
+        "failure_reason": "legacy Qdrant payload cannot be backfilled; rebuild required",
+    }]
+
+
+def test_backfill_rejects_non_mapping_payload_without_initializing_pipeline(monkeypatch):
+    class MalformedQdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            return ["not a Qdrant payload"]
+
+    def unexpected_pipeline(*args, **kwargs):
+        raise AssertionError("pipeline must not initialize for a malformed payload")
+
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", unexpected_pipeline)
+
+    assert backfill_qdrant_collection(MalformedQdrant(), "papers") == [{
+        "status": "unavailable",
+        "document_id": None,
+        "failure_reason": "Qdrant payload is malformed; rebuild required",
+    }]
+
+
+@pytest.mark.parametrize("generations", [(False,), (0,), (-1,), (1.5,), (1, 2)])
+def test_backfill_rejects_invalid_or_inconsistent_document_generation_without_initializing_pipeline(
+    monkeypatch,
+    generations,
+):
+    class InvalidGenerationQdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            return [
+                _backfill_chunk(chunk_id=index, generation=generation)
+                for index, generation in enumerate(generations)
+            ]
+
+    def unexpected_pipeline(*args, **kwargs):
+        raise AssertionError("pipeline must not initialize for invalid document generations")
+
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", unexpected_pipeline)
+
+    assert backfill_qdrant_collection(InvalidGenerationQdrant(), "papers") == [{
+        "status": "unavailable",
+        "document_id": "paper",
+        "failure_reason": "document generation metadata is incomplete or inconsistent; rebuild required",
+    }]
+
+
+@pytest.mark.parametrize(
+    "vectors",
+    [([],), ([float("nan")],), ([True],), ([0.1, "invalid"],), ([0.1, 0.2], [0.3])],
+)
+def test_backfill_rejects_invalid_or_inconsistent_stored_vectors_without_initializing_pipeline(monkeypatch, vectors):
+    class InvalidVectorQdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            return [
+                _backfill_chunk(chunk_id=index, vector=vector)
+                for index, vector in enumerate(vectors)
+            ]
+
+    def unexpected_pipeline(*args, **kwargs):
+        raise AssertionError("pipeline must not initialize for invalid stored vectors")
+
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", unexpected_pipeline)
+
+    assert backfill_qdrant_collection(InvalidVectorQdrant(), "papers") == [{
+        "status": "unavailable",
+        "document_id": "paper",
+        "failure_reason": "stored vectors are incomplete, invalid, or inconsistent; rebuild required",
+    }]
+
+
+def test_backfill_reuses_one_lazy_pipeline_and_passes_stored_vectors(monkeypatch):
+    scanned_chunks = [
+        _backfill_chunk(document_id="zeta", chunk_id=2, vector=[0.2, 0.3]),
+        _backfill_chunk(document_id="alpha", chunk_id=1, vector=[0.4, 0.5]),
+    ]
+
+    class Qdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            assert document_id is None
+            assert include_vectors is True
+            return scanned_chunks
+
+    class RecordingPipeline:
+        instances = []
+
+        def __init__(self, collection, object_store=None):
+            self.collection = collection
+            self.object_store = object_store
+            self.calls = []
+            self.instances.append(self)
+
+        def backfill(self, chunks, vectors, document_id, **kwargs):
+            self.calls.append((chunks, vectors, document_id, kwargs))
+            return {"status": "available", "document_id": document_id}
+
+    object_store = object()
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", RecordingPipeline)
+
+    result = backfill_qdrant_collection(Qdrant(), "papers", object_store=object_store)
+
+    assert result == [
+        {"status": "available", "document_id": "alpha"},
+        {"status": "available", "document_id": "zeta"},
+    ]
+    assert len(RecordingPipeline.instances) == 1
+    pipeline = RecordingPipeline.instances[0]
+    assert pipeline.collection == "papers"
+    assert pipeline.object_store is object_store
+    assert [call[1] for call in pipeline.calls] == [[[0.4, 0.5]], [[0.2, 0.3]]]
+    assert [call[2] for call in pipeline.calls] == ["alpha", "zeta"]
+    assert all(call[3]["qdrant"].__class__.__name__ == "Qdrant" for call in pipeline.calls)
+    assert all("_embedding" in chunk for chunk in scanned_chunks)
+
+
+def test_backfill_publishes_the_stored_qdrant_generation_to_manifest_and_artifact(monkeypatch):
+    class Qdrant:
+        prepared_claims = []
+        verification_claims = []
+
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            assert include_vectors is True
+            return [_backfill_chunk(generation=2)]
+
+        def materialize_backfill_claim(self, manifests, claim):
+            assert claim["document_id"] == "paper"
+            assert claim["document_generation"] == 2
+            manifests.mark_vectors_ready(claim)
+            self.prepared_claims.append(claim)
+
+        def verify_graph_claim_current(self, claim):
+            assert claim["document_id"] == "paper"
+            assert claim["document_generation"] == 2
+            self.verification_claims.append(claim)
+
+    def build_graph(chunks, embeddings, document_id, **kwargs):
+        assert document_id == "paper"
+        assert embeddings == [[0.1, 0.2]]
+        assert kwargs == {}
+        return nx.Graph(), {
+            "raw_evidence": [],
+            "active_evidence": [],
+            "diagnostics": {},
+        }
+
+    objects = InMemoryObjectStore()
+    monkeypatch.setattr(persistent, "build_document_graph", build_graph)
+
+    qdrant = Qdrant()
+    result = backfill_qdrant_collection(qdrant, "papers", object_store=objects)
+
+    assert result[0]["status"] == "available"
+    manifests = ManifestStore(
+        objects,
+        collection="papers",
+        backend={"kind": "injected", "namespace": "papers"},
+    )
+    entry = manifests.get("paper")
+    assert entry["document_generation"] == 2
+    assert entry["pending_generation"] is None
+    assert len(entry["version_ledger"]) == 1
+    assert entry["version_ledger"][0]["document_generation"] == 2
+    assert entry["version_ledger"][0]["state"] == "published_available"
+    artifact = GraphArtifactStore(objects, "papers").read(
+        entry["active_artifact_key"],
+        entry["artifact_digest"],
+        entry["backend"],
+        2,
+        entry["source_fingerprint"],
+    )
+    assert deserialize_graph(artifact)["document_generation"] == 2
+    assert len(qdrant.prepared_claims) == 1
+    assert len(qdrant.verification_claims) == 2
+
+
+def test_backfill_refuses_to_publish_when_qdrant_revalidation_fails(monkeypatch):
+    class Qdrant:
+        def materialize_backfill_claim(self, manifests, claim):
+            del manifests, claim
+            raise RuntimeError("Qdrant generation changed")
+
+        def verify_graph_claim_current(self, claim):
+            del claim
+            raise RuntimeError("Qdrant generation changed")
+
+    def build_graph(chunks, embeddings, document_id, **kwargs):
+        del chunks, embeddings, document_id, kwargs
+        return nx.Graph(), {"raw_evidence": [], "active_evidence": [], "diagnostics": {}}
+
+    objects = InMemoryObjectStore()
+    pipeline = PersistentGraphPipeline("papers", object_store=objects)
+    monkeypatch.setattr(persistent, "build_document_graph", build_graph)
+
+    result = pipeline.backfill(
+        [_backfill_chunk(generation=2)],
+        [[0.1, 0.2]],
+        "paper",
+        document_generation=2,
+        qdrant=Qdrant(),
+    )
+
+    assert result["status"] == "stale"
+    assert "Qdrant generation changed" in result["failure_reason"]
+    assert pipeline.manifests.get("paper")["status"] == "stale"
+
+
+def test_backfill_rejects_conflicting_manifest_generation_without_advancing_it(monkeypatch):
+    class Qdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            return [_backfill_chunk(generation=2)]
+
+    objects = InMemoryObjectStore()
+    manifests = ManifestStore(
+        objects,
+        collection="papers",
+        backend={"kind": "injected", "namespace": "papers"},
+    )
+    original = manifests.reserve("paper", "existing-operation", "existing-fingerprint")
+
+    def unexpected_build(*args, **kwargs):
+        raise AssertionError("generation-conflicting backfill must not build an artifact")
+
+    monkeypatch.setattr(persistent, "build_document_graph", unexpected_build)
+
+    result = backfill_qdrant_collection(Qdrant(), "papers", object_store=objects)
+
+    assert result == [{
+        "status": "unavailable",
+        "entry": original,
+        "failure_reason": "manifest document generation conflicts with Qdrant; rebuild required",
+    }]
+    assert manifests.get("paper") == original
+
+
+def test_backfill_rejects_boolean_chunk_id_without_initializing_pipeline(monkeypatch):
+    class Qdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            return [_backfill_chunk(chunk_id=True)]
+
+    def unexpected_pipeline(*args, **kwargs):
+        raise AssertionError("pipeline must not initialize for a boolean chunk id")
+
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", unexpected_pipeline)
+
+    assert backfill_qdrant_collection(Qdrant(), "papers") == [{
+        "status": "unavailable",
+        "document_id": "paper",
+        "failure_reason": "chunk identity metadata is incomplete; rebuild required",
+    }]
+
+
+def test_backfill_rejects_durably_tombstoned_document_without_claim_publication(monkeypatch):
+    class Qdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            assert document_id is None
+            assert include_vectors is True
+            return [_backfill_chunk(generation=1)]
+
+    objects = InMemoryObjectStore()
+    manifests = ManifestStore(
+        objects,
+        collection="papers",
+        backend={"kind": "injected", "namespace": "papers"},
+    )
+    claim = manifests.reserve("paper", "ingest-operation", "source-fingerprint")
+    manifests.bind_artifact(claim, "graphs/papers/paper/v1/graph.json.gz", "artifact-digest")
+    manifests.publish(claim, "graphs/papers/paper/v1/graph.json.gz", "artifact-digest")
+    tombstone = manifests.tombstone_documents({}, "replace-collection-operation")
+    manifests.commit_tombstone_proof(manifests.tombstone_controls(tombstone))
+    manifests.release_collection_fence(
+        "replace-collection-operation",
+        tombstone["collection_fence_token"],
+    )
+    tombstoned = manifests.get("paper")
+    assert tombstoned["status"] == "tombstoned"
+
+    def unexpected_build(*args, **kwargs):
+        raise AssertionError("tombstoned backfill must not reserve or publish a graph artifact")
+
+    monkeypatch.setattr(persistent.PersistentGraphPipeline, "build_and_publish", unexpected_build)
+
+    result = backfill_qdrant_collection(Qdrant(), "papers", object_store=objects)
+
+    assert result == [{
+        "status": "unavailable",
+        "entry": tombstoned,
+        "failure_reason": "document is tombstoned; rebuild or re-ingest with replace-document required",
+    }]
+    assert manifests.get("paper") == tombstoned
+
+
 def test_backfill_rejects_incomplete_vector_metadata_without_reembedding():
     class LegacyQdrant:
         def scroll_document_chunks(self, document_id=None, include_vectors=False):
@@ -316,10 +633,98 @@ def test_backfill_rejects_non_string_document_identity_even_when_qdrant_filter_c
 def test_collection_fence_invalidates_retained_document_claims():
     manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
     claim = manifests.reserve("paper", "op-1", "fingerprint", mode="replace-document")
-    manifests.tombstone_documents({"paper"}, "replace-collection:unique")
+    manifests.tombstone_documents({"paper": "fingerprint"}, "replace-collection:unique")
 
     with pytest.raises(RuntimeError, match="stale graph claim"):
         manifests.assert_claim_current(claim)
+
+
+@pytest.mark.parametrize("mode", ("append", "replace-document"))
+def test_collection_fence_rejects_unrelated_document_reservations(mode):
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    manifests.tombstone_documents(
+        {"replacement": source_fingerprint(_chunks(), "replacement")},
+        "replace-collection:unique",
+    )
+
+    with pytest.raises(RuntimeError, match="collection replacement fence"):
+        manifests.reserve("unrelated", f"{mode}-operation", "fingerprint", mode=mode)
+
+    assert manifests.get("unrelated") is None
+
+
+def test_collection_fence_allows_the_matching_replacement_reservation():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    pipeline = PersistentGraphPipeline(
+        "papers",
+        manifests=manifests,
+        artifacts=GraphArtifactStore(InMemoryObjectStore(), "papers"),
+    )
+    fence = manifests.tombstone_documents(
+        {"replacement": source_fingerprint(_chunks(), "replacement")},
+        "replace-collection:unique",
+    )
+
+    claim = pipeline.reserve(_chunks(), "replacement", mode="replace-collection")
+
+    assert claim["operation_id"] == fence["collection_operation_id"]
+    assert claim["collection_fence_token"] == fence["collection_fence_token"]
+    assert claim["collection_attempt_id"] == fence["collection_attempt_id"]
+
+
+def test_collection_fence_binds_replacement_document_and_source_fingerprint():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    pipeline = PersistentGraphPipeline(
+        "papers",
+        manifests=manifests,
+        artifacts=GraphArtifactStore(InMemoryObjectStore(), "papers"),
+    )
+    chunks = _chunks()
+    fingerprint = source_fingerprint(chunks, "paper-a")
+    fence = manifests.tombstone_documents({"paper-a": fingerprint}, "replace-collection:unique")
+
+    claim = pipeline.reserve(chunks, "paper-a", mode="replace-collection")
+    assert pipeline.reserve(chunks, "paper-a", mode="replace-collection") == claim
+
+    changed_chunks = [dict(chunk) for chunk in chunks]
+    changed_chunks[0]["text"] = "Changed source content."
+    with pytest.raises(RuntimeError, match="collection replacement fence"):
+        pipeline.reserve(changed_chunks, "paper-a", mode="replace-collection")
+    with pytest.raises(RuntimeError, match="collection replacement fence"):
+        pipeline.reserve(chunks, "paper-b", mode="replace-collection")
+    with pytest.raises(RuntimeError, match="replacement target"):
+        manifests.tombstone_documents(
+            {"paper-a": source_fingerprint(changed_chunks, "paper-a")},
+            fence["collection_operation_id"],
+        )
+
+    assert manifests.get("paper-b") is None
+    assert manifests.read_snapshot().manifest["collection_retained_documents"] == {"paper-a": fingerprint}
+
+
+def test_collection_fence_does_not_resume_a_stale_matching_operation_claim():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    stale = manifests.reserve(
+        "replacement",
+        "replace-collection:unique",
+        "fingerprint",
+        mode="replace-document",
+    )
+    fence = manifests.tombstone_documents({"replacement": "fingerprint"}, "replace-collection:unique")
+
+    fresh = manifests.reserve(
+        "replacement",
+        "replace-collection:unique",
+        "fingerprint",
+        mode="replace-collection",
+    )
+
+    assert fresh["pending_attempt_id"] != stale["pending_attempt_id"]
+    assert fresh["collection_fence_token"] == fence["collection_fence_token"]
+    assert fresh["collection_attempt_id"] == fence["collection_attempt_id"]
+    assert {item["state"] for item in fresh["version_ledger"]} == {"burned", "reserved"}
+    with pytest.raises(RuntimeError, match="stale graph claim"):
+        manifests.assert_claim_current(stale)
 
 
 def test_tombstone_proof_burns_versions_and_commits_control_digest():
@@ -328,7 +733,7 @@ def test_tombstone_proof_burns_versions_and_commits_control_digest():
     manifests.bind_artifact(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
     manifests.publish(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
     pending = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-document")
-    tombstone = manifests.tombstone_documents(set(), "replace-1")
+    tombstone = manifests.tombstone_documents({}, "replace-1")
 
     states = {item["version"]: item["state"] for item in tombstone["documents"]["paper"]["version_ledger"]}
     assert states == {1: "tombstoned", 2: "burned"}
@@ -347,7 +752,7 @@ def test_tombstone_proof_rejects_modified_payload():
     claim = manifests.reserve("paper", "op-1", "fingerprint")
     manifests.bind_artifact(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
     manifests.publish(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
-    tombstone = manifests.tombstone_documents(set(), "replace-1")
+    tombstone = manifests.tombstone_documents({}, "replace-1")
     controls = manifests.tombstone_controls(tombstone)
     controls[0]["payload"]["tombstone_operation_id"] = "wrong"
 
@@ -360,16 +765,16 @@ def test_tombstoned_document_reintroduction_stages_deny_cleanup():
     claim = manifests.reserve("paper", "op-1", "fingerprint")
     manifests.bind_artifact(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
     manifests.publish(claim, "graphs/papers/paper/v1/graph.json.gz", "digest")
-    tombstone = manifests.tombstone_documents(set(), "replace-1")
+    tombstone = manifests.tombstone_documents({}, "replace-1")
     controls = manifests.tombstone_controls(tombstone)
     manifests.commit_tombstone_proof(controls)
     manifests.release_collection_fence("replace-1", tombstone["collection_fence_token"])
 
-    reintroduction = manifests.tombstone_documents({"paper"}, "replace-2")
+    reintroduction = manifests.tombstone_documents({"paper": "fingerprint-2"}, "replace-2")
     assert reintroduction["documents"]["paper"]["status"] == "pending"
     assert reintroduction["pending_tombstone_cleanup_ids"] == [controls[0]["point_id"]]
     assert manifests.tombstone_controls(reintroduction) == []
-    fresh_claim = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-collection")
+    fresh_claim = manifests.reserve("paper", "replace-2", "fingerprint-2", mode="replace-collection")
     assert fresh_claim["document_generation"] == 2
     committed = manifests.commit_tombstone_proof([])
     assert committed["pending_tombstone_set_digest"] == "pending"
@@ -383,12 +788,12 @@ def test_reintroduction_publish_commits_tombstone_set_with_active_pointer():
     first = manifests.reserve("paper", "op-1", "fingerprint-1")
     manifests.bind_artifact(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
     manifests.publish(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
-    tombstone = manifests.tombstone_documents(set(), "replace-1")
+    tombstone = manifests.tombstone_documents({}, "replace-1")
     controls = manifests.tombstone_controls(tombstone)
     manifests.commit_tombstone_proof(controls)
     manifests.release_collection_fence("replace-1", tombstone["collection_fence_token"])
-    reintroduction = manifests.tombstone_documents({"paper"}, "replace-2")
-    claim = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-collection")
+    reintroduction = manifests.tombstone_documents({"paper": "fingerprint-2"}, "replace-2")
+    claim = manifests.reserve("paper", "replace-2", "fingerprint-2", mode="replace-collection")
     key = "graphs/papers/paper/v2/graph.json.gz"
     manifests.bind_artifact(claim, key, "digest-2")
 
@@ -461,6 +866,6 @@ def test_replace_collection_tombstones_omitted_documents():
     claim = manifests.reserve("paper-a", "op-a", "fp-a")
     manifests.bind_artifact(claim, "graphs/papers/paper-a/v1/graph.json.gz", "a")
     manifests.publish(claim, "graphs/papers/paper-a/v1/graph.json.gz", "a")
-    manifests.tombstone_documents({"paper-b"}, "replace-1")
+    manifests.tombstone_documents({"paper-b": "fp-b"}, "replace-1")
     assert manifests.get("paper-a")["status"] == "tombstoned"
     assert manifests.preflight("paper-a")["allowed"] is False

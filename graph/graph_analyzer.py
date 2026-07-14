@@ -74,7 +74,8 @@ class GraphAnalyzer:
         df,
         communities,
         modularity,
-        output_path="output/graph_summary.json"
+        output_path="output/graph_summary.json",
+        relation_extraction_mode="unavailable",
     ):
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -89,12 +90,16 @@ class GraphAnalyzer:
                 "members": members[:20]
             })
 
+        if relation_extraction_mode not in {"llm-enhanced", "spacy-only", "unavailable"}:
+            relation_extraction_mode = "unavailable"
+
         summary = {
             "modularity": modularity,
             "total_nodes": int(len(df)),
             "total_communities": int(len(communities)),
             "top_nodes": top_nodes,
-            "communities": community_summary
+            "communities": community_summary,
+            "relation_extraction": {"mode": relation_extraction_mode},
         }
 
         with open(out, "w", encoding="utf-8") as f:

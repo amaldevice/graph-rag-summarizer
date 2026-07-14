@@ -1,5 +1,19 @@
 # Completed Tasks
 
+## 2026-07-14
+
+- **Completed PR A persistent-graph ADR alignment and Issue #39 delivery**
+  - Aligned PR #67 with ADR 0002: #39 and #69 are PR A; #45–#48 stay with PR B.
+  - Added provider-backed relation availability/mode reporting, including `graph_summary.json` observability.
+  - Hardened manifest/Qdrant fencing, replacement resume binding, tombstone-safe query preflight, and backfill control proofs with attempt-scoped points and crash resume.
+  - Verification: `./.venv/bin/pytest -q` (**245 passed**); changed-file `py_compile`; `git diff --check`; final spec/ADR review approved.
+
+- **Reviewed PR #67 against the persistent-graph handoff, linked issues, and ADR 0002**
+  - Confirmed the persistent-artifact, manifest-CAS, tombstone-proof, generation-filter, and compatibility-fallback foundations are present.
+  - Reported the unresolved handoff/ADR ownership conflict for #45–#46, missing implementation delivery issue/closing links, incomplete #39/#45/#46 acceptance criteria if retained in PR A, PR C tracking scope leakage, and non-hermetic backfill rejection tests.
+  - Posted the evidence and required resolution to PR #67: https://github.com/amaldevice/graph-rag-summarizer/pull/67#issuecomment-4965454936
+  - Verification: reviewed PR head `9ecf5eb`; clean-worktree `pytest -q` (`204 passed`); changed-file `py_compile`; `git diff --check`; isolated backfill-rejection tests fail without storage configuration (`ValueError: Invalid endpoint`).
+
 ## 2026-07-13
 
 - **Prepared the PR #62 docs-only blocker patch for ADR 0002**

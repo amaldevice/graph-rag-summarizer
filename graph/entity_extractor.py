@@ -5,6 +5,8 @@
 
 from collections import defaultdict
 import json
+import logging
+import math
 import os
 import re
 import time
@@ -14,6 +16,9 @@ from openai import OpenAI
 
 from config import settings
 from config.settings import SPACY_MODEL
+
+
+logger = logging.getLogger(__name__)
 
 
 class EntityExtractor:
@@ -32,6 +37,9 @@ class EntityExtractor:
                 timeout=settings.LLM_REQUEST_TIMEOUT_SECONDS,
             )
 
+        self._relation_extraction_llm_accepted = False
+        self._relation_extraction_fallback_used = False
+
         # Entity yang biasanya noise di paper
         self.stop_entities = {
             "et al", "et al.", "al.", "fig", "figure", "table",
@@ -44,6 +52,15 @@ class EntityExtractor:
             "EVENT", "WORK_OF_ART", "LAW", "LANGUAGE",
             "DATE", "NORP", "FAC"
         }
+
+    @property
+    def relation_extraction_mode(self):
+        """Return the strongest relation-extraction path used for this instance."""
+        if self._relation_extraction_llm_accepted:
+            return "llm-enhanced"
+        if self._relation_extraction_fallback_used:
+            return "spacy-only"
+        return "unavailable"
 
     # ========================================================
     # CLEAN ENTITY TEXT
@@ -123,13 +140,96 @@ class EntityExtractor:
         return entity_map, all_entities
 
     def _should_use_llm(self, chunk_text, entities):
-        if self.groq_client is None and self.provider_router is None:
+        if not self._has_available_relation_provider():
             return False
         if len(entities) < 2:
             return False
         if len(chunk_text.strip()) < 80:
             return False
         return True
+
+    def _has_available_relation_provider(self):
+        if self.groq_client is not None:
+            return True
+        if self.provider_router is None:
+            return False
+
+        resolve_chain = getattr(self.provider_router, "resolve_chain", None)
+        if not callable(resolve_chain):
+            return True
+        try:
+            return bool(resolve_chain())
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("Relation provider is unavailable; using spaCy-only fallback: %s", exc)
+            return False
+
+    def _parse_relation_response(self, content, source, *, include_confidence=False):
+        try:
+            payload = json.loads(content)
+        except (TypeError, json.JSONDecodeError) as exc:
+            logger.warning("Skipping malformed LLM relation response: %s", exc)
+            return []
+
+        if not isinstance(payload, dict):
+            logger.warning("Skipping malformed LLM relation response: expected an object")
+            return []
+        records = payload.get("relations", [])
+        return self._validate_relation_records(records, source, include_confidence=include_confidence)
+
+    def _validate_relation_records(self, records, source, *, include_confidence=False):
+        if not isinstance(records, list):
+            logger.warning("Skipping malformed LLM relation response: 'relations' must be a list")
+            return []
+
+        relations = []
+        seen = set()
+        for record in records:
+            relation = self._validate_relation_record(record, source, include_confidence=include_confidence)
+            if relation is None:
+                continue
+            key = (relation["head"].lower(), relation["relation"], relation["tail"].lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            relations.append(relation)
+        return relations
+
+    def _validate_relation_record(self, record, source, *, include_confidence=False):
+        if not isinstance(record, dict):
+            logger.warning("Skipping malformed LLM relation: expected an object")
+            return None
+
+        head = record.get("head")
+        relation = record.get("relation")
+        tail = record.get("tail")
+        if not all(isinstance(value, str) for value in (head, relation, tail)):
+            logger.warning("Skipping malformed LLM relation: head, relation, and tail must be strings")
+            return None
+
+        head = self.clean_entity_text(head)
+        relation = relation.strip().lower()
+        tail = self.clean_entity_text(tail)
+        if not head or not relation or not tail or head.lower() == tail.lower():
+            logger.warning("Skipping malformed LLM relation: fields must be non-empty and distinct")
+            return None
+
+        cleaned = {
+            "head": head,
+            "relation": relation,
+            "tail": tail,
+            "source": source,
+        }
+        if include_confidence:
+            try:
+                confidence = float(record.get("confidence", 1.0))
+            except (TypeError, ValueError):
+                logger.warning("Skipping malformed LLM relation: confidence must be numeric")
+                return None
+            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                logger.warning("Skipping malformed LLM relation: confidence must be between 0 and 1")
+                return None
+            cleaned.update({"confidence": confidence, "status": "accepted"})
+        return cleaned
 
     def _build_relation_prompt(self, chunk_text, entities):
         entity_lines = []
@@ -193,34 +293,7 @@ Text:
                 )
 
                 content = response.choices[0].message.content
-                data = json.loads(content)
-                relations = data.get("relations", [])
-
-                cleaned_relations = []
-                seen = set()
-                for rel in relations:
-                    head = self.clean_entity_text(str(rel.get("head", "")))
-                    relation = str(rel.get("relation", "")).strip().lower()
-                    tail = self.clean_entity_text(str(rel.get("tail", "")))
-
-                    if not head or not relation or not tail:
-                        continue
-                    if head.lower() == tail.lower():
-                        continue
-
-                    key = (head.lower(), relation, tail.lower())
-                    if key in seen:
-                        continue
-                    seen.add(key)
-
-                    cleaned_relations.append({
-                        "head": head,
-                        "relation": relation,
-                        "tail": tail,
-                        "source": "groq"
-                    })
-
-                return cleaned_relations
+                return self._parse_relation_response(content, "groq")
 
             except Exception as e:
                 last_error = e
@@ -246,30 +319,10 @@ Text:
                 "You extract relations as strict JSON.",
                 prompt,
             )
-            data = json.loads(content)
-            relations = []
-            seen = set()
-            for rel in data.get("relations", []):
-                head = self.clean_entity_text(str(rel.get("head", "")))
-                relation = str(rel.get("relation", "")).strip().lower()
-                tail = self.clean_entity_text(str(rel.get("tail", "")))
-                if not head or not relation or not tail or head.lower() == tail.lower():
-                    continue
-                key = (head.lower(), relation, tail.lower())
-                if key in seen:
-                    continue
-                seen.add(key)
-                relations.append({
-                    "head": head,
-                    "relation": relation,
-                    "tail": tail,
-                    "source": getattr(self.provider_router, "active_provider", None) or "provider-router",
-                    "confidence": float(rel.get("confidence", 1.0)),
-                    "status": "accepted",
-                })
-            return relations
+            source = getattr(self.provider_router, "active_provider", None) or "provider-router"
+            return self._parse_relation_response(content, source, include_confidence=True)
         except Exception as exc:
-            print(f"[EntityExtractor] provider relation extraction failed: {exc}")
+            logger.warning("Relation provider call failed; using spaCy-only fallback: %s", exc)
             return []
 
     # ========================================================
@@ -281,9 +334,16 @@ Text:
             return []
 
         if llm_client is not None:
-            return llm_client.extract_relations(chunk_text, entities)
+            llm_relations = self._validate_relation_records(
+                llm_client.extract_relations(chunk_text, entities),
+                "llm-client",
+                include_confidence=True,
+            )
+            if llm_relations:
+                self._relation_extraction_llm_accepted = True
+                return llm_relations
 
-        if self._should_use_llm(chunk_text, entities):
+        elif self._should_use_llm(chunk_text, entities):
             prompt = self._build_relation_prompt(chunk_text, entities)
             llm_relations = (
                 self._call_provider_relations(prompt)
@@ -291,8 +351,10 @@ Text:
                 else self._call_groq_relations(prompt)
             )
             if llm_relations:
+                self._relation_extraction_llm_accepted = True
                 return llm_relations
 
+        self._relation_extraction_fallback_used = True
         entity_texts = [e[0] for e in entities]
         relations = []
         seen = set()
