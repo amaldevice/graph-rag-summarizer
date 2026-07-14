@@ -76,6 +76,7 @@ class GraphAnalyzer:
         modularity,
         output_path="output/graph_summary.json",
         relation_extraction_mode="unavailable",
+        graph=None,
     ):
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +102,9 @@ class GraphAnalyzer:
             "communities": community_summary,
             "relation_extraction": {"mode": relation_extraction_mode},
         }
+
+        if graph is not None and "topology_metadata" in graph.graph:
+            summary["topology_metadata"] = graph.graph["topology_metadata"]
 
         with open(out, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)

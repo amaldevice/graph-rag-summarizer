@@ -168,6 +168,7 @@ def test_query_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) -
             modularity,
             output_path="output/graph_summary.json",
             relation_extraction_mode="unavailable",
+            *args, **kwargs,
         ):
             del ranked, communities, modularity, relation_extraction_mode
             return output_path
