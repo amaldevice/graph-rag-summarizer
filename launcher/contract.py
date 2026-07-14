@@ -323,6 +323,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
         "--document-id",
         help="Stable document identifier for shared-collection ingest (defaults to the PDF filename)",
     )
+    parser.add_argument(
+        "--collection-operation-id",
+        help="Persisted replace-collection operation id used only to resume an interrupted collection claim",
+    )
     return parser
 
 
@@ -487,6 +491,7 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
         "confirm_existing_collection": confirm_existing_collection,
         "ingest_mode": ingest_mode,
         "document_id": document_id or "",
+        "collection_operation_id": getattr(cli_args, "collection_operation_id", "") or "",
         "enable_graph_artifact": _persistent_graph_enabled(),
     }
 
@@ -507,6 +512,7 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
     confirm_existing_collection = bool(getattr(cli_args, "confirm_existing_collection", False))
     ingest_mode = resolve_ingest_mode(getattr(cli_args, "ingest_mode", None))
     document_id = getattr(cli_args, "document_id", None)
+    collection_operation_id = getattr(cli_args, "collection_operation_id", None)
 
     if mode in ("query-only", "full-pipeline"):
         if not collection:
@@ -539,6 +545,7 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
         "confirm_existing_collection": confirm_existing_collection,
         "ingest_mode": ingest_mode,
         "document_id": document_id or "",
+        "collection_operation_id": collection_operation_id or "",
         "enable_graph_artifact": _persistent_graph_enabled(),
     }
 

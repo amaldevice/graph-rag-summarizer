@@ -15,6 +15,7 @@ from graph.persistent import (
     source_fingerprint,
     PersistentGraphPipeline,
     PersistentGraphReader,
+    backfill_qdrant_collection,
 )
 
 
@@ -161,6 +162,70 @@ def test_reserve_same_operation_resumes_exact_claim():
     assert resumed["pending_version"] == first["pending_version"]
     assert resumed["pending_attempt_id"] == first["pending_attempt_id"]
     assert resumed["build_attempt_id"] == first["build_attempt_id"]
+
+
+def test_pipeline_reserve_reuses_persisted_pending_operation_for_resume():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    pipeline = PersistentGraphPipeline("papers", manifests=manifests, artifacts=GraphArtifactStore(InMemoryObjectStore(), "papers"))
+    chunks = _chunks()
+
+    first = pipeline.reserve(chunks, "paper", mode="replace-document")
+    resumed = pipeline.reserve(chunks, "paper", mode="replace-document")
+
+    assert resumed["operation_id"] == first["operation_id"]
+    assert resumed["pending_attempt_id"] == first["pending_attempt_id"]
+
+
+def test_manifest_lease_blocks_claim_changes_until_qdrant_mutation_finishes():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    claim = manifests.reserve("paper", "op-1", "fingerprint", mode="replace-document")
+
+    def competing_manifest_write():
+        manifests.reserve("other", "op-2", "fingerprint-2")
+
+    with pytest.raises(RuntimeError, match="Qdrant mutation is already fenced"):
+        manifests.mutate_claim(claim, competing_manifest_write)
+
+    assert manifests.read_snapshot().manifest["active_mutation_id"] is None
+    assert manifests.get("other") is None
+
+
+def test_reserve_rebuilds_next_version_from_ledger_when_counter_is_stale():
+    manifests = ManifestStore(InMemoryObjectStore(), collection="papers")
+    first = manifests.reserve("paper", "op-1", "fingerprint-1")
+    manifests.bind_artifact(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
+    manifests.publish(first, "graphs/papers/paper/v1/graph.json.gz", "digest-1")
+    snapshot = manifests.read_snapshot()
+    manifest = snapshot.manifest
+    manifest["documents"]["paper"]["next_version"] = 1
+    manifests._write(manifest, snapshot)
+
+    replacement = manifests.reserve("paper", "op-2", "fingerprint-2", mode="replace-document")
+
+    assert replacement["pending_version"] == 2
+    assert first["version_ledger"][0]["version"] == 1
+
+
+def test_backfill_rejects_incomplete_vector_metadata_without_reembedding():
+    class LegacyQdrant:
+        def scroll_document_chunks(self, document_id=None, include_vectors=False):
+            assert document_id is None
+            assert include_vectors is True
+            return [{
+                "document_id": "paper",
+                "chunk_id": 1,
+                "text": "legacy",
+                "_embedding": [0.1, 0.2],
+                "document_generation": 1,
+            }]
+
+    result = backfill_qdrant_collection(LegacyQdrant(), "papers")
+
+    assert result == [{
+        "status": "unavailable",
+        "document_id": "paper",
+        "failure_reason": "vector metadata is incomplete or inconsistent; replace-document rebuild required",
+    }]
 
 
 def test_collection_fence_invalidates_retained_document_claims():

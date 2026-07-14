@@ -415,6 +415,7 @@ class ManifestStore:
             "collection_fence_token": 0,
             "collection_operation_id": None,
             "collection_attempt_id": None,
+            "active_mutation_id": None,
             "manifest_backend": self.backend,
             "tombstone_set_digest": _digest(canonical_json_bytes([])),
             "pending_tombstone_set_digest": None,
@@ -506,26 +507,74 @@ class ManifestStore:
 
     def mutate_claim(self, claim: dict, operation):
         with self._lock:
-            manifest, _ = self._read()
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
             current = manifest.get("documents", {}).get(claim["document_id"])
-            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
+            if (
+                not self._claim_matches(current, claim)
+                or not self._claim_matches_collection(manifest, claim)
+                or manifest.get("active_mutation_id") is not None
+            ):
                 raise RuntimeError("stale graph claim cannot mutate Qdrant")
-            result = operation()
-            manifest, _ = self._read()
-            current = manifest.get("documents", {}).get(claim["document_id"])
-            if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
-                raise RuntimeError("graph claim changed during Qdrant mutation")
+            owner = str(uuid.uuid4())
+            manifest["active_mutation_id"] = owner
+            self._write(manifest, snapshot)
+            operation_error = None
+            result = None
+            try:
+                result = operation()
+                manifest, _ = self._read()
+                current = manifest.get("documents", {}).get(claim["document_id"])
+                if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
+                    raise RuntimeError("graph claim changed during Qdrant mutation")
+            except Exception as exc:
+                operation_error = exc
+            try:
+                snapshot = self.read_snapshot()
+                manifest = snapshot.manifest
+                if manifest.get("active_mutation_id") != owner:
+                    raise RuntimeError("graph mutation lease was lost")
+                manifest["active_mutation_id"] = None
+                self._write(manifest, snapshot)
+            except Exception as release_error:
+                if operation_error is None:
+                    raise RuntimeError("graph mutation lease could not be released") from release_error
+                raise RuntimeError("graph mutation failed and lease could not be released") from operation_error
+            if operation_error is not None:
+                raise operation_error
             return result
 
     def mutate_collection(self, operation_id: str, fence_token: int, operation, attempt_id: str | None = None):
         with self._lock:
-            manifest, _ = self._read()
-            if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id):
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
+            if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id) or manifest.get("active_mutation_id") is not None:
                 raise RuntimeError("stale collection fence cannot mutate Qdrant")
-            result = operation()
-            manifest, _ = self._read()
-            if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id):
-                raise RuntimeError("collection fence changed during Qdrant mutation")
+            owner = str(uuid.uuid4())
+            manifest["active_mutation_id"] = owner
+            self._write(manifest, snapshot)
+            operation_error = None
+            result = None
+            try:
+                result = operation()
+                manifest, _ = self._read()
+                if not self._collection_fence_matches(manifest, operation_id, fence_token, attempt_id):
+                    raise RuntimeError("collection fence changed during Qdrant mutation")
+            except Exception as exc:
+                operation_error = exc
+            try:
+                snapshot = self.read_snapshot()
+                manifest = snapshot.manifest
+                if manifest.get("active_mutation_id") != owner:
+                    raise RuntimeError("collection mutation lease was lost")
+                manifest["active_mutation_id"] = None
+                self._write(manifest, snapshot)
+            except Exception as release_error:
+                if operation_error is None:
+                    raise RuntimeError("collection mutation lease could not be released") from release_error
+                raise RuntimeError("collection mutation failed and lease could not be released") from operation_error
+            if operation_error is not None:
+                raise operation_error
             return result
 
     @staticmethod
@@ -541,6 +590,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             documents = dict(manifest.get("documents", {}))
             prior = documents.get(document_id)
             if mode == "append" and prior is not None:
@@ -554,8 +605,12 @@ class ManifestStore:
             if prior and prior.get("pending_operation_id") and prior["pending_operation_id"] != operation_id:
                 raise RuntimeError("document has an active graph claim")
             generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
-            next_version = int(prior.get("next_version", 1)) if prior else 1
             ledger = list(prior.get("version_ledger", [])) if prior else []
+            ledger_next_version = max(
+                (int(item.get("version", 0)) for item in ledger),
+                default=0,
+            ) + 1
+            next_version = max(int(prior.get("next_version", 1)), ledger_next_version) if prior else 1
             previous_pointer = prior.get("previous_pointer") if prior else None
             if prior and prior.get("active_artifact_key"):
                 previous_pointer = {
@@ -648,6 +703,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             current = manifest.get("documents", {}).get(claim["document_id"])
             if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot publish")
@@ -700,6 +757,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             current = manifest.get("documents", {}).get(claim["document_id"])
             if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot bind artifact")
@@ -722,6 +781,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             active_operation = manifest.get("collection_operation_id")
             if active_operation:
                 if active_operation != operation_id:
@@ -844,6 +905,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             expected = self.tombstone_controls(manifest)
             if manifest.get("pending_tombstone_set_digest") != "pending":
                 raise RuntimeError("no pending tombstone proof")
@@ -862,6 +925,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             if (
                 manifest.get("collection_operation_id") != operation_id
                 or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
@@ -885,6 +950,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             if (
                 manifest.get("collection_operation_id") != operation_id
                 or int(manifest.get("collection_fence_token", 0)) != int(fence_token)
@@ -910,6 +977,8 @@ class ManifestStore:
         with self._lock:
             snapshot = self.read_snapshot()
             manifest = snapshot.manifest
+            if manifest.get("active_mutation_id") is not None:
+                raise RuntimeError("a Qdrant mutation is already fenced")
             current = manifest.get("documents", {}).get(claim["document_id"])
             if not self._claim_matches(current, claim) or not self._claim_matches_collection(manifest, claim):
                 raise RuntimeError("stale graph claim cannot fail")
@@ -1097,15 +1166,27 @@ class PersistentGraphPipeline:
     def reserve(self, chunks, document_id, *, mode="append", operation_id=None):
         fingerprint = source_fingerprint(chunks, document_id)
         prior = self.manifests.get(document_id)
-        generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
-        operation_id = operation_id or f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
+        if operation_id is None and prior and (
+            prior.get("pending_operation_id")
+            and prior.get("pending_source_fingerprint") == fingerprint
+        ):
+            operation_id = prior["pending_operation_id"]
+        if operation_id is None:
+            generation = int(prior.get("document_generation", 0)) + 1 if prior else 1
+            operation_id = f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
         return self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
 
     def build_and_publish(self, chunks, embeddings, document_id, *, mode="append", operation_id=None, claim=None, qdrant=None, **kwargs):
         fingerprint = source_fingerprint(chunks, document_id)
         prior = self.manifests.get(document_id)
         generation = claim.get("document_generation") if claim else (int(prior.get("document_generation", 0)) + 1 if prior else 1)
-        operation_id = operation_id or f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
+        if operation_id is None and prior and (
+            prior.get("pending_operation_id")
+            and prior.get("pending_source_fingerprint") == fingerprint
+        ):
+            operation_id = prior["pending_operation_id"]
+        if operation_id is None:
+            operation_id = f"ingest:{self.manifests.collection}:{document_id}:{generation}:{fingerprint}"
         claim = claim or self.manifests.reserve(document_id, operation_id, fingerprint, mode=mode)
         try:
             graph, details = build_document_graph(chunks, embeddings, document_id, **kwargs)
@@ -1197,6 +1278,18 @@ def backfill_qdrant_collection(qdrant, collection: str, *, object_store=None, do
     results = []
     for current_document_id, document_chunks in sorted(grouped.items()):
         if not current_document_id:
+            continue
+        generations = {chunk.get("document_generation") for chunk in document_chunks}
+        if (
+            any(chunk.get("vector_point") is not True for chunk in document_chunks)
+            or len(generations) != 1
+            or next(iter(generations), None) is None
+        ):
+            results.append({
+                "status": "unavailable",
+                "document_id": current_document_id,
+                "failure_reason": "vector metadata is incomplete or inconsistent; replace-document rebuild required",
+            })
             continue
         vectors = [chunk.pop("_embedding", None) for chunk in document_chunks]
         if not all(vector is not None for vector in vectors):

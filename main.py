@@ -49,6 +49,7 @@ def _config_to_args(config: dict, profile_locked: bool) -> SimpleNamespace:
         confirm_existing_collection=config.get("confirm_existing_collection", False),
         ingest_mode=config.get("ingest_mode"),
         document_id=config.get("document_id") or None,
+        collection_operation_id=config.get("collection_operation_id") or None,
         enable_graph_artifact=config.get("enable_graph_artifact", ENABLE_PERSISTENT_GRAPH),
     )
 
