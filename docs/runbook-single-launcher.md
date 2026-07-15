@@ -7,7 +7,9 @@ The launcher asks for session-specific inputs at runtime, while `.env` stores st
 
 - **`ingest`** — read one local PDF, chunk it, embed it, then append or replace document data in a Qdrant collection.
 - **`query-only`** — embed one query, retrieve ranked chunks from Qdrant, then optionally save a JSON artifact.
-- **`full-pipeline`** — retrieve chunks, build the graph, summarize, evaluate, and write the downstream artifacts into one artifact directory.
+- **`full-pipeline`** — retrieve chunks, reuse/build the graph, select bounded
+  path-aware evidence, summarize, evaluate, retry when the quality gate asks,
+  and write downstream artifacts into one artifact directory.
 
 ## Profile behavior
 
@@ -37,7 +39,9 @@ At runtime, the launcher also applies these session overrides:
 6. Execute one mode runner:
    - `ingest` → PDF -> Docling -> chunks -> document-safe IDs -> embeddings -> Qdrant lifecycle -> Qdrant
    - `query-only` → query -> embedding -> Qdrant retrieval -> console output / JSON
-   - `full-pipeline` → retrieval -> graph -> summarization -> evaluation -> reports
+   - `full-pipeline` → retrieval -> persistent/compatibility/vector graph
+     fallback -> path-aware evidence allocation -> map summaries ->
+     embedding-similar reduction -> evaluation/retry -> reports
 
 ## Interactive flow
 
@@ -158,6 +162,12 @@ Good candidates for runtime input are:
   `ENABLE_PERSISTENT_GRAPH`. Ingest publishes a document-scoped graph artifact
   when that stage is enabled; Full-Pipeline reuses a validated artifact when
   available and records a compatibility/vector fallback otherwise.
+- Full-Pipeline writes explicit selected path IDs and rejected-path reasons to
+  `pruned_summary_context.json`, allocation decisions to
+  `context_allocation.json`, and reduction groups to `final_summary.json`.
+- Quality retries are bounded and store follow-up artifacts in
+  `artifact_dir/attempt-*`; ordinary launcher input cannot force a retry. The
+  forced-failure seam is private to direct test/dev callers.
 - Non-verbose runs still print the current stage; `--verbose` adds higher-detail stage context.
 - The launcher checks configuration presence, not end-to-end remote health. Use `uv run python scripts/check_cloud_connections.py` to validate Qdrant Cloud and R2 connectivity separately.
 - Shared collections support document-safe `append`, `replace-document`, and `replace-collection` ingest modes. Legacy collections without `document_id` must be rebuilt with `replace-collection` first.
