@@ -2,7 +2,7 @@
 
 ## 2026-07-15
 
-- **Completed Issues #40–#42 implementation in PR #81**
+- **Completed Issues #40–#42 implementation in merged PR #81**
   - Added bounded, deterministic PathRAG-style candidate paths with ranked
     selected IDs, rejected-path reasons, per-chunk path evidence, and stable
     insertion-order-independent provenance.
