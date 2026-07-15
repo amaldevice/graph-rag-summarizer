@@ -5,6 +5,7 @@
 # ============================================================
 
 import json
+import math
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -83,11 +84,60 @@ Return only the final summary text.
             return embedder.embed_text(text)
         return None
 
+    @staticmethod
+    def _cosine_similarity(left, right):
+        try:
+            left = [float(value) for value in left]
+            right = [float(value) for value in right]
+        except (TypeError, ValueError):
+            return None
+        if not left or len(left) != len(right) or not all(
+            math.isfinite(value) for value in left + right
+        ):
+            return None
+        left_norm = math.sqrt(sum(value * value for value in left))
+        right_norm = math.sqrt(sum(value * value for value in right))
+        if not left_norm or not right_norm:
+            return None
+        return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
+
+    @staticmethod
+    def _summary_id(item):
+        return str(item.get("community_id", item.get("source_id", "")))
+
+    def _similarity_groups(self, summaries: List[Dict]):
+        ordered = sorted(summaries, key=self._summary_id)
+        vectors = [self._embed_summary(item.get("summary", "")) for item in ordered]
+        if any(
+            vector is None or self._cosine_similarity(vectors[0], vector) is None
+            for vector in vectors
+        ):
+            return [
+                ordered[start:start + self.raptor_group_size]
+                for start in range(0, len(ordered), self.raptor_group_size)
+            ], "input_order_fallback"
+
+        remaining = list(range(len(ordered)))
+        groups = []
+        while remaining:
+            anchor = remaining.pop(0)
+            nearest = sorted(
+                remaining,
+                key=lambda index: (
+                    -similarity if (similarity := self._cosine_similarity(
+                        vectors[anchor], vectors[index]
+                    )) is not None else 1.0,
+                    self._summary_id(ordered[index]),
+                ),
+            )[:self.raptor_group_size - 1]
+            groups.append([ordered[index] for index in [anchor, *nearest]])
+            remaining = [index for index in remaining if index not in nearest]
+        return groups, "embedding_similarity"
+
     def _merge_group(self, group: List[Dict], query: Optional[str], style: str, level: int, group_index: int) -> Dict:
         prompt = self.build_reduce_prompt(group, query=query, style=style)
         system_prompt = "You are a precise summarization assistant. Return only the merged summary text."
         summary = self.session.call_llm(system_prompt, prompt)
-        self._embed_summary(summary)
         return {
             "community_id": f"level_{level}_group_{group_index}",
             "summary": summary,
@@ -101,13 +151,21 @@ Return only the final summary text.
         level = 1
         while len(current) > 1:
             next_level = []
-            for group_index, start in enumerate(range(0, len(current), self.raptor_group_size), start=1):
-                group = current[start:start + self.raptor_group_size]
+            groups, grouping_strategy = self._similarity_groups(current)
+            for group_index, group in enumerate(groups, start=1):
                 next_level.append(self._merge_group(group, query, style, level, group_index))
             levels.append({
                 "level": level,
                 "input_count": len(current),
                 "output_count": len(next_level),
+                "grouping_strategy": grouping_strategy,
+                "groups": [
+                    {
+                        "group_index": group_index,
+                        "source_ids": [item.get("community_id", item.get("source_id")) for item in group],
+                    }
+                    for group_index, group in enumerate(groups, start=1)
+                ],
                 "summaries": next_level,
             })
             current = next_level

@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 
+import networkx as nx
 import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -183,6 +184,77 @@ def test_allocator_consumes_normalized_path_score_when_available_deterministical
     assert first["context_allocation"]["path_signal_status"] == "available"
     assert [item["chunk_id"] for item in first["global_top_chunks"]] == [1, 0]
     assert first["context_allocation"] == second["context_allocation"]
+
+
+def test_path_candidates_rerank_context_and_persist_rejection_provenance():
+    ranked = _ranked([
+        {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.9, "pagerank": 0.9, "text_preview": "isolated"},
+        {"node": "chunk_1", "type": "chunk", "community": 0, "rank": 2, "composite_score": 0.5, "pagerank": 0.5, "text_preview": "relation start"},
+        {"node": "chunk_2", "type": "chunk", "community": 0, "rank": 3, "composite_score": 0.5, "pagerank": 0.5, "text_preview": "relation end"},
+    ])
+    graph = nx.Graph()
+    graph.add_edge("chunk_1", "ent_alpha", edge_type="mentions")
+    graph.add_edge("ent_alpha", "chunk_2", edge_type="mentions")
+    graph.add_edge("ent_alpha", "ent_beta", edge_type="entity_relation")
+    graph.add_edge("ent_beta", "chunk_2", edge_type="mentions")
+    chunks = [
+        {"chunk_id": 0, "text": "isolated evidence", "score": 0.95},
+        {"chunk_id": 1, "text": "relation start evidence", "score": 0.9},
+        {"chunk_id": 2, "text": "relation end evidence", "score": 0.8},
+    ]
+
+    pruner = SummaryPruner(context_char_budget=1_000, min_community_chars=100, max_community_chars=900)
+    first = pruner.select_top_chunks(ranked.sample(frac=1, random_state=4), chunks, graph)
+    second = pruner.select_top_chunks(ranked.sample(frac=1, random_state=8), chunks, graph)
+    reversed_graph = nx.Graph()
+    for source, target, edge_type in reversed([
+        ("chunk_1", "ent_alpha", "mentions"),
+        ("ent_alpha", "chunk_2", "mentions"),
+        ("ent_alpha", "ent_beta", "entity_relation"),
+        ("ent_beta", "chunk_2", "mentions"),
+    ]):
+        reversed_graph.add_edge(source, target, edge_type=edge_type)
+    reversed_edges = pruner.select_top_chunks(ranked, chunks, reversed_graph)
+
+    path_selection = first["path_selection"]
+    assert path_selection["status"] == "available"
+    assert path_selection["selected_path_ids"] == ["path:chunk_1>ent_alpha>ent_beta>chunk_2"]
+    assert path_selection["rejected_paths"][0]["rejection_reason"] == "duplicate_path_evidence"
+    assert first["global_top_chunks"][0]["chunk_id"] == 1
+    assert first["global_top_chunks"][0]["path_ids"] == path_selection["selected_path_ids"]
+    assert first["path_selection"] == second["path_selection"]
+    assert first["path_selection"] == reversed_edges["path_selection"]
+
+
+def test_path_frontier_is_independent_of_edge_insertion_order():
+    ranked = _ranked([
+        {"node": "chunk_0", "type": "chunk", "community": 0, "rank": 1, "composite_score": 0.5, "text_preview": "a"},
+        {"node": "chunk_1", "type": "chunk", "community": 0, "rank": 2, "composite_score": 0.5, "text_preview": "b"},
+    ])
+    edges = [
+        edge
+        for index in range(20)
+        for edge in (("chunk_0", f"ent_{index}"), (f"ent_{index}", "chunk_1"))
+    ]
+
+    def select(edge_order):
+        graph = nx.Graph()
+        for source, target in edge_order:
+            graph.add_edge(source, target, edge_type="mentions")
+        return SummaryPruner(context_char_budget=1_000).select_top_chunks(
+            ranked,
+            [
+                {"chunk_id": 0, "text": "evidence a", "score": 0.5},
+                {"chunk_id": 1, "text": "evidence b", "score": 0.5},
+            ],
+            graph,
+        )["path_selection"]
+
+    forward = select(edges)
+    reversed_edges = select(list(reversed(edges)))
+
+    assert forward == reversed_edges
+    assert forward["selected_path_ids"] == ["path:chunk_0>ent_0>chunk_1"]
 
 
 def test_prompt_emits_budget_metadata_and_blocks_provider_overflow():

@@ -971,6 +971,9 @@ def run_full_pipeline(config: dict) -> None:
     artifact_dir = config.get("artifact_dir", "") or "output"
     verbose = bool(config.get("verbose", False))
     max_retries = int(config.get("max_feedback_retries", 2))
+    forced_retry_stage = config.get("_test_force_feedback_retry_stage")
+    if forced_retry_stage not in {None, "retrieval", "prompt", "reduce"}:
+        raise ValueError("_test_force_feedback_retry_stage must be retrieval, prompt, or reduce")
 
     print("\n=== FULL-PIPELINE RUN ===")
     print(f"  Collection : {collection}")
@@ -1323,16 +1326,37 @@ def run_full_pipeline(config: dict) -> None:
 
             quality_result = checker.check(eval_result)
             action_result = checker.suggest_action(quality_result)
+            if forced_retry_stage and attempt == 0:
+                forced_failure = {
+                    "stage": forced_retry_stage,
+                    "attempt": attempt,
+                    "test_only": True,
+                }
+                quality_result = {
+                    **quality_result,
+                    "status": "FAIL",
+                    "passed": False,
+                    "forced_failure": forced_failure,
+                }
+                action_result = {
+                    **action_result,
+                    "action": f"retry_{forced_retry_stage}",
+                    "reason": "Test-only forced feedback retry",
+                    "forced_failure": forced_failure,
+                }
             checker.save_quality_report(quality_result, action_result, _artifact_path(current_dir, "quality_gate_report.json"))
 
             print(f"\n  Quality Status  : {quality_result['status']}")
             print(f"  Suggested Action: {action_result['action']}")
 
-            decision = controller.decide(
-                quality_result=quality_result,
-                action_result=action_result,
-                retry_state=retry_state,
-            )
+            decision = {
+                **controller.decide(
+                    quality_result=quality_result,
+                    action_result=action_result,
+                    retry_state=retry_state,
+                ),
+                "attempt": attempt,
+            }
             controller.save_decision(decision, _artifact_path(current_dir, "feedback_loop_decision.json"))
             print(f"\n  Decision: {decision.get('final_decision')}")
 

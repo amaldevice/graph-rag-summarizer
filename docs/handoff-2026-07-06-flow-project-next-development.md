@@ -1,7 +1,8 @@
 # Flow Project — current development handoff
 
 **Snapshot:** 2026-07-15
-**Current baseline:** `main` after PR #78 / Issue #43
+**Current baseline:** `main` after PR #78 / Issue #43; PR #81 is ready for
+review with the #40–#42 pipeline-quality follow-ups.
 
 ## Current state
 
@@ -24,31 +25,30 @@ Delivered foundations include:
 provider/model smoke runs remain optional because they require configured
 credentials and may download models.
 
+PR #81 adds explicit bounded path candidates and provenance (#40),
+embedding-similar RAPTOR groups (#41), and a private test-only forced retry
+seam (#42). Its full deterministic suite passes **338 tests**; no new
+dependency or ordinary launcher option was added.
+
 ## Remaining ready-for-agent backlog
 
 | Priority | Issue | Scope | Why it remains |
 | --- | --- | --- | --- |
-| 1 | [#40](https://github.com/amaldevice/graph-rag-summarizer/issues/40) | PathRAG-grade path candidates and scoring | Current pruning consumes path evidence but does not enumerate, score, and explain explicit path candidates. |
-| 2 | [#36](https://github.com/amaldevice/graph-rag-summarizer/issues/36) | Table and figure evidence | Layout metadata exists, but table/figure evidence is not first-class selected prompt context. |
-| 3 | [#41](https://github.com/amaldevice/graph-rag-summarizer/issues/41) | Embedding-similar RAPTOR reduction groups | Multi-level reduction exists; grouping is still fixed batches. |
-| 4 | [#42](https://github.com/amaldevice/graph-rag-summarizer/issues/42) | Forced-fail feedback smoke path | Retry stages are covered deterministically, but there is no explicit safe dev/test forcing seam. |
-| 5 | [#35](https://github.com/amaldevice/graph-rag-summarizer/issues/35) | Optional SummaC/FactCC adapters | Lightweight metrics are shipped; heavier model-backed evaluators remain opt-in research work. |
+| 1 | [#36](https://github.com/amaldevice/graph-rag-summarizer/issues/36) | Table and figure evidence | Layout metadata exists, but table/figure evidence is not first-class selected prompt context. |
+| 2 | [#35](https://github.com/amaldevice/graph-rag-summarizer/issues/35) | Optional SummaC/FactCC adapters | Lightweight metrics are shipped; heavier model-backed evaluators remain opt-in research work. |
 
 ## Recommended next slice
 
-Start with **#40**. It is the only current backlog item already consumed as an
-optional signal by adaptive context allocation, and it improves explainability
-without changing the launcher contract or adding a dependency.
+After PR #81 merges, start with **#36**. It promotes existing layout metadata
+into first-class selected evidence without changing the graph or launcher
+contracts.
 
 Keep this slice bounded:
 
-1. Enumerate candidate paths only from retrieved/selected graph evidence.
-2. Score candidates deterministically from existing retrieval, graph, length,
-   and diversity signals.
-3. Persist selected path IDs plus rejected-path reasons.
-4. Keep current path-aware chunk scoring as the compatibility fallback.
-5. Add synthetic graph tests; do not require a live provider or a new PathRAG
-   framework.
+1. Keep table and figure evidence within the existing character-budget and
+   prompt-safety contracts.
+2. Preserve compatibility and vector-only fallback behavior.
+3. Add deterministic fixture coverage; do not require a live provider.
 
 ## Contracts not to regress
 
