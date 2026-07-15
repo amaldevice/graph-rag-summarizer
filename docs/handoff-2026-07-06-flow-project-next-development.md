@@ -27,7 +27,7 @@ credentials and may download models.
 
 PR #81 adds explicit bounded path candidates and provenance (#40),
 embedding-similar RAPTOR groups (#41), and a private test-only forced retry
-seam (#42). Its full deterministic suite passes **338 tests**; no new
+seam (#42). Its full deterministic suite passes **339 tests**; no new
 dependency or ordinary launcher option was added.
 
 ## Remaining ready-for-agent backlog

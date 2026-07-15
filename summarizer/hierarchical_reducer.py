@@ -115,7 +115,7 @@ Return only the final summary text.
             return [
                 ordered[start:start + self.raptor_group_size]
                 for start in range(0, len(ordered), self.raptor_group_size)
-            ], "input_order_fallback"
+            ], "stable_id_order_fallback"
 
         remaining = list(range(len(ordered)))
         groups = []

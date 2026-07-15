@@ -15,6 +15,10 @@
     reducer, retry, launcher, and shared-session suites (**93 passed**);
     `./.venv/bin/python -m compileall`; `git diff --check`; independent review
     found and verified the canonical path-frontier fix.
+  - Resolved the follow-up review P2: the invalid-embedding fallback now says
+    `stable_id_order_fallback`, matching its stable-ID sort, with a regression
+    test for both label and grouping order. Re-review clear; final full suite:
+    `./.venv/bin/pytest -q` (**339 passed**).
 
 - **Refreshed active documentation for the current project state**
   - Replaced the pre-delivery Flow Project handoff with the current persistent-graph baseline, the five open GitHub issues (#35, #36, #40–#42), and the recommended next slice (#40).

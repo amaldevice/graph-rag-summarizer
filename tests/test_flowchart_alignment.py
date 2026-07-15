@@ -322,6 +322,28 @@ def test_raptor_reducer_groups_embedding_similar_summaries_before_merging():
     assert len(embedder.calls) > 5
 
 
+def test_raptor_reducer_reports_stable_id_fallback_for_invalid_embeddings():
+    class FakeSession:
+        def call_llm(self, _system_prompt, _prompt):
+            return "merged"
+
+    class InvalidEmbedder:
+        def embed_text(self, _text):
+            return None
+
+    result = HierarchicalReducer(
+        session=FakeSession(), embedder=InvalidEmbedder(), raptor_group_size=2
+    ).reduce_summaries([
+        {"community_id": 2, "summary": "two", "chunk_ids": [2]},
+        {"community_id": 0, "summary": "zero", "chunk_ids": [0]},
+        {"community_id": 1, "summary": "one", "chunk_ids": [1]},
+    ])
+
+    first_level = result["reduction_levels"][0]
+    assert first_level["grouping_strategy"] == "stable_id_order_fallback"
+    assert [group["source_ids"] for group in first_level["groups"]] == [[0, 1], [2]]
+
+
 def test_evaluator_reports_grounded_metric_statuses_without_optional_models():
     result = SummaryEvaluator().evaluate_without_reference(
         "alpha beta",
