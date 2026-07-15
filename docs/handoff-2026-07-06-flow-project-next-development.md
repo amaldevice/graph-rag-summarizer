@@ -1,8 +1,7 @@
 # Flow Project — current development handoff
 
 **Snapshot:** 2026-07-15
-**Current baseline:** `main` after PR #78 / Issue #43; PR #81 is ready for
-review with the #40–#42 pipeline-quality follow-ups.
+**Current baseline:** `main` after PR #81 / Issues #40–#42.
 
 ## Current state
 
@@ -25,7 +24,7 @@ Delivered foundations include:
 provider/model smoke runs remain optional because they require configured
 credentials and may download models.
 
-PR #81 adds explicit bounded path candidates and provenance (#40),
+PR #81 added explicit bounded path candidates and provenance (#40),
 embedding-similar RAPTOR groups (#41), and a private test-only forced retry
 seam (#42). Its full deterministic suite passes **339 tests**; no new
 dependency or ordinary launcher option was added.
