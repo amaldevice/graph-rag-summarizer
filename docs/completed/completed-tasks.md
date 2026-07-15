@@ -2,6 +2,24 @@
 
 ## 2026-07-15
 
+- **Refreshed the local teaching lesson for the current application flow**
+  - Updated `lessons/0001-flow-project-overview.html` for persistent-graph
+    reuse/fallback, bounded path selection and character budgeting,
+    embedding-similar reduction, selected-evidence metrics, and
+    attempt-scoped retries.
+  - Kept `lessons/` unversioned as intentionally configured by `.gitignore`;
+    the live architecture/runbook remain the versioned source of truth.
+  - Verification: implementation-anchor scan with `rg`; HTML parser smoke
+    check; source-link checks; stale-claim scan; `git diff --check`.
+
+- **Refreshed onboarding and launcher runbook after PR #81**
+  - Documented bounded path scoring/provenance, character-budget allocation,
+    embedding-similar reduction with stable-ID fallback, and attempt-scoped
+    retry artifacts.
+  - Clarified that forced retries are private direct test/dev behavior, not a
+    launcher CLI option.
+  - Verification: implementation-anchor scan with `rg`; `git diff --check`.
+
 - **Completed Issues #40–#42 implementation in merged PR #81**
   - Added bounded, deterministic PathRAG-style candidate paths with ranked
     selected IDs, rejected-path reasons, per-chunk path evidence, and stable
