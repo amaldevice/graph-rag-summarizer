@@ -255,6 +255,11 @@ def test_build_cli_parser_defaults():
     assert args.document_id is None
 
 
+def test_cli_rejects_test_only_feedback_retry_override():
+    with pytest.raises(SystemExit):
+        build_cli_parser().parse_args(["--test-force-feedback-retry-stage", "prompt"])
+
+
 # ------------------------------------------------------------------
 # Non-interactive fail-fast
 # ------------------------------------------------------------------

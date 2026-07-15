@@ -148,22 +148,145 @@ class SummaryPruner:
             keep.append(index)
         return df.loc[keep].copy(), filtered
 
-    def _path_evidence(self, graph, node_name: str, peer_nodes: list[str]) -> list[dict]:
+    @staticmethod
+    def _bounded_simple_paths(graph, start, end, max_hops=4, limit=12):
+        paths = []
+
+        def visit(node, path):
+            if len(paths) >= limit or len(path) - 1 > max_hops:
+                return
+            if node == end:
+                paths.append(path)
+                return
+            for neighbor in sorted(graph.neighbors(node), key=str):
+                if neighbor not in path:
+                    visit(neighbor, [*path, neighbor])
+
+        # ponytail: keep graph traversal bounded; raise the frontier only when
+        # production traces show useful paths beyond four hops.
+        visit(start, [start])
+        return paths
+
+    def _path_selection(self, graph, rows, chunk_lookup):
+        empty = {
+            "status": "unavailable",
+            "reason": "graph_unavailable",
+            "candidate_paths": [],
+            "selected_path_ids": [],
+            "rejected_paths": [],
+            "scores": {},
+            "evidence_by_node": {},
+        }
         if graph is None:
-            return []
-        evidence = []
-        for peer in peer_nodes:
-            if peer == node_name:
+            return empty
+
+        chunk_rows = {
+            str(row["node"]): row
+            for _, row in rows.iterrows()
+            if graph.has_node(row["node"])
+        }
+        nodes = sorted(chunk_rows)
+        if len(nodes) < 2:
+            return {**empty, "reason": "fewer_than_two_retrieved_graph_chunks"}
+
+        traversal = graph.to_undirected(as_view=True) if graph.is_directed() else graph
+        retrieval_scores = {}
+        centrality_scores = {}
+        for node, row in chunk_rows.items():
+            chunk = chunk_lookup.get(int(row["chunk_id_resolved"]), {})
+            retrieval_scores[node] = self._finite(
+                chunk.get("query_similarity", chunk.get("score", 0))
+            )
+            centrality_scores[node] = self._finite(
+                row.get("pagerank", row.get("composite_score", 0))
+            )
+
+        raw_candidates = []
+        for left_index, left in enumerate(nodes):
+            for right in nodes[left_index + 1:]:
+                try:
+                    paths = self._bounded_simple_paths(traversal, left, right)[:2]
+                except (nx.NetworkXError, nx.NodeNotFound):
+                    continue
+                for path in paths:
+                    intermediate = path[1:-1]
+                    if not intermediate or any(node in chunk_rows for node in intermediate):
+                        continue
+                    edge_types = []
+                    for source, target in zip(path, path[1:]):
+                        edge = graph.get_edge_data(source, target, default={}) or {}
+                        edge_types.append(edge.get("edge_type", "unknown"))
+                    path_id = "path:" + ">".join(map(str, path))
+                    centrality = sum(
+                        centrality_scores.get(node, self._finite(graph.degree(node)))
+                        for node in intermediate
+                    ) / len(intermediate)
+                    raw_candidates.append({
+                        "path_id": path_id,
+                        "nodes": list(path),
+                        "edge_types": edge_types,
+                        "hops": len(path) - 1,
+                        "retrieval_raw": (retrieval_scores[left] + retrieval_scores[right]) / 2,
+                        "centrality_raw": centrality,
+                        "length_raw": 1 / (len(path) - 1),
+                        "diversity_raw": float(len(set(intermediate))),
+                    })
+
+        if not raw_candidates:
+            return {**empty, "reason": "no_retrieved_graph_paths"}
+
+        for name in ("retrieval_raw", "centrality_raw", "length_raw", "diversity_raw"):
+            for candidate, value in zip(
+                raw_candidates,
+                self._normalized([item[name] for item in raw_candidates]),
+            ):
+                candidate.setdefault("signals", {})[name.removesuffix("_raw")] = value
+        for candidate in raw_candidates:
+            signals = candidate["signals"]
+            candidate["score"] = (
+                0.35 * signals["retrieval"]
+                + 0.25 * signals["centrality"]
+                + 0.10 * signals["length"]
+                + 0.30 * signals["diversity"]
+            )
+
+        selected = []
+        rejected = []
+        covered_evidence = set()
+        endpoint_scores = {}
+        evidence_by_node = {}
+        for candidate in sorted(raw_candidates, key=lambda item: (-item["score"], item["path_id"])):
+            endpoints = (str(candidate["nodes"][0]), str(candidate["nodes"][-1]))
+            intermediate = {str(node) for node in candidate["nodes"][1:-1]}
+            if intermediate <= covered_evidence:
+                candidate["selection"] = "rejected"
+                candidate["rejection_reason"] = "duplicate_path_evidence"
+                rejected.append(candidate)
                 continue
-            try:
-                path = list(nx.shortest_path(graph, node_name, peer))
-            except Exception:
+            if all(
+                candidate["score"] <= endpoint_scores.get(node, -1.0)
+                for node in endpoints
+            ):
+                candidate["selection"] = "rejected"
+                candidate["rejection_reason"] = "lower_path_score"
+                rejected.append(candidate)
                 continue
-            if 2 < len(path) <= 4:
-                evidence.append({"path": path, "length": len(path) - 1})
-            if len(evidence) >= 3:
-                break
-        return evidence
+            candidate["selection"] = "selected"
+            selected.append(candidate)
+            covered_evidence.update(intermediate)
+            for node in endpoints:
+                endpoint_scores[node] = max(endpoint_scores.get(node, 0.0), candidate["score"])
+                evidence_by_node.setdefault(node, []).append(candidate)
+
+        return {
+            "status": "available",
+            "reason": "",
+            "candidate_paths": sorted(raw_candidates, key=lambda item: (-item["score"], item["path_id"])),
+            "selected_path_ids": [item["path_id"] for item in selected],
+            "rejected_paths": rejected,
+            "scores": endpoint_scores,
+            "evidence_by_node": evidence_by_node,
+        }
 
     def _chunk_record(self, row, chunk, path_evidence=None, parent_context=None, allocation=None):
         context_expansion: dict[str, object] = {
@@ -183,6 +306,7 @@ class SummaryPruner:
             "layout": chunk.get("layout", {"kind": chunk.get("level", "paragraph")}),
             "source": chunk.get("source", "unknown"),
             "path_evidence": path_evidence or [],
+            "path_ids": [item["path_id"] for item in path_evidence or []],
             "parent_context": parent_context or [],
             "context_expansion": context_expansion,
         }
@@ -490,10 +614,7 @@ class SummaryPruner:
         ]
 
         chunk_lookup = self._chunk_lookup(chunks)
-        grouped_nodes = {
-            community: group["node"].tolist()
-            for community, group in df.groupby("community", sort=True)
-        }
+        path_selection = self._path_selection(graph, df, chunk_lookup)
         vector_only = bool(
             graph is not None
             and getattr(graph, "graph", {}).get("vector_only")
@@ -503,13 +624,13 @@ class SummaryPruner:
         for _, row in df.iterrows():
             chunk = chunk_lookup.get(row["chunk_id_resolved"], {})
             path_value, has_path_value = self._path_values(row, chunk)
+            explicit_path_score = path_selection["scores"].get(str(row["node"]))
+            if explicit_path_score is not None:
+                path_value = max(path_value, explicit_path_score)
+                has_path_value = True
             path_available = path_available or has_path_value
             parent_context = self._parent_context(chunk, chunks)
-            path_evidence = self._path_evidence(
-                graph,
-                row["node"],
-                grouped_nodes.get(row["community"], []),
-            )
+            path_evidence = path_selection["evidence_by_node"].get(str(row["node"]), [])
             chunk_id = chunk.get("chunk_uid", int(row["chunk_id_resolved"]))
             query_raw = self._finite(chunk.get("query_similarity", chunk.get("score", 0)))
             candidates.append({
@@ -566,12 +687,11 @@ class SummaryPruner:
         for row, filtered in zip(filtered_rows, filtered_chunks):
             chunk = chunk_lookup.get(row["chunk_id_resolved"], {})
             path_value, _ = self._path_values(row, chunk)
+            explicit_path_score = path_selection["scores"].get(str(row["node"]))
+            if explicit_path_score is not None:
+                path_value = max(path_value, explicit_path_score)
             parent_context = self._parent_context(chunk, chunks)
-            path_evidence = self._path_evidence(
-                graph,
-                row["node"],
-                grouped_nodes.get(row["community"], []),
-            )
+            path_evidence = path_selection["evidence_by_node"].get(str(row["node"]), [])
             raw_signals = {
                 "relevance": self._finite(
                     chunk.get("query_similarity", chunk.get("score", 0))
@@ -735,6 +855,11 @@ class SummaryPruner:
             "global_top_chunks": global_top_chunks,
             "communities": communities,
             "filtered_chunks": filtered_chunks,
+            "path_selection": {
+                key: value
+                for key, value in path_selection.items()
+                if key not in {"scores", "evidence_by_node"}
+            },
             "context_allocation": context_allocation,
         }
 

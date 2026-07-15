@@ -5,6 +5,7 @@ import types
 
 import networkx as nx
 import pandas as pd
+import pytest
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -276,6 +277,51 @@ def test_raptor_reducer_creates_levels_for_large_inputs():
     assert result["final_summary"] == f"summary-{len(calls)}"
 
 
+def test_raptor_reducer_groups_embedding_similar_summaries_before_merging():
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        def call_llm(self, _system_prompt, _prompt):
+            self.calls += 1
+            return f"merged-{self.calls}"
+
+    class FakeEmbedder:
+        vectors = {
+            "topic alpha": [1.0, 0.0],
+            "topic beta": [0.0, 1.0],
+            "topic alpha related": [0.9, 0.1],
+            "topic beta related": [0.1, 0.9],
+            "topic mixed": [0.5, 0.5],
+        }
+
+        def __init__(self):
+            self.calls = []
+
+        def embed_text(self, text):
+            self.calls.append(text)
+            return self.vectors.get(text, [0.5, 0.5])
+
+    embedder = FakeEmbedder()
+    result = HierarchicalReducer(
+        session=FakeSession(), embedder=embedder, raptor_group_size=2
+    ).reduce_summaries([
+        {"community_id": 0, "summary": "topic alpha", "chunk_ids": [0]},
+        {"community_id": 1, "summary": "topic beta", "chunk_ids": [1]},
+        {"community_id": 2, "summary": "topic alpha related", "chunk_ids": [2]},
+        {"community_id": 3, "summary": "topic beta related", "chunk_ids": [3]},
+        {"community_id": 4, "summary": "topic mixed", "chunk_ids": [4]},
+    ])
+
+    first_level = result["reduction_levels"][0]
+    assert first_level["grouping_strategy"] == "embedding_similarity"
+    assert [group["source_ids"] for group in first_level["groups"]] == [[0, 2], [1, 3], [4]]
+    assert set(embedder.calls) >= {
+        "topic alpha", "topic beta", "topic alpha related", "topic beta related", "topic mixed",
+    }
+    assert len(embedder.calls) > 5
+
+
 def test_evaluator_reports_grounded_metric_statuses_without_optional_models():
     result = SummaryEvaluator().evaluate_without_reference(
         "alpha beta",
@@ -316,7 +362,15 @@ def test_feedback_controller_maps_actions_to_retry_stages():
     assert reduce["next_stage"] == "reduce"
 
 
-def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("forced_stage", "expected_calls"),
+    [
+        ("retrieval", {"retrieval": 2, "graph": 2, "summarize": 2, "reduce": 2}),
+        ("prompt", {"retrieval": 1, "graph": 1, "summarize": 2, "reduce": 2}),
+        ("reduce", {"retrieval": 1, "graph": 1, "summarize": 1, "reduce": 2}),
+    ],
+)
+def test_full_pipeline_forced_retry_reruns_expected_stage(monkeypatch, tmp_path, forced_stage, expected_calls):
     from config import settings
 
     calls = {"retrieval": 0, "graph": 0, "summarize": 0, "reduce": 0, "decision": 0, "evaluation_sources": []}
@@ -394,18 +448,32 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_pa
         def save_evaluation_json(self, result, output_path): return output_path
 
     class FakeQuality:
-        def check(self, result): return {"status": "FAIL"}
-        def suggest_action(self, quality): return {"action": "retry_prompt"}
-        def save_quality_report(self, quality, action, output_path): return output_path
+        def check(self, result): return {"status": "PASS"}
+        def suggest_action(self, quality): return {"action": "accept"}
+        def save_quality_report(self, quality, action, output_path):
+            Path(output_path).write_text(json.dumps({
+                "quality_result": quality,
+                "suggested_action": action,
+            }))
+            return output_path
 
     class FakeFeedback:
         def __init__(self, max_retries): pass
         def decide(self, quality_result, action_result, retry_state):
             calls["decision"] += 1
-            if calls["decision"] == 1:
-                return {"stop": False, "next_stage": "prompt", "updated_retry_state": {"total_retries": 1}, "final_decision": None}
+            action = action_result["action"]
+            if action.startswith("retry_"):
+                stage = action.removeprefix("retry_")
+                return {
+                    "stop": False,
+                    "next_stage": stage,
+                    "updated_retry_state": {"total_retries": 1},
+                    "final_decision": None,
+                }
             return {"stop": True, "next_stage": None, "updated_retry_state": retry_state, "final_decision": "accept"}
-        def save_decision(self, decision, output_path): return output_path
+        def save_decision(self, decision, output_path):
+            Path(output_path).write_text(json.dumps(decision))
+            return output_path
 
     modules["embedding.embedder"].TextEmbedder = FakeEmbedder
     modules["vectordb.qdrant_handler"].QdrantHandler = FakeQdrant
@@ -431,12 +499,16 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_pa
     from launcher.runners import run_full_pipeline
     monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
     artifact_dir = tmp_path / "test"
-    run_full_pipeline({"collection": "c", "query": "q", "retrieval_limit": 3, "artifact_dir": str(artifact_dir), "verbose": False})
+    run_full_pipeline({
+        "collection": "c",
+        "query": "q",
+        "retrieval_limit": 3,
+        "artifact_dir": str(artifact_dir),
+        "verbose": False,
+        "_test_force_feedback_retry_stage": forced_stage,
+    })
 
-    assert calls["retrieval"] == 1
-    assert calls["graph"] == 1
-    assert calls["summarize"] == 2
-    assert calls["reduce"] == 2
+    assert {name: calls[name] for name in expected_calls} == expected_calls
     assert all("path_evidence" in chunk for chunks in calls["evaluation_sources"] for chunk in chunks)
     for current_dir, attempt in ((artifact_dir, 0), (artifact_dir / "attempt-1", 1)):
         allocation = json.loads((current_dir / "context_allocation.json").read_text())
@@ -449,6 +521,16 @@ def test_full_pipeline_prompt_retry_does_not_rerun_retrieval(monkeypatch, tmp_pa
             "fallback_reason": "",
             "query_protected_chunk_uids": ["1"],
         }
+    base_quality = json.loads((artifact_dir / "quality_gate_report.json").read_text())
+    base_decision = json.loads((artifact_dir / "feedback_loop_decision.json").read_text())
+    retry_decision = json.loads((artifact_dir / "attempt-1" / "feedback_loop_decision.json").read_text())
+    assert base_quality["quality_result"]["forced_failure"] == {
+        "stage": forced_stage, "attempt": 0, "test_only": True,
+    }
+    assert base_quality["suggested_action"]["action"] == f"retry_{forced_stage}"
+    assert base_decision["next_stage"] == forced_stage
+    assert base_decision["attempt"] == 0
+    assert retry_decision["attempt"] == 1
 
     graph_failure["enabled"] = True
     fallback_dir = tmp_path / "vector-only"

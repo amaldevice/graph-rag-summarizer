@@ -2,6 +2,20 @@
 
 ## 2026-07-15
 
+- **Completed Issues #40–#42 implementation in PR #81**
+  - Added bounded, deterministic PathRAG-style candidate paths with ranked
+    selected IDs, rejected-path reasons, per-chunk path evidence, and stable
+    insertion-order-independent provenance.
+  - Grouped each RAPTOR reduction level by existing embedding similarity and
+    recorded the groups, with stable fixed-order fallback for invalid vectors.
+  - Added a private direct-run test seam for one forced retrieval, prompt, or
+    reduce retry; ordinary launcher input cannot enable it, and attempt reports
+    now include the attempt number plus forced-failure provenance.
+  - Verification: `./.venv/bin/pytest -q` (**338 passed**); focused path,
+    reducer, retry, launcher, and shared-session suites (**93 passed**);
+    `./.venv/bin/python -m compileall`; `git diff --check`; independent review
+    found and verified the canonical path-frontier fix.
+
 - **Refreshed active documentation for the current project state**
   - Replaced the pre-delivery Flow Project handoff with the current persistent-graph baseline, the five open GitHub issues (#35, #36, #40–#42), and the recommended next slice (#40).
   - Updated starter architecture and runbook guidance for the default-enabled optional persistent graph, selected-evidence evaluation, and compatibility/vector-only fallbacks.
