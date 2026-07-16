@@ -1,5 +1,17 @@
 # Completed Tasks
 
+## 2026-07-16
+
+- **Fixed Qdrant Cloud filter-index provisioning for document-safe ingest**
+  - Provisioned every payload index used by document, graph, and tombstone
+    filters before a collection is used, including the provenance fields
+    required by document-control verification.
+  - Added a strict cloud-client regression test that rejects unindexed
+    filters while exercising prepare, upload, control-point write, and
+    control-point verification.
+  - Verification: focused Qdrant-handler suite (**27 passed**); full suite
+    (**341 passed**); `git diff --check`; two independent reviews clear.
+
 ## 2026-07-15
 
 - **Refreshed the local teaching lesson for the current application flow**
