@@ -2,6 +2,13 @@
 
 ## 2026-07-16
 
+- **Created implementation-ready launcher follow-up issues**
+  - Opened Issue #85 for the missing custom document-ID prompt in pure
+    interactive ingest and Issue #86 for a real summary-edit flow that
+    preserves explicit CLI locks.
+  - Each issue records the affected flow, risks, non-goals, acceptance
+    criteria, and required regression coverage.
+
 - **Audited launcher CLI and wizard input parity for PR #84**
   - Confirmed the new interactive ingest-mode prompt, explicit CLI precedence,
     and the query/full-pipeline required-input paths.
