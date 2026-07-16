@@ -397,7 +397,7 @@ def test_run_interactive_wizard_uses_discovered_pdf_then_default_collection(monk
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: [])
 
-    answers = iter(["1", "", "n"])
+    answers = iter(["1", "", "", "n"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     args = SimpleNamespace(
@@ -420,6 +420,55 @@ def test_run_interactive_wizard_uses_discovered_pdf_then_default_collection(monk
     assert result["collection"] == "paper_one"
 
 
+def test_run_interactive_wizard_prompts_for_ingest_mode_when_cli_omits_it(monkeypatch):
+    answers = iter(["2"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    args = SimpleNamespace(
+        mode="ingest",
+        profile="local",
+        collection="existing_collection",
+        query=None,
+        retrieval_limit=None,
+        pdf="paper.pdf",
+        no_interactive=False,
+        json_output=None,
+        artifact_dir=None,
+        verbose=True,
+        confirm_existing_collection=False,
+        ingest_mode=None,
+        document_id=None,
+    )
+
+    result = run_interactive_wizard(args, "local", is_tty=True)
+
+    assert result["ingest_mode"] == "replace-document"
+
+
+def test_run_interactive_wizard_preserves_explicit_ingest_mode(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("unexpected prompt"))
+
+    args = SimpleNamespace(
+        mode="ingest",
+        profile="local",
+        collection="existing_collection",
+        query=None,
+        retrieval_limit=None,
+        pdf="paper.pdf",
+        no_interactive=False,
+        json_output=None,
+        artifact_dir=None,
+        verbose=True,
+        confirm_existing_collection=False,
+        ingest_mode="replace-document",
+        document_id=None,
+    )
+
+    result = run_interactive_wizard(args, "local", is_tty=True)
+
+    assert result["ingest_mode"] == "replace-document"
+
+
 def test_run_interactive_wizard_allows_existing_collection_for_append(monkeypatch, capsys):
     monkeypatch.setattr("launcher.contract.discover_local_pdfs", lambda *_: [])
     monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: ["existing_collection"])
@@ -427,6 +476,7 @@ def test_run_interactive_wizard_allows_existing_collection_for_append(monkeypatc
     answers = iter([
         "paper.pdf",
         "existing_collection",
+        "",
         "n",
     ])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))

@@ -2,6 +2,29 @@
 
 ## 2026-07-16
 
+- **Created implementation-ready launcher follow-up issues**
+  - Opened Issue #85 for the missing custom document-ID prompt in pure
+    interactive ingest and Issue #86 for a real summary-edit flow that
+    preserves explicit CLI locks.
+  - Each issue records the affected flow, risks, non-goals, acceptance
+    criteria, and required regression coverage.
+
+- **Audited launcher CLI and wizard input parity for PR #84**
+  - Confirmed the new interactive ingest-mode prompt, explicit CLI precedence,
+    and the query/full-pipeline required-input paths.
+  - Recorded two follow-ups: pure wizard ingest still derives rather than
+    prompts for a custom document ID, and summary edit does not reopen all
+    already-populated choices.
+  - Verification: launcher contract/main suite (**50 passed**); full suite
+    (**343 passed**); input-parity findings posted to PR #84.
+
+- **Added an interactive ingest-mode choice**
+  - The ingest wizard now offers append, replace-document, and
+    replace-collection when `--ingest-mode` is omitted, while explicit CLI
+    flags retain precedence.
+  - Verification: launcher contract/main suite (**50 passed**); full suite
+    (**343 passed**); `git diff --check`.
+
 - **Fixed Qdrant Cloud filter-index provisioning for document-safe ingest**
   - Provisioned every payload index used by document, graph, and tombstone
     filters before a collection is used, including the provenance fields
