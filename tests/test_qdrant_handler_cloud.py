@@ -8,6 +8,7 @@ if str(ROOT_DIR) not in sys.path:
 
 import pytest
 from qdrant_client.http.exceptions import ApiException
+from qdrant_client.models import PayloadSchemaType
 
 from vectordb.qdrant_handler import QdrantHandler, stable_point_id
 
@@ -733,6 +734,117 @@ def test_prepare_ingest_append_accepts_points_from_the_same_interrupted_claim() 
     handler = QdrantHandler(client=FakeClient(), collection_name="test")
 
     handler.prepare_ingest("append", "paper-a", vector_size=2, claim=claim)
+
+
+def test_prepare_ingest_indexes_every_payload_field_used_by_cloud_filters() -> None:
+    created = []
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.payload_schema = {}
+
+        def get_collections(self):
+            return SimpleNamespace(collections=[SimpleNamespace(name="test")])
+
+        def get_collection(self, collection_name):
+            assert collection_name == "test"
+            return SimpleNamespace(payload_schema=self.payload_schema)
+
+        def create_payload_index(self, **kwargs):
+            created.append((kwargs["field_name"], kwargs["field_schema"]))
+            self.payload_schema[kwargs["field_name"]] = kwargs["field_schema"]
+
+        def scroll(self, **kwargs):
+            del kwargs
+            return [], None
+
+        def count(self, collection_name, count_filter, exact=True):
+            del collection_name, count_filter, exact
+            return SimpleNamespace(count=0)
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+
+    handler.prepare_ingest("append", "paper-a", vector_size=2)
+
+    assert dict(created) == {
+        "document_id": PayloadSchemaType.KEYWORD,
+        "document_generation": PayloadSchemaType.INTEGER,
+        "document_attempt_id": PayloadSchemaType.KEYWORD,
+        "vector_point": PayloadSchemaType.BOOL,
+        "graph_point": PayloadSchemaType.BOOL,
+        "graph_control_point": PayloadSchemaType.KEYWORD,
+        "graph_tombstoned": PayloadSchemaType.BOOL,
+        "tombstone_epoch": PayloadSchemaType.INTEGER,
+        "tombstone_operation_id": PayloadSchemaType.KEYWORD,
+        "tombstone_attempt_id": PayloadSchemaType.KEYWORD,
+        "tombstone_fence_token": PayloadSchemaType.INTEGER,
+        "collection_fence_token": PayloadSchemaType.INTEGER,
+        "collection_attempt_id": PayloadSchemaType.KEYWORD,
+    }
+
+
+def test_prepare_ingest_indexes_provenance_fields_before_control_proof() -> None:
+    objects = {}
+
+    class StrictFakeClient:
+        def __init__(self) -> None:
+            self.payload_schema = {}
+
+        def get_collections(self):
+            return SimpleNamespace(collections=[SimpleNamespace(name="test")])
+
+        def get_collection(self, collection_name):
+            assert collection_name == "test"
+            return SimpleNamespace(payload_schema=self.payload_schema)
+
+        def create_payload_index(self, **kwargs):
+            self.payload_schema[kwargs["field_name"]] = kwargs["field_schema"]
+
+        def count(self, collection_name, count_filter, exact=True):
+            del collection_name, count_filter, exact
+            return SimpleNamespace(count=0)
+
+        def upsert(self, collection_name, points) -> None:
+            assert collection_name == "test"
+            for point in points:
+                objects[str(point.id)] = point
+
+        def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+            del collection_name, with_payload, with_vectors
+            return [objects[str(point_id)] for point_id in ids if str(point_id) in objects]
+
+        def scroll(self, **kwargs):
+            scroll_filter = kwargs.get("scroll_filter")
+            conditions = getattr(scroll_filter, "must", []) if scroll_filter else []
+            for condition in conditions:
+                if hasattr(condition, "key") and condition.key not in self.payload_schema:
+                    raise RuntimeError(f"missing payload index: {condition.key}")
+
+            def matches(point):
+                payload = point.payload or {}
+                return all(
+                    payload.get(condition.key) == condition.match.value
+                    for condition in conditions
+                    if hasattr(condition, "key") and hasattr(condition, "match")
+                )
+
+            return [point for point in objects.values() if matches(point)], None
+
+    from graph.persistent import InMemoryObjectStore, ManifestStore
+
+    manifests = ManifestStore(InMemoryObjectStore(), collection="test")
+    claim = manifests.reserve("paper-a", "op-1", "fingerprint")
+    handler = QdrantHandler(client=StrictFakeClient(), collection_name="test")
+    handler.set_graph_claim(manifests, claim)
+
+    handler.prepare_ingest("append", "paper-a", vector_size=2, claim=claim)
+    handler.upsert_chunks(
+        [{"chunk_id": 1, "document_id": "paper-a", "chunk_uid": "paper-a:chunk:1", "text": "hello"}],
+        [[0.1, 0.2]],
+    )
+    control_id = handler.write_document_control_point(claim, 2)
+
+    handler.verify_document_control_point(control_id)
 
 
 def test_replace_document_deletes_only_stale_points_for_document() -> None:

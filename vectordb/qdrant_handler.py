@@ -39,6 +39,23 @@ from config.settings import (
 )
 
 
+FILTER_PAYLOAD_INDEXES = {
+    "document_id": PayloadSchemaType.KEYWORD,
+    "document_generation": PayloadSchemaType.INTEGER,
+    "document_attempt_id": PayloadSchemaType.KEYWORD,
+    "vector_point": PayloadSchemaType.BOOL,
+    "graph_point": PayloadSchemaType.BOOL,
+    "graph_control_point": PayloadSchemaType.KEYWORD,
+    "graph_tombstoned": PayloadSchemaType.BOOL,
+    "tombstone_epoch": PayloadSchemaType.INTEGER,
+    "tombstone_operation_id": PayloadSchemaType.KEYWORD,
+    "tombstone_attempt_id": PayloadSchemaType.KEYWORD,
+    "tombstone_fence_token": PayloadSchemaType.INTEGER,
+    "collection_fence_token": PayloadSchemaType.INTEGER,
+    "collection_attempt_id": PayloadSchemaType.KEYWORD,
+}
+
+
 def stable_point_id(document_id: str, chunk_id) -> str:
     """Return a deterministic UUID accepted by Qdrant for a document chunk."""
     return build_stable_point_id(document_id, chunk_id)
@@ -214,23 +231,27 @@ class QdrantHandler:
             ]
         )
 
-    def _ensure_document_id_index(self) -> None:
+    def _ensure_filter_payload_indexes(self) -> None:
         create_index = getattr(self.client, "create_payload_index", None)
         if create_index is None:
             return
+        payload_schema = {}
         get_collection = getattr(self.client, "get_collection", None)
         if get_collection is not None:
             info = get_collection(self.collection_name)
-            if "document_id" in (getattr(info, "payload_schema", None) or {}):
-                return
-        self._mutate(lambda: create_index(
-            collection_name=self.collection_name,
-            field_name="document_id",
-            field_schema=PayloadSchemaType.KEYWORD,
-        ))
+            payload_schema = dict(getattr(info, "payload_schema", None) or {})
+        for field_name, field_schema in FILTER_PAYLOAD_INDEXES.items():
+            if field_name in payload_schema:
+                continue
+            self._mutate(lambda field_name=field_name, field_schema=field_schema: create_index(
+                collection_name=self.collection_name,
+                field_name=field_name,
+                field_schema=field_schema,
+            ))
+            payload_schema[field_name] = field_schema
 
     def document_exists(self, document_id: str) -> bool:
-        self._ensure_document_id_index()
+        self._ensure_filter_payload_indexes()
         result = self.client.count(
             collection_name=self.collection_name,
             count_filter=self._document_filter(document_id),
@@ -243,7 +264,7 @@ class QdrantHandler:
         scroll = getattr(self.client, "scroll", None)
         if scroll is None:
             raise RuntimeError("Qdrant client cannot verify legacy document metadata")
-        self._ensure_document_id_index()
+        self._ensure_filter_payload_indexes()
         offset = None
         seen_offsets = set()
         legacy_found = False
@@ -330,14 +351,14 @@ class QdrantHandler:
                         f"Collection '{self.collection_name}' contains legacy points without document_id; "
                         "use replace-collection to rebuild it before replace-document"
                     )
-                self._ensure_document_id_index()
+                self._ensure_filter_payload_indexes()
             self.create_collection_if_not_exists(vector_size=vector_size)
         else:
             # Keep old points until the new upload succeeds; finalize_replace_collection
             # removes them by ID after the caller has a complete point set.
             self.create_collection_if_not_exists(vector_size=vector_size)
 
-        self._ensure_document_id_index()
+        self._ensure_filter_payload_indexes()
 
     def _normalize_chunk_payload(self, payload: dict, fallback_chunk_id, score=None, rank=None):
         chunk_id = payload.get("chunk_id", fallback_chunk_id)
