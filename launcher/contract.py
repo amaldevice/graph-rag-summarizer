@@ -458,6 +458,13 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
                 )
             break
 
+        if not getattr(cli_args, "ingest_mode", None):
+            ingest_mode = _prompt_choice(
+                "Select Ingest Mode:",
+                list(SUPPORTED_INGEST_MODES),
+                default=ingest_mode,
+            )
+
         document_id = document_id or suggest_document_id_from_pdf(pdf_path)
 
     if mode == "query-only" and not json_output:

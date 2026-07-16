@@ -2,6 +2,13 @@
 
 ## 2026-07-16
 
+- **Added an interactive ingest-mode choice**
+  - The ingest wizard now offers append, replace-document, and
+    replace-collection when `--ingest-mode` is omitted, while explicit CLI
+    flags retain precedence.
+  - Verification: launcher contract/main suite (**50 passed**); full suite
+    (**343 passed**); `git diff --check`.
+
 - **Fixed Qdrant Cloud filter-index provisioning for document-safe ingest**
   - Provisioned every payload index used by document, graph, and tombstone
     filters before a collection is used, including the provenance fields
