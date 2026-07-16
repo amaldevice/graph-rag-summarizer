@@ -2,6 +2,15 @@
 
 ## 2026-07-16
 
+- **Audited launcher CLI and wizard input parity for PR #84**
+  - Confirmed the new interactive ingest-mode prompt, explicit CLI precedence,
+    and the query/full-pipeline required-input paths.
+  - Recorded two follow-ups: pure wizard ingest still derives rather than
+    prompts for a custom document ID, and summary edit does not reopen all
+    already-populated choices.
+  - Verification: launcher contract/main suite (**50 passed**); full suite
+    (**343 passed**); input-parity findings posted to PR #84.
+
 - **Added an interactive ingest-mode choice**
   - The ingest wizard now offers append, replace-document, and
     replace-collection when `--ingest-mode` is omitted, while explicit CLI
