@@ -4,6 +4,7 @@
 # ============================================================
 
 import sys
+import types
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -87,3 +88,105 @@ def test_full_pipeline_dispatches_to_run_full_pipeline(monkeypatch):
     assert called_with["collection"] == "my_col"
     assert called_with["query"] == "what is X"
     assert called_with["retrieval_limit"] == 15
+
+
+def test_full_pipeline_stops_before_graph_analysis_when_retrieval_is_empty(monkeypatch, tmp_path):
+    embedder_module = types.ModuleType("embedding.embedder")
+    qdrant_module = types.ModuleType("vectordb.qdrant_handler")
+
+    class FakeEmbedder:
+        def embed_text(self, text):
+            assert text == "question"
+            return [0.1, 0.2]
+
+    class FakeQdrant:
+        def __init__(self, collection_name):
+            assert collection_name == "empty"
+
+        def search_as_chunks(self, query_vector, limit):
+            assert query_vector == [0.1, 0.2]
+            assert limit == 2
+            return []
+
+        def revalidate_query_authorization(self):
+            pass
+
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module.QdrantHandler = FakeQdrant
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+    monkeypatch.setattr("launcher.runners._configure_query_denial", lambda *args: None)
+
+    from launcher.runners import run_full_pipeline
+
+    with pytest.raises(RuntimeError, match="no chunks retrieved.*document-safe mode"):
+        run_full_pipeline({
+            "mode": "full-pipeline",
+            "profile": "local",
+            "collection": "empty",
+            "query": "question",
+            "retrieval_limit": 2,
+            "artifact_dir": str(tmp_path),
+            "enable_graph_artifact": False,
+        })
+
+
+def test_full_pipeline_legacy_vector_uses_compatibility_path(monkeypatch, tmp_path):
+    embedder_module = types.ModuleType("embedding.embedder")
+    qdrant_module = types.ModuleType("vectordb.qdrant_handler")
+    events = []
+
+    class FakeEmbedder:
+        def embed_text(self, text):
+            assert text == "question"
+            return [0.1, 0.2]
+
+    class FakeQdrant:
+        def __init__(self, collection_name):
+            assert collection_name == "legacy"
+
+        def search_as_chunks(self, query_vector, limit):
+            assert query_vector == [0.1, 0.2]
+            assert limit == 2
+            events.append("search")
+            return [{"chunk_id": 1, "text": "legacy result"}]
+
+        def revalidate_query_authorization(self):
+            events.append("revalidate")
+
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module.QdrantHandler = FakeQdrant
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+    monkeypatch.setattr(
+        "launcher.runners._validate_legacy_collection_mode",
+        lambda *args: events.append("legacy-mode-validated"),
+    )
+    monkeypatch.setattr(
+        "launcher.runners._configure_query_denial",
+        lambda *args: (_ for _ in ()).throw(AssertionError("safe authorization must not run")),
+    )
+    monkeypatch.setattr(
+        "launcher.runners._persistent_graph_view",
+        lambda *args: (_ for _ in ()).throw(AssertionError("persistent graph must not run")),
+    )
+    monkeypatch.setattr(
+        "launcher.runners._compatibility_or_vector_view",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("compatibility path reached")),
+    )
+
+    from launcher.runners import run_full_pipeline
+
+    with pytest.raises(RuntimeError, match="compatibility path reached"):
+        run_full_pipeline({
+            "mode": "full-pipeline",
+            "profile": "local",
+            "collection": "legacy",
+            "collection_mode": "legacy-vector",
+            "query": "question",
+            "retrieval_limit": 2,
+            "artifact_dir": str(tmp_path),
+            "enable_graph_artifact": True,
+        })
+
+    assert events == ["legacy-mode-validated", "search", "revalidate", "revalidate"]

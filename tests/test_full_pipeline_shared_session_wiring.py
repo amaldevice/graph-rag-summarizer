@@ -402,6 +402,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         "runner_context": {
             "attempt": 0,
             "allocator_status": "unavailable",
+            "collection_mode": "document-safe",
             "graph_source": "compatibility_query_graph",
             "fallback_status": "persistent_graph_disabled",
             "fallback_reason": "",
@@ -624,6 +625,7 @@ def test_full_pipeline_uses_one_provider_session_for_summarizer_and_reducer(monk
         assert allocation["runner_context"] == {
             "attempt": 0 if current_dir == persistent_dir else 1,
             "allocator_status": "unavailable",
+            "collection_mode": "document-safe",
             "graph_source": "persistent_graph",
             "fallback_status": "not_used",
             "fallback_reason": "",

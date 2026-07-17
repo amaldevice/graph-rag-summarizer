@@ -15,8 +15,10 @@ SUPPORTED_MODES = ("query-only", "ingest", "full-pipeline")
 SUPPORTED_PROFILES = ("local", "cloud")
 SUPPORTED_LLM_PROVIDERS = ("groq", "gemini", "nvidia", "openrouter")
 SUPPORTED_INGEST_MODES = ("append", "replace-document", "replace-collection")
+SUPPORTED_COLLECTION_MODES = ("document-safe", "legacy-vector")
 DEFAULT_RETRIEVAL_LIMIT = 10
 DEFAULT_INGEST_MODE = "append"
+DEFAULT_COLLECTION_MODE = "document-safe"
 EXCLUDED_SCAN_DIRS = {
     ".git",
     ".venv",
@@ -98,6 +100,16 @@ def resolve_ingest_mode(ingest_mode: str | None) -> str:
     if mode not in SUPPORTED_INGEST_MODES:
         raise ValueError(
             f"Unknown ingest mode '{mode}'. Choose from: {', '.join(SUPPORTED_INGEST_MODES)}"
+        )
+    return mode
+
+
+def resolve_collection_mode(collection_mode: str | None) -> str:
+    """Resolve the collection design selected for a launcher run."""
+    mode = (collection_mode or DEFAULT_COLLECTION_MODE).lower().strip()
+    if mode not in SUPPORTED_COLLECTION_MODES:
+        raise ValueError(
+            f"Unknown collection mode '{mode}'. Choose from: {', '.join(SUPPORTED_COLLECTION_MODES)}"
         )
     return mode
 
@@ -274,6 +286,12 @@ def build_cli_parser() -> argparse.ArgumentParser:
         help="Collection Target name",
     )
     parser.add_argument(
+        "--collection-mode",
+        choices=SUPPORTED_COLLECTION_MODES,
+        default=None,
+        help="Collection design: document-safe or legacy-vector (default: document-safe)",
+    )
+    parser.add_argument(
         "--query",
         help="Query text (required for query-only and full-pipeline)",
     )
@@ -391,6 +409,20 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
     if not mode:
         mode = _prompt_choice("Select Launcher Mode:", list(SUPPORTED_MODES))
 
+    if hasattr(cli_args, "collection_mode"):
+        collection_mode = getattr(cli_args, "collection_mode")
+        if collection_mode is None:
+            collection_mode = _prompt_choice(
+                "Select Collection Design:",
+                list(SUPPORTED_COLLECTION_MODES),
+                default=DEFAULT_COLLECTION_MODE,
+            )
+        collection_mode = resolve_collection_mode(collection_mode)
+    else:
+        # Programmatic callers from the pre-mode launcher contract retain the
+        # documented default without an unexpected prompt.
+        collection_mode = DEFAULT_COLLECTION_MODE
+
     collection = cli_args.collection
     query = cli_args.query
     retrieval_limit = cli_args.retrieval_limit
@@ -499,7 +531,10 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
         "ingest_mode": ingest_mode,
         "document_id": document_id or "",
         "collection_operation_id": getattr(cli_args, "collection_operation_id", "") or "",
-        "enable_graph_artifact": _persistent_graph_enabled(),
+        "collection_mode": collection_mode,
+        "enable_graph_artifact": (
+            collection_mode == "document-safe" and _persistent_graph_enabled()
+        ),
     }
 
 
@@ -520,6 +555,7 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
     ingest_mode = resolve_ingest_mode(getattr(cli_args, "ingest_mode", None))
     document_id = getattr(cli_args, "document_id", None)
     collection_operation_id = getattr(cli_args, "collection_operation_id", None)
+    collection_mode = resolve_collection_mode(getattr(cli_args, "collection_mode", None))
 
     if mode in ("query-only", "full-pipeline"):
         if not collection:
@@ -553,7 +589,10 @@ def _fail_fast_missing(cli_args: argparse.Namespace, profile: str) -> dict:
         "ingest_mode": ingest_mode,
         "document_id": document_id or "",
         "collection_operation_id": collection_operation_id or "",
-        "enable_graph_artifact": _persistent_graph_enabled(),
+        "collection_mode": collection_mode,
+        "enable_graph_artifact": (
+            collection_mode == "document-safe" and _persistent_graph_enabled()
+        ),
     }
 
 
@@ -567,6 +606,7 @@ def show_summary_and_confirm(config: dict, is_tty: bool) -> bool:
     print(f"  Mode      : {config['mode']}")
     print(f"  Profile   : {config['profile']}")
     print(f"  Collection: {config['collection']}")
+    print(f"  Collection Design: {config.get('collection_mode', DEFAULT_COLLECTION_MODE)}")
     if config.get("query"):
         print(f"  Query     : {config['query']}")
     if config.get("retrieval_limit"):

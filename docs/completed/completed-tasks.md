@@ -1,5 +1,24 @@
 # Completed Tasks
 
+## 2026-07-17
+
+- **Added collection-scoped document-safe and legacy-vector launcher modes**
+  - Published PRD Issue #87 and delivery slices #88–#90.
+  - Added the collection-design wizard/CLI contract, immutable manifest pinning
+    before ingest mutation, explicit raw-vector compatibility access for legacy
+    collections, and an empty-retrieval error before Full-Pipeline graph
+    analysis.
+  - Updated operator/onboarding docs for the collection-design contract.
+  - Verification: focused launcher/legacy safety suite; full suite (**352
+    passed**); `compileall`; `git diff --check`.
+  - Follow-up review fix: legacy-vector `append` may reuse raw collections,
+    while raw `replace-document` fails safely with a `replace-collection`
+    direction because it cannot identify a document's old raw points. The
+    selected collection mode is now retained in Full-Pipeline context
+    allocation artifacts, including retries.
+  - Verification: focused regression suite (**69 passed**); full suite (**354
+    passed**); `compileall`; `git diff --check`.
+
 ## 2026-07-16
 
 - **Created implementation-ready launcher follow-up issues**

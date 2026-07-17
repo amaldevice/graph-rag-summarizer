@@ -62,6 +62,21 @@ def test_canonical_graph_bytes_and_source_fingerprint_are_stable():
     assert deserialize_graph(first)["document_id"] == "paper"
 
 
+def test_manifest_collection_mode_is_pinned_once_and_rejects_conflicts():
+    manifests = ManifestStore(
+        InMemoryObjectStore(),
+        collection="papers",
+        backend={"kind": "memory", "namespace": "test"},
+    )
+
+    assert manifests.collection_mode() is None
+    assert manifests.bind_collection_mode("legacy-vector") == "legacy-vector"
+    assert manifests.collection_mode() == "legacy-vector"
+    assert manifests.bind_collection_mode("legacy-vector") == "legacy-vector"
+    with pytest.raises(ValueError, match="already uses collection mode 'legacy-vector'"):
+        manifests.bind_collection_mode("document-safe")
+
+
 def test_document_graph_persists_weak_evidence_without_activating_its_edge():
     class Extractor:
         relation_extraction_mode = "spacy-only"

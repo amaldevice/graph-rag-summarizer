@@ -264,7 +264,6 @@ class QdrantHandler:
         scroll = getattr(self.client, "scroll", None)
         if scroll is None:
             raise RuntimeError("Qdrant client cannot verify legacy document metadata")
-        self._ensure_filter_payload_indexes()
         offset = None
         seen_offsets = set()
         legacy_found = False
@@ -321,7 +320,14 @@ class QdrantHandler:
                 return False
         return True
 
-    def prepare_ingest(self, ingest_mode: str, document_id: str, vector_size: int, claim: dict | None = None) -> None:
+    def prepare_ingest(
+        self,
+        ingest_mode: str,
+        document_id: str,
+        vector_size: int,
+        claim: dict | None = None,
+        allow_legacy_append: bool = False,
+    ) -> None:
         """Apply one explicit collection lifecycle operation before upload."""
         ingest_mode = (ingest_mode or "append").strip().lower()
         if ingest_mode not in {"append", "replace-document", "replace-collection"}:
@@ -332,7 +338,7 @@ class QdrantHandler:
         exists = self.collection_exists()
 
         if ingest_mode == "append":
-            if exists and self.has_legacy_points():
+            if exists and not allow_legacy_append and self.has_legacy_points():
                 raise ValueError(
                     f"Collection '{self.collection_name}' contains legacy points without document_id; "
                     "use replace-collection to rebuild it before append"
@@ -349,7 +355,7 @@ class QdrantHandler:
                 if self.has_legacy_points():
                     raise ValueError(
                         f"Collection '{self.collection_name}' contains legacy points without document_id; "
-                        "use replace-collection to rebuild it before replace-document"
+                        "replace-document cannot safely select them; use replace-collection to rebuild it"
                     )
                 self._ensure_filter_payload_indexes()
             self.create_collection_if_not_exists(vector_size=vector_size)

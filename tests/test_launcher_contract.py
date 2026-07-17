@@ -33,6 +33,9 @@ from launcher.contract import (
     DEFAULT_RETRIEVAL_LIMIT,
     SUPPORTED_INGEST_MODES,
     DEFAULT_INGEST_MODE,
+    SUPPORTED_COLLECTION_MODES,
+    DEFAULT_COLLECTION_MODE,
+    resolve_collection_mode,
 )
 
 
@@ -192,6 +195,15 @@ def test_supported_ingest_modes_have_append_default():
     assert DEFAULT_INGEST_MODE == "append"
 
 
+def test_collection_mode_defaults_to_document_safe_and_rejects_unknown_values():
+    assert SUPPORTED_COLLECTION_MODES == ("document-safe", "legacy-vector")
+    assert DEFAULT_COLLECTION_MODE == "document-safe"
+    assert resolve_collection_mode(None) == "document-safe"
+    assert resolve_collection_mode("LEGACY-VECTOR") == "legacy-vector"
+    with pytest.raises(ValueError, match="Unknown collection mode 'unknown'"):
+        resolve_collection_mode("unknown")
+
+
 def test_discover_local_pdfs_returns_repo_relative_sorted_paths(tmp_path):
     (tmp_path / "alpha.pdf").write_text("a")
     (tmp_path / "docs").mkdir()
@@ -221,6 +233,7 @@ def test_build_cli_parser_has_all_flags():
         "--json-output", "out.json",
         "--artifact-dir", "artifacts/run-1",
         "--verbose",
+        "--collection-mode", "legacy-vector",
         "--ingest-mode", "append",
         "--document-id", "paper-a",
     ])
@@ -234,6 +247,7 @@ def test_build_cli_parser_has_all_flags():
     assert args.json_output == "out.json"
     assert args.artifact_dir == "artifacts/run-1"
     assert args.verbose is True
+    assert args.collection_mode == "legacy-vector"
     assert args.ingest_mode == "append"
     assert args.document_id == "paper-a"
 
@@ -251,6 +265,7 @@ def test_build_cli_parser_defaults():
     assert args.json_output is None
     assert args.artifact_dir is None
     assert args.verbose is False
+    assert args.collection_mode is None
     assert args.ingest_mode is None
     assert args.document_id is None
 
@@ -277,6 +292,7 @@ def _make_args(**kwargs):
         "artifact_dir": None,
         "verbose": False,
         "confirm_existing_collection": False,
+        "collection_mode": None,
     }
     defaults.update(kwargs)
 
@@ -368,6 +384,7 @@ def test_fail_fast_query_only_success():
     assert result["collection"] == "col"
     assert result["query"] == "test q"
     assert result["retrieval_limit"] == DEFAULT_RETRIEVAL_LIMIT
+    assert result["collection_mode"] == "document-safe"
 
 
 def test_fail_fast_full_pipeline_requires_query():
@@ -443,6 +460,34 @@ def test_run_interactive_wizard_prompts_for_ingest_mode_when_cli_omits_it(monkey
     result = run_interactive_wizard(args, "local", is_tty=True)
 
     assert result["ingest_mode"] == "replace-document"
+
+
+def test_run_interactive_wizard_selects_collection_design_after_launcher_mode(monkeypatch):
+    answers = iter(["2", "2"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    args = SimpleNamespace(
+        mode=None,
+        profile="local",
+        collection="existing_collection",
+        query=None,
+        retrieval_limit=None,
+        pdf="paper.pdf",
+        no_interactive=False,
+        json_output=None,
+        artifact_dir=None,
+        verbose=True,
+        confirm_existing_collection=False,
+        ingest_mode="append",
+        document_id=None,
+        collection_mode=None,
+    )
+
+    result = run_interactive_wizard(args, "local", is_tty=True)
+
+    assert result["mode"] == "ingest"
+    assert result["collection_mode"] == "legacy-vector"
+    assert result["enable_graph_artifact"] is False
 
 
 def test_run_interactive_wizard_preserves_explicit_ingest_mode(monkeypatch):

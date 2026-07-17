@@ -917,6 +917,49 @@ def test_prepare_ingest_rejects_legacy_points_for_document_operations() -> None:
         handler.prepare_ingest("replace-document", "paper-a", vector_size=2)
 
 
+def test_prepare_ingest_allows_legacy_points_for_legacy_vector_append() -> None:
+    class FakeClient:
+        def get_collections(self):
+            return SimpleNamespace(collections=[SimpleNamespace(name="test")])
+
+        def scroll(self, **kwargs):
+            del kwargs
+            return [SimpleNamespace(id=1, payload={"text": "legacy"})], None
+
+        def count(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(count=0)
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+
+    handler.prepare_ingest(
+        "append",
+        "paper-a",
+        vector_size=2,
+        allow_legacy_append=True,
+    )
+
+
+def test_prepare_ingest_rejects_raw_legacy_points_for_replace_document() -> None:
+    class FakeClient:
+        def get_collections(self):
+            return SimpleNamespace(collections=[SimpleNamespace(name="test")])
+
+        def scroll(self, **kwargs):
+            del kwargs
+            return [SimpleNamespace(id=1, payload={"text": "legacy"})], None
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+
+    with pytest.raises(ValueError, match="cannot safely select"):
+        handler.prepare_ingest(
+            "replace-document",
+            "paper-a",
+            vector_size=2,
+            allow_legacy_append=True,
+        )
+
+
 def test_legacy_scan_continues_after_legacy_point_to_detect_later_pagination_failure() -> None:
     class FakeClient:
         calls = 0

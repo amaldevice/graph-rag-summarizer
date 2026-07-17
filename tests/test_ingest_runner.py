@@ -504,6 +504,126 @@ def test_graph_claim_is_attached_before_normal_ingest_qdrant_mutation(monkeypatc
     assert events.index("set-graph-claim") < events.index("prepare-ingest")
 
 
+def test_legacy_vector_ingest_pins_mode_without_graph_lifecycle(monkeypatch, tmp_path):
+    from graph import persistent
+    from launcher.runners import run_ingest
+
+    dummy_pdf = tmp_path / "paper.pdf"
+    dummy_pdf.write_text("not a real pdf")
+    events = []
+
+    class FakeLoader:
+        def process_pdf(self, pdf_path):
+            assert pdf_path == str(dummy_pdf)
+            return {"chunks": [{"chunk_id": 1, "text": "legacy"}]}
+
+    class FakeEmbedder:
+        def embed_chunks(self, chunks):
+            assert chunks[0]["document_id"] == "paper-a"
+            return [[0.1, 0.2]]
+
+    class FakeQdrant:
+        def __init__(self, collection_name):
+            assert collection_name == "legacy"
+
+        def prepare_ingest(self, **kwargs):
+            assert "claim" not in kwargs
+            assert kwargs["allow_legacy_append"] is True
+            events.append("prepare")
+
+        def upsert_chunks(self, chunks, vectors):
+            assert len(chunks) == len(vectors) == 1
+            events.append("upsert")
+            return ["point"]
+
+    class FailPipeline:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("legacy mode must not create a persistent graph pipeline")
+
+    loader_module = _types.ModuleType("preprocessing.docling_loader")
+    loader_module.DoclingLoader = FakeLoader
+    embedder_module = _types.ModuleType("embedding.embedder")
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module = _types.ModuleType("vectordb.qdrant_handler")
+    qdrant_module.QdrantHandler = FakeQdrant
+    monkeypatch.setitem(sys.modules, "preprocessing.docling_loader", loader_module)
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", FailPipeline)
+    monkeypatch.setattr(
+        "launcher.runners._bind_ingest_collection_mode",
+        lambda collection, mode, **kwargs: events.append(("bind", collection, mode)),
+    )
+
+    run_ingest({
+        "collection": "legacy",
+        "collection_mode": "legacy-vector",
+        "pdf_path": str(dummy_pdf),
+        "document_id": "paper-a",
+        "ingest_mode": "append",
+        "enable_graph_artifact": True,
+    })
+
+    assert events == [("bind", "legacy", "legacy-vector"), "prepare", "upsert"]
+
+
+def test_document_safe_ingest_does_not_pin_a_legacy_collection(monkeypatch, tmp_path):
+    from graph import persistent
+    from launcher.runners import run_ingest
+
+    dummy_pdf = tmp_path / "paper.pdf"
+    dummy_pdf.write_text("not a real pdf")
+
+    class FakeLoader:
+        def process_pdf(self, pdf_path):
+            assert pdf_path == str(dummy_pdf)
+            return {"chunks": [{"chunk_id": 1, "text": "legacy"}]}
+
+    class FakeEmbedder:
+        def embed_chunks(self, chunks):
+            assert len(chunks) == 1
+            return [[0.1, 0.2]]
+
+    class FakeQdrant:
+        def __init__(self, collection_name):
+            assert collection_name == "legacy"
+
+        def collection_exists(self):
+            return True
+
+        def has_legacy_points(self):
+            return True
+
+    class FailPipeline:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("legacy preflight must run before graph reservation")
+
+    loader_module = _types.ModuleType("preprocessing.docling_loader")
+    loader_module.DoclingLoader = FakeLoader
+    embedder_module = _types.ModuleType("embedding.embedder")
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module = _types.ModuleType("vectordb.qdrant_handler")
+    qdrant_module.QdrantHandler = FakeQdrant
+    monkeypatch.setitem(sys.modules, "preprocessing.docling_loader", loader_module)
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+    monkeypatch.setattr(persistent, "PersistentGraphPipeline", FailPipeline)
+    monkeypatch.setattr(
+        "launcher.runners._bind_ingest_collection_mode",
+        lambda *args, **kwargs: pytest.fail("legacy preflight must run before mode pinning"),
+    )
+
+    with pytest.raises(SystemExit, match="contains legacy points.*legacy-vector"):
+        run_ingest({
+            "collection": "legacy",
+            "collection_mode": "document-safe",
+            "pdf_path": str(dummy_pdf),
+            "document_id": "paper-a",
+            "ingest_mode": "append",
+            "enable_graph_artifact": True,
+        })
+
+
 @pytest.mark.parametrize(
     ("artifact_fields", "artifact_error", "error_match"),
     [
