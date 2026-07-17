@@ -457,6 +457,7 @@ class ManifestStore:
         return {
             "schema_version": 1,
             "collection": self.collection,
+            "collection_mode": None,
             "manifest_revision": 0,
             "manifest_fence_token": 0,
             "tombstone_epoch": 0,
@@ -478,6 +479,42 @@ class ManifestStore:
             "pending_tombstone_cleanup_ids": [],
             "documents": {},
         }
+
+    @staticmethod
+    def _collection_mode_from_manifest(manifest: dict) -> str | None:
+        mode = manifest.get("collection_mode")
+        if mode is not None:
+            if mode not in {"document-safe", "legacy-vector"}:
+                raise ValueError(f"invalid collection mode '{mode}' in manifest")
+            return mode
+        if manifest.get("documents"):
+            # Existing lifecycle manifests predate this field and are safe by
+            # construction; never let a raw-vector request reinterpret them.
+            return "document-safe"
+        return None
+
+    def collection_mode(self) -> str | None:
+        """Return the pinned mode, inferring document-safe for old manifests."""
+        return self._collection_mode_from_manifest(self._read()[0])
+
+    def bind_collection_mode(self, requested_mode: str) -> str:
+        """Persist a collection design before its first ingest mutation."""
+        if requested_mode not in {"document-safe", "legacy-vector"}:
+            raise ValueError(f"unsupported collection mode '{requested_mode}'")
+        with self._lock:
+            snapshot = self.read_snapshot()
+            manifest = snapshot.manifest
+            current = self._collection_mode_from_manifest(manifest)
+            if current is not None and current != requested_mode:
+                raise ValueError(
+                    f"collection '{self.collection}' already uses collection mode '{current}'"
+                )
+            if manifest.get("collection_mode") == requested_mode:
+                return requested_mode
+            candidate = dict(manifest)
+            candidate["collection_mode"] = requested_mode
+            self._write(candidate, snapshot)
+            return requested_mode
 
     def _read(self) -> tuple[dict, str | None]:
         manifest, _, etag = self._read_raw()

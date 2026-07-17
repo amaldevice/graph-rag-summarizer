@@ -1,5 +1,17 @@
 # Completed Tasks
 
+## 2026-07-17
+
+- **Added collection-scoped document-safe and legacy-vector launcher modes**
+  - Published PRD Issue #87 and delivery slices #88–#90.
+  - Added the collection-design wizard/CLI contract, immutable manifest pinning
+    before ingest mutation, explicit raw-vector compatibility access for legacy
+    collections, and an empty-retrieval error before Full-Pipeline graph
+    analysis.
+  - Updated operator/onboarding docs for the collection-design contract.
+  - Verification: focused launcher/legacy safety suite; full suite (**352
+    passed**); `compileall`; `git diff --check`.
+
 ## 2026-07-16
 
 - **Created implementation-ready launcher follow-up issues**

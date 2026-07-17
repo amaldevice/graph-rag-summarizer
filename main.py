@@ -39,6 +39,7 @@ def _config_to_args(config: dict, profile_locked: bool) -> SimpleNamespace:
         mode=config["mode"],
         profile=config["profile"] if profile_locked else None,
         collection=config.get("collection") or None,
+        collection_mode=config.get("collection_mode"),
         query=config.get("query") or None,
         retrieval_limit=config.get("retrieval_limit"),
         pdf=config.get("pdf_path") or None,

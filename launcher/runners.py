@@ -548,6 +548,11 @@ def _configure_query_denial(qdrant, collection, object_store=None):
 
     manifests, _ = default_graph_services(collection, object_store)
     snapshot = manifests.read_snapshot()
+    collection_mode = getattr(manifests, "collection_mode", None)
+    if callable(collection_mode) and collection_mode() == "legacy-vector":
+        raise RuntimeError(
+            f"collection '{collection}' uses legacy-vector; rerun with --collection-mode legacy-vector"
+        )
     if (
         snapshot.manifest.get("pending_tombstone_set_digest") is not None
         or snapshot.manifest.get("collection_operation_id") is not None
@@ -600,6 +605,28 @@ def _configure_query_denial(qdrant, collection, object_store=None):
     })
 
 
+def _bind_ingest_collection_mode(collection, collection_mode, object_store=None, manifests=None) -> None:
+    """Pin a collection design before Qdrant ingest mutations begin."""
+    if manifests is None:
+        from graph.persistent import default_graph_services
+
+        manifests, _ = default_graph_services(collection, object_store)
+    bind = getattr(manifests, "bind_collection_mode", None)
+    if callable(bind):
+        bind(collection_mode)
+
+
+def _validate_legacy_collection_mode(collection, object_store=None) -> None:
+    """Allow raw reads only when the manifest does not declare document-safe."""
+    from graph.persistent import default_graph_services
+
+    manifests, _ = default_graph_services(collection, object_store)
+    if manifests.collection_mode() == "document-safe":
+        raise RuntimeError(
+            f"collection '{collection}' uses document-safe; rerun without --collection-mode legacy-vector"
+        )
+
+
 def run_query_only(config: dict) -> None:
     """Execute a Query-Only Run: retrieve ranked chunks without the full pipeline."""
     from embedding.embedder import TextEmbedder
@@ -610,6 +637,9 @@ def run_query_only(config: dict) -> None:
     retrieval_limit = config["retrieval_limit"]
     json_output = config.get("json_output", "")
     verbose = bool(config.get("verbose", False))
+    from launcher.contract import resolve_collection_mode
+
+    collection_mode = resolve_collection_mode(config.get("collection_mode"))
 
     print("\n=== QUERY-ONLY RUN ===")
     print(f"  Collection : {collection}")
@@ -622,10 +652,10 @@ def run_query_only(config: dict) -> None:
     ])
     qdrant = QdrantHandler(collection_name=collection)
     config["qdrant"] = qdrant
-    # Query authorization is a safety boundary, not a graph-rendering feature.
-    # Disabling graph artifacts may skip graph reads, but must not re-expose a
-    # document that a collection replacement has tombstoned.
-    _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
+    if collection_mode == "legacy-vector":
+        _validate_legacy_collection_mode(collection, config.get("graph_object_store"))
+    else:
+        _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
     embedder = TextEmbedder()
     query_vector = embedder.embed_text(query)
 
@@ -659,6 +689,7 @@ def run_query_only(config: dict) -> None:
             "mode": "query-only",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "collection": collection,
+            "collection_mode": collection_mode,
             "query": query,
             "retrieval_limit": retrieval_limit,
             "chunk_count": len(chunks),
@@ -673,6 +704,7 @@ def run_ingest(config: dict) -> None:
     """Execute an Ingest Run with document-safe collection lifecycle handling."""
     from launcher.contract import (
         DEFAULT_INGEST_MODE,
+        resolve_collection_mode,
         resolve_ingest_mode,
         suggest_document_id_from_pdf,
     )
@@ -684,6 +716,11 @@ def run_ingest(config: dict) -> None:
     collection = config["collection"]
     verbose = bool(config.get("verbose", False))
     ingest_mode = resolve_ingest_mode(config.get("ingest_mode", DEFAULT_INGEST_MODE))
+    collection_mode = resolve_collection_mode(config.get("collection_mode"))
+    graph_artifact_enabled = (
+        collection_mode == "document-safe"
+        and bool(config.get("enable_graph_artifact", False))
+    )
     document_id = (config.get("document_id") or suggest_document_id_from_pdf(pdf_path)).strip()
     if not document_id:
         raise SystemExit("Error: document_id cannot be empty")
@@ -691,6 +728,7 @@ def run_ingest(config: dict) -> None:
     print("\n=== INGEST RUN ===")
     print(f"  PDF        : {pdf_path}")
     print(f"  Collection : {collection}")
+    print(f"  Collection Design: {collection_mode}")
     print(f"  Ingest Mode: {ingest_mode}")
     print(f"  Document ID: {document_id}")
 
@@ -709,10 +747,27 @@ def run_ingest(config: dict) -> None:
     embedder = TextEmbedder()
     vectors = embedder.embed_chunks(chunks)
 
+    qdrant = QdrantHandler(collection_name=collection)
+    config["qdrant"] = qdrant
+    collection_exists = getattr(qdrant, "collection_exists", None)
+    has_legacy_points = getattr(qdrant, "has_legacy_points", None)
+    if (
+        collection_mode == "document-safe"
+        and ingest_mode in {"append", "replace-document"}
+        and callable(collection_exists)
+        and callable(has_legacy_points)
+        and collection_exists()
+        and has_legacy_points()
+    ):
+        raise SystemExit(
+            f"Error: Collection '{collection}' contains legacy points; rerun with "
+            "--collection-mode legacy-vector or use replace-collection to rebuild it"
+        )
+
     graph_pipeline = None
     graph_claim = None
     collection_tombstone_manifest = None
-    if config.get("enable_graph_artifact", False):
+    if graph_artifact_enabled:
         try:
             from graph.persistent import PersistentGraphPipeline, source_fingerprint
 
@@ -720,6 +775,11 @@ def run_ingest(config: dict) -> None:
                 collection, object_store=config.get("graph_object_store")
             )
             config["graph_pipeline"] = graph_pipeline
+            _bind_ingest_collection_mode(
+                collection,
+                collection_mode,
+                manifests=graph_pipeline.manifests,
+            )
             if ingest_mode != "replace-collection":
                 graph_claim = graph_pipeline.reserve(chunks, document_id, mode=ingest_mode)
                 config["graph_claim"] = graph_claim
@@ -727,14 +787,23 @@ def run_ingest(config: dict) -> None:
             raise RuntimeError(
                 f"persistent graph reservation failed before vector mutation: {type(exc).__name__}: {exc}"
             ) from exc
+    elif collection_mode == "legacy-vector" or "collection_mode" in config:
+        try:
+            _bind_ingest_collection_mode(
+                collection,
+                collection_mode,
+                object_store=config.get("graph_object_store"),
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"collection mode binding failed before vector mutation: {type(exc).__name__}: {exc}"
+            ) from exc
 
     _print_stage(3, 4, "prepare collection", verbose, [
         f"Collection target: {collection}",
         f"Operation: {ingest_mode}",
         f"Document ID: {document_id}",
     ])
-    qdrant = QdrantHandler(collection_name=collection)
-    config["qdrant"] = qdrant
     if graph_pipeline and ingest_mode == "replace-collection":
         persisted_operation_id = graph_pipeline.manifests.read_snapshot().manifest.get("collection_operation_id")
         collection_operation_id = config.get("collection_operation_id") or persisted_operation_id or (
@@ -906,7 +975,7 @@ def run_ingest(config: dict) -> None:
         raise
 
     graph_result = None
-    if config.get("enable_graph_artifact", False):
+    if graph_artifact_enabled:
         if config.get("graph_relation_provider") is None:
             from summarizer.provider_router import create_session
 
@@ -970,6 +1039,13 @@ def run_full_pipeline(config: dict) -> None:
     pdf_path = config.get("pdf_path", "")
     artifact_dir = config.get("artifact_dir", "") or "output"
     verbose = bool(config.get("verbose", False))
+    from launcher.contract import resolve_collection_mode
+
+    collection_mode = resolve_collection_mode(config.get("collection_mode"))
+    graph_artifact_enabled = (
+        collection_mode == "document-safe"
+        and bool(config.get("enable_graph_artifact", False))
+    )
     max_retries = int(config.get("max_feedback_retries", 2))
     forced_retry_stage = config.get("_test_force_feedback_retry_stage")
     if forced_retry_stage not in {None, "retrieval", "prompt", "reduce"}:
@@ -977,6 +1053,7 @@ def run_full_pipeline(config: dict) -> None:
 
     print("\n=== FULL-PIPELINE RUN ===")
     print(f"  Collection : {collection}")
+    print(f"  Collection Design: {collection_mode}")
     print(f"  Query      : {query}")
     print(f"  Limit      : {retrieval_limit}")
     print(f"  Artifacts  : {artifact_dir}")
@@ -990,9 +1067,10 @@ def run_full_pipeline(config: dict) -> None:
 
     embedder = TextEmbedder()
     qdrant = QdrantHandler(collection_name=collection)
-    # Keep tombstone and generation authorization enabled even when callers
-    # opt out of graph artifact reads.
-    _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
+    if collection_mode == "legacy-vector":
+        _validate_legacy_collection_mode(collection, config.get("graph_object_store"))
+    else:
+        _configure_query_denial(qdrant, collection, config.get("graph_object_store"))
     session = create_session()
     # Relation extraction shares the configured provider router and its
     # sequential fallback chain with summarization and reduction.
@@ -1093,11 +1171,16 @@ def run_full_pipeline(config: dict) -> None:
             elif verbose:
                 print("  Parent context expansion unavailable; using retrieved payloads as-is.")
             print(f"\n  Retrieved chunks: {len(retrieved_chunks)}")
+            if not retrieved_chunks:
+                raise RuntimeError(
+                    f"no chunks retrieved from '{collection}' in {collection_mode} mode; "
+                    "choose the collection's matching mode or ingest the document before retrying"
+                )
             retrieved_chunks = _maybe_render_images(retrieved_chunks, pdf_path)
 
             persistent_view = None
             persistent_graph_read_reason = ""
-            if config.get("enable_graph_artifact", False):
+            if graph_artifact_enabled:
                 try:
                     persistent_view = _persistent_graph_view(
                         collection, retrieved_chunks, config.get("graph_object_store")
@@ -1118,7 +1201,7 @@ def run_full_pipeline(config: dict) -> None:
                 context_graph_source = "compatibility_query_graph"
                 context_fallback_status = (
                     "persistent_graph_unavailable"
-                    if config.get("enable_graph_artifact", False)
+                    if graph_artifact_enabled
                     else "persistent_graph_disabled"
                 )
                 context_fallback_reason = persistent_graph_read_reason

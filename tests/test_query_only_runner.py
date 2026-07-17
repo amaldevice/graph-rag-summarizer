@@ -10,6 +10,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -265,3 +267,73 @@ def test_query_only_enforces_tombstone_preflight_when_graph_artifacts_are_disabl
     })
 
     assert configured == ["configured", "revalidated"]
+
+
+def test_query_only_legacy_vector_bypasses_document_safe_authorization(monkeypatch):
+    embedder_module = types.ModuleType("embedding.embedder")
+    qdrant_module = types.ModuleType("vectordb.qdrant_handler")
+    events = []
+
+    class FakeEmbedder:
+        def embed_text(self, text):
+            assert text == "legacy question"
+            return [0.1, 0.2]
+
+    class FakeQdrantHandler:
+        def __init__(self, collection_name="test"):
+            assert collection_name == "legacy_collection"
+
+        def search_as_chunks(self, query_vector, limit):
+            assert query_vector == [0.1, 0.2]
+            assert limit == 3
+            events.append("search")
+            return [{"chunk_id": 1, "text": "legacy chunk", "page_no": 1, "rank": 1}]
+
+        def revalidate_query_authorization(self):
+            events.append("revalidate")
+
+    embedder_module.TextEmbedder = FakeEmbedder
+    qdrant_module.QdrantHandler = FakeQdrantHandler
+    monkeypatch.setitem(sys.modules, "embedding.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "vectordb.qdrant_handler", qdrant_module)
+
+    from launcher.runners import run_query_only
+
+    monkeypatch.setattr(
+        "launcher.runners._validate_legacy_collection_mode",
+        lambda *args: events.append("legacy-mode-validated"),
+    )
+    monkeypatch.setattr(
+        "launcher.runners._configure_query_denial",
+        lambda *args: (_ for _ in ()).throw(AssertionError("safe authorization must not run")),
+    )
+
+    run_query_only({
+        "mode": "query-only",
+        "profile": "cloud",
+        "collection": "legacy_collection",
+        "collection_mode": "legacy-vector",
+        "query": "legacy question",
+        "retrieval_limit": 3,
+        "json_output": "",
+    })
+
+    assert events == ["legacy-mode-validated", "search", "revalidate"]
+
+
+def test_legacy_vector_rejects_a_document_safe_manifest(monkeypatch):
+    from graph import persistent
+    from launcher.runners import _validate_legacy_collection_mode
+
+    class FakeManifests:
+        def collection_mode(self):
+            return "document-safe"
+
+    monkeypatch.setattr(
+        persistent,
+        "default_graph_services",
+        lambda *args: (FakeManifests(), None),
+    )
+
+    with pytest.raises(RuntimeError, match="uses document-safe"):
+        _validate_legacy_collection_mode("safe_collection")

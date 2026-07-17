@@ -36,6 +36,7 @@ def _build_legacy_ingest_config() -> dict:
         "pdf_path": pdf_path,
         "ingest_mode": ingest_mode,
         "document_id": document_id,
+        "collection_mode": "legacy-vector",
         # Legacy wrapper keeps its historical vector-only contract.
         "enable_graph_artifact": False,
         "json_output": "",

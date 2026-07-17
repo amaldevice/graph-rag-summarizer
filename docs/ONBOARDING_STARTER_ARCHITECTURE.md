@@ -2,7 +2,11 @@
 
 Compact orientation for a new agent. Read this before changing implementation code.
 
-> **Current boundary:** Ingest can publish a fenced, document-scoped persistent graph artifact. A **Full-Pipeline Run** reuses that artifact when it is enabled and valid; otherwise it builds a compatibility query graph, then falls back to vector-only context if graph construction fails. Query-Only remains retrieval-only.
+> **Current boundary:** Each collection is explicitly `document-safe` (default)
+> or `legacy-vector`. Document-safe ingest can publish a fenced,
+> document-scoped persistent graph artifact; a Full-Pipeline Run reuses it when
+> valid. Legacy-vector runs use the raw vector plane and build a compatibility
+> graph at query time. Query-Only remains retrieval-only.
 
 ## 1. Purpose and mental model
 
@@ -53,6 +57,11 @@ Per-run choices are session overrides; the launcher does not rewrite `.env`.
 | `query-only` | query → embedding → Qdrant ranked chunks → console/JSON | graph, summary, evaluation |
 | `full-pipeline` | retrieval → graph → summarize → evaluate → artifacts | — |
 
+The launcher asks for the collection design immediately after the launcher
+mode. The selected design is part of the collection contract, not a per-query
+fallback: the first ingest pins it in the collection manifest and conflicting
+later ingests fail before Qdrant mutation.
+
 Profiles select infrastructure, not work:
 
 | Profile | Vectors | Images |
@@ -69,18 +78,24 @@ Profiles select infrastructure, not work:
 1. `DoclingLoader.process_pdf()` extracts text, hierarchy/layout metadata, and optional images.
 2. `_stamp_document_identity()` adds `document_id`, deterministic `chunk_uid`, and parent references.
 3. `TextEmbedder.embed_chunks()` creates vectors.
-4. `QdrantHandler.prepare_ingest()` applies the collection lifecycle.
-5. `QdrantHandler.upsert_chunks()` writes vector + payload points in bounded batches.
-6. When persistent graphs are enabled, `PersistentGraphPipeline` claims,
+4. Ingest pins the selected collection design before Qdrant mutation.
+5. `QdrantHandler.prepare_ingest()` applies the collection lifecycle.
+6. `QdrantHandler.upsert_chunks()` writes vector + payload points in bounded batches.
+7. In document-safe mode, `PersistentGraphPipeline` claims,
    validates, and publishes the document artifact and manifest entry.
 
 Ingest operations are explicit: `append`, `replace-document`, and `replace-collection`. Legacy points without `document_id` must be rebuilt before document-safe append/replacement.
+`legacy-vector` ingest remains vector-only: it does not reserve a document
+claim, publish a graph/control point, or call the relation provider.
 
 ### Full-Pipeline Run
 
 `launcher/runners.py::run_full_pipeline` executes the stages in this order:
 
 1. **Retrieve** — embed the query and call `QdrantHandler.search_as_chunks()`.
+   Document-safe retrieval uses manifest generations and tombstone denial;
+   legacy-vector retrieval deliberately uses the raw vector plane. Empty
+   retrieval stops here with a recovery-oriented error.
 2. **Load or build graph** — reuse a validated persistent artifact when enabled;
    otherwise extract entities/relations and build the compatibility query graph.
    If that graph fails, use observable vector-only context.
@@ -179,9 +194,10 @@ Do not run live ingest/full-pipeline against a real collection without explicit 
 ## 9. Important boundaries
 
 - **Not Microsoft GraphRAG:** there is no GraphRAG package contract, persistent GraphRAG parquet index, or Neo4j requirement in the current flow.
-- **Persistent graph is optional:** `ENABLE_PERSISTENT_GRAPH` governs the
-  ingest/read path. A missing or invalid artifact must use the compatibility
-  fallback rather than make retrieval unavailable.
+- **Collection design is exclusive:** document-safe collections use manifest
+  authorization and persistent artifacts; legacy-vector collections use raw
+  vector retrieval and compatibility graphs. A caller must select the
+  collection's matching design; no automatic cross-design fallback exists.
 - **Qdrant is not a graph database:** it stores vectors and payload metadata; graph topology is assembled in Python.
 - **Images are optional enrichment:** PDF access and embedding inference remain local to the machine running the launcher, even in `cloud` profile.
 - **LLM is required only for Full-Pipeline:** Query-Only and Ingest can operate without a configured provider.

@@ -264,7 +264,6 @@ class QdrantHandler:
         scroll = getattr(self.client, "scroll", None)
         if scroll is None:
             raise RuntimeError("Qdrant client cannot verify legacy document metadata")
-        self._ensure_filter_payload_indexes()
         offset = None
         seen_offsets = set()
         legacy_found = False

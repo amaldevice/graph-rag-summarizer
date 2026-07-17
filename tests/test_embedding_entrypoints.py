@@ -63,6 +63,10 @@ def test_upload_entrypoint_uses_the_shared_embedding_model_setting(monkeypatch) 
             "vectordb.qdrant_handler": qdrant_module,
         },
     )
+    monkeypatch.setattr(
+        "launcher.runners._bind_ingest_collection_mode",
+        lambda *args, **kwargs: None,
+    )
 
     monkeypatch.setenv("PDF_PATH", "sample.pdf")
     upload_module.main()
