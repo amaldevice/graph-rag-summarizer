@@ -11,6 +11,13 @@
   - Updated operator/onboarding docs for the collection-design contract.
   - Verification: focused launcher/legacy safety suite; full suite (**352
     passed**); `compileall`; `git diff --check`.
+  - Follow-up review fix: legacy-vector `append` may reuse raw collections,
+    while raw `replace-document` fails safely with a `replace-collection`
+    direction because it cannot identify a document's old raw points. The
+    selected collection mode is now retained in Full-Pipeline context
+    allocation artifacts, including retries.
+  - Verification: focused regression suite (**69 passed**); full suite (**354
+    passed**); `compileall`; `git diff --check`.
 
 ## 2026-07-16
 

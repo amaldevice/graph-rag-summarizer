@@ -99,6 +99,7 @@ def _empty_context_allocation_diagnostics() -> dict:
 def _context_allocation_artifact(
     pruned_result: dict,
     *,
+    collection_mode: str,
     graph_source: str,
     fallback_status: str,
     fallback_reason: str,
@@ -116,6 +117,7 @@ def _context_allocation_artifact(
     allocation["runner_context"] = {
         "attempt": attempt,
         "allocator_status": allocator_status,
+        "collection_mode": collection_mode,
         "graph_source": graph_source,
         "fallback_status": fallback_status,
         "fallback_reason": fallback_reason,
@@ -892,6 +894,8 @@ def run_ingest(config: dict) -> None:
             "document_id": document_id,
             "vector_size": len(vectors[0]),
         }
+        if collection_mode == "legacy-vector":
+            prepare_kwargs["allow_legacy_append"] = True
         if graph_claim is not None:
             prepare_kwargs["claim"] = graph_claim
         qdrant.prepare_ingest(**prepare_kwargs)
@@ -1142,6 +1146,7 @@ def run_full_pipeline(config: dict) -> None:
                 _artifact_path(current_dir, "context_allocation.json"),
                 _context_allocation_artifact(
                     pruned_result,
+                    collection_mode=collection_mode,
                     graph_source=context_graph_source,
                     fallback_status=context_fallback_status,
                     fallback_reason=context_fallback_reason,
@@ -1354,6 +1359,7 @@ def run_full_pipeline(config: dict) -> None:
                 pruned_result = pruner.select_top_chunks(ranked, retrieved_chunks)
             context_allocation = _context_allocation_artifact(
                 pruned_result,
+                collection_mode=collection_mode,
                 graph_source=context_graph_source,
                 fallback_status=context_fallback_status,
                 fallback_reason=context_fallback_reason,

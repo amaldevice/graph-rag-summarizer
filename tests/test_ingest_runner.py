@@ -528,6 +528,7 @@ def test_legacy_vector_ingest_pins_mode_without_graph_lifecycle(monkeypatch, tmp
 
         def prepare_ingest(self, **kwargs):
             assert "claim" not in kwargs
+            assert kwargs["allow_legacy_append"] is True
             events.append("prepare")
 
         def upsert_chunks(self, chunks, vectors):
