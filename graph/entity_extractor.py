@@ -354,7 +354,10 @@ Text:
             source = getattr(self.provider_router, "active_provider", None) or "provider-router"
             return self._parse_relation_response(content, source, include_confidence=True)
         except Exception as exc:
-            logger.warning("Relation provider call failed; using spaCy-only fallback: %s", exc)
+            logger.warning(
+                "Relation provider call failed; using spaCy-only fallback: %s",
+                redact_provider_error(exc),
+            )
             return []
 
     # ========================================================

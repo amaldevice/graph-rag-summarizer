@@ -85,6 +85,9 @@ def build_remote_ingest_config(
         "document_id": document_id,
         "enable_graph_artifact": enable_graph_artifact,
         "artifact_dir": f"{RUN_MOUNT}/artifacts/{run_id}",
+        "artifact_volume": RUN_VOLUME_NAME,
+        "artifact_key": f"artifacts/{run_id}",
+        "artifact_location": f"modal-volume://{RUN_VOLUME_NAME}/artifacts/{run_id}",
     }
 
 
@@ -105,20 +108,51 @@ def _run_ingest(config: dict) -> None:
     run_ingest(config)
 
 
+def _graph_artifact_summary(config: dict, artifact_location: str) -> dict:
+    if not config.get("enable_graph_artifact"):
+        return {"status": "not-requested"}
+    status_path = Path(config["artifact_dir"]) / "graph_artifact_status.json"
+    if not status_path.is_file():
+        raise RuntimeError("persistent graph status artifact was not written")
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    if not isinstance(status.get("status"), str):
+        raise RuntimeError("persistent graph status artifact is invalid")
+    return {
+        "status": status["status"],
+        "status_location": f"{artifact_location}/graph_artifact_status.json",
+        "artifact_key": status.get("artifact_key"),
+        "artifact_digest": status.get("artifact_digest"),
+    }
+
+
 def execute_remote_ingest(config: dict) -> dict:
     """Run the existing Ingest lifecycle and persist a durable result."""
+    artifact_location = config.get("artifact_location")
+    if not isinstance(artifact_location, str) or not artifact_location:
+        raise ValueError("artifact_location must identify the durable Modal Volume path")
     runtime = _cuda_summary()
     _run_ingest(config)
+    graph_artifact = _graph_artifact_summary(config, artifact_location)
     result = {
+        "mode": "ingest",
+        "status": (
+            "completed"
+            if graph_artifact["status"] in {"available", "not-requested"}
+            else "completed-with-graph-unavailable"
+        ),
         "collection": config["collection"],
         "document_id": config["document_id"],
         "ingest_mode": config["ingest_mode"],
-        "artifact_dir": config["artifact_dir"],
+        "artifact_volume": config["artifact_volume"],
+        "artifact_key": config["artifact_key"],
+        "artifact_location": artifact_location,
+        "graph_artifact": graph_artifact,
         **runtime,
     }
     result_path = Path(config["artifact_dir"]) / "modal_ingest_result.json"
     result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    cache_volume.commit()
     run_volume.commit()
     return result
 

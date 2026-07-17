@@ -62,6 +62,17 @@ class _FailingProvider:
         raise OSError("simulated transport failure")
 
 
+class _CredentialFailingProvider:
+    active_provider = "failing"
+
+    def has_available_provider(self):
+        return True
+
+    def call_llm(self, system_prompt, prompt):
+        del system_prompt, prompt
+        raise OSError("provider rejected token=super-secret")
+
+
 class _GraphBuilder:
     def build_graph(self, chunks, embeddings, entities, relations):
         del chunks, embeddings, entities, relations
@@ -136,6 +147,16 @@ def test_exhausted_provider_uses_spacy_only_fallback_without_another_call(monkey
 
     assert relations[0]["source"] == "rule-based"
     assert extractor.relation_extraction_mode == "spacy-only"
+
+
+def test_provider_failure_log_redacts_credentials(monkeypatch, caplog):
+    extractor = _extractor(monkeypatch, _CredentialFailingProvider())
+
+    with caplog.at_level(logging.WARNING, logger="graph.entity_extractor"):
+        extractor.extract_relations_llm(_TEXT, _ENTITIES)
+
+    assert "super-secret" not in caplog.text
+    assert "token=[REDACTED]" in caplog.text
 
 
 def test_entity_extraction_preserves_tuple_map_and_records_spacy_positions(monkeypatch):
