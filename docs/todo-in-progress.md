@@ -1,7 +1,7 @@
 # Todo / In Progress
 
 ## In Progress
-- None.
+- Issue #92 — chart the Modal cloud-compute decision path for Ingest, Query-Only, and Full-Pipeline Runs without changing Launch Profile semantics.
 
 ## Planned / Backlog
 - Issue #85 — let pure interactive ingest retain or override its stable document ID.
