@@ -73,6 +73,16 @@ class _CredentialFailingProvider:
         raise OSError("provider rejected token=super-secret")
 
 
+class _AvailabilityFailingProvider:
+    def has_available_provider(self):
+        raise RuntimeError("provider rejected token=availability-secret")
+
+
+class _ChainFailingProvider:
+    def resolve_chain(self):
+        raise RuntimeError("provider rejected token=chain-secret")
+
+
 class _GraphBuilder:
     def build_graph(self, chunks, embeddings, entities, relations):
         del chunks, embeddings, entities, relations
@@ -156,6 +166,26 @@ def test_provider_failure_log_redacts_credentials(monkeypatch, caplog):
         extractor.extract_relations_llm(_TEXT, _ENTITIES)
 
     assert "super-secret" not in caplog.text
+    assert "token=[REDACTED]" in caplog.text
+
+
+def test_provider_availability_failure_log_redacts_credentials(monkeypatch, caplog):
+    extractor = _extractor(monkeypatch, _AvailabilityFailingProvider())
+
+    with caplog.at_level(logging.WARNING, logger="graph.entity_extractor"):
+        assert extractor._has_available_relation_provider() is False
+
+    assert "availability-secret" not in caplog.text
+    assert "token=[REDACTED]" in caplog.text
+
+
+def test_provider_chain_failure_log_redacts_credentials(monkeypatch, caplog):
+    extractor = _extractor(monkeypatch, _ChainFailingProvider())
+
+    with caplog.at_level(logging.WARNING, logger="graph.entity_extractor"):
+        assert extractor._has_available_relation_provider() is False
+
+    assert "chain-secret" not in caplog.text
     assert "token=[REDACTED]" in caplog.text
 
 

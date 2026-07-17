@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -146,3 +148,19 @@ def test_remote_execution_reports_unavailable_graph_artifact(monkeypatch, tmp_pa
         "artifact_key": None,
         "artifact_digest": None,
     }
+
+
+def test_remote_execution_rejects_a_worker_artifact_location(monkeypatch, tmp_path: Path) -> None:
+    import modal_backend
+
+    monkeypatch.setattr(modal_backend, "_run_ingest", lambda config: None)
+    with pytest.raises(ValueError, match="durable Modal Volume path"):
+        modal_backend.execute_remote_ingest({
+            "collection": "disposable",
+            "document_id": "paper-a",
+            "ingest_mode": "append",
+            "artifact_dir": str(tmp_path / "artifacts"),
+            "artifact_volume": "graph-rag-ingest-runs",
+            "artifact_key": "artifacts/run-1",
+            "artifact_location": "/runs/leaked-path",
+        })

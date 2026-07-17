@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import modal
 
@@ -125,11 +125,34 @@ def _graph_artifact_summary(config: dict, artifact_location: str) -> dict:
     }
 
 
+def _durable_artifact_location(config: dict) -> str:
+    """Derive the reported Volume URI rather than trusting remote input."""
+    artifact_volume = config.get("artifact_volume")
+    artifact_key = config.get("artifact_key")
+    if artifact_volume != RUN_VOLUME_NAME:
+        raise ValueError("artifact_volume must be the configured Modal run Volume")
+    if not isinstance(artifact_key, str) or not artifact_key:
+        raise ValueError("artifact_key must identify a durable Modal Volume path")
+
+    path = PurePosixPath(artifact_key)
+    if (
+        path.is_absolute()
+        or ".." in path.parts
+        or len(path.parts) < 2
+        or path.parts[0] != "artifacts"
+    ):
+        raise ValueError("artifact_key must stay below the Modal Volume artifacts prefix")
+
+    artifact_location = f"modal-volume://{RUN_VOLUME_NAME}/{path.as_posix()}"
+    supplied_location = config.get("artifact_location")
+    if supplied_location is not None and supplied_location != artifact_location:
+        raise ValueError("artifact_location must match the durable Modal Volume path")
+    return artifact_location
+
+
 def execute_remote_ingest(config: dict) -> dict:
     """Run the existing Ingest lifecycle and persist a durable result."""
-    artifact_location = config.get("artifact_location")
-    if not isinstance(artifact_location, str) or not artifact_location:
-        raise ValueError("artifact_location must identify the durable Modal Volume path")
+    artifact_location = _durable_artifact_location(config)
     runtime = _cuda_summary()
     _run_ingest(config)
     graph_artifact = _graph_artifact_summary(config, artifact_location)

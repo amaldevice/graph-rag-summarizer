@@ -182,7 +182,10 @@ class EntityExtractor:
                 try:
                     return bool(has_available_provider())
                 except (KeyError, TypeError, ValueError, RuntimeError) as exc:
-                    logger.warning("Relation provider is unavailable; using spaCy-only fallback: %s", exc)
+                    logger.warning(
+                        "Relation provider is unavailable; using spaCy-only fallback: %s",
+                        redact_provider_error(exc),
+                    )
                     return False
 
             resolve_chain = getattr(self.provider_router, "resolve_chain", None)
@@ -191,7 +194,10 @@ class EntityExtractor:
             try:
                 return bool(resolve_chain())
             except (KeyError, TypeError, ValueError, RuntimeError) as exc:
-                logger.warning("Relation provider is unavailable; using spaCy-only fallback: %s", exc)
+                logger.warning(
+                    "Relation provider is unavailable; using spaCy-only fallback: %s",
+                    redact_provider_error(exc),
+                )
                 return False
         return self.groq_client is not None
 
