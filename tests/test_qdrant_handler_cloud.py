@@ -877,6 +877,54 @@ def test_replace_document_deletes_only_stale_points_for_document() -> None:
     assert calls[-1][2].points == ["paper-a:old"]
 
 
+def test_replace_document_with_claim_removes_the_stale_document_control_point() -> None:
+    calls = []
+
+    class FakeClient:
+        def scroll(self, **kwargs):
+            del kwargs
+            return [
+                SimpleNamespace(
+                    id="paper-a:old-vector",
+                    payload={"document_id": "paper-a", "document_generation": 1},
+                ),
+                SimpleNamespace(
+                    id="paper-a:old-control",
+                    payload={
+                        "document_id": "paper-a",
+                        "document_generation": 1,
+                        "graph_control_point": "document",
+                    },
+                ),
+                SimpleNamespace(
+                    id="paper-a:new-vector",
+                    payload={"document_id": "paper-a", "document_generation": 2},
+                ),
+                SimpleNamespace(
+                    id="paper-a:new-control",
+                    payload={
+                        "document_id": "paper-a",
+                        "document_generation": 2,
+                        "graph_control_point": "document",
+                    },
+                ),
+            ], None
+
+        def delete(self, collection_name, points_selector, wait=True):
+            calls.append((collection_name, points_selector, wait))
+
+    handler = QdrantHandler(client=FakeClient(), collection_name="test")
+    handler.finalize_replace_document(
+        "paper-a",
+        ["paper-a:new-vector"],
+        {"document_generation": 2},
+        keep_control_ids={"paper-a:new-control"},
+    )
+
+    assert calls[0][0] == "test"
+    assert calls[0][1].points == ["paper-a:old-vector", "paper-a:old-control"]
+
+
 def test_prepare_ingest_replace_collection_keeps_collection_until_finalize() -> None:
     calls = []
 

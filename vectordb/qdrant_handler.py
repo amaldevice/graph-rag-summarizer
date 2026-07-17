@@ -955,13 +955,22 @@ class QdrantHandler:
             self._mutate(delete_stale_tombstones)
         print(f"✅ Replace-collection selesai; {len(stale_ids)} legacy points dihapus")
 
-    def finalize_replace_document(self, document_id: str, keep_point_ids: list, claim: dict | None = None) -> None:
+    def finalize_replace_document(
+        self,
+        document_id: str,
+        keep_point_ids: list,
+        claim: dict | None = None,
+        keep_control_ids: set[str] | None = None,
+    ) -> None:
         """Remove stale points for one document after its replacement upload completes."""
         keep = {str(point_id) for point_id in keep_point_ids}
         if claim:
+            keep.update(str(point_id) for point_id in (keep_control_ids or set()))
             stale_ids = [
                 point_id
-                for point_id, payload in self._scroll_point_records(self._document_filter(document_id))
+                for point_id, payload in self._scroll_point_records(
+                    self._document_filter(document_id), include_control_points=True
+                )
                 if str(point_id) not in keep
                 and int(payload.get("document_generation", 0)) <= int(claim["document_generation"])
             ]
