@@ -111,3 +111,11 @@ embeddings. The direct 64-text microbenchmark measured 2.174 s CPU versus
 
 The implementation must preserve ADR 0001 and ADR 0002. The validation record
 is `docs/completed/issues/issue-2026-07-modal-linux-cuda-validation.md`.
+
+## Delivery Tickets
+
+Work these in order:
+
+1. [Implement: Modal GPU vector Ingest](https://github.com/amaldevice/graph-rag-summarizer/issues/99)
+2. [Implement: Modal persistent-graph Ingest](https://github.com/amaldevice/graph-rag-summarizer/issues/100)
+3. [Implement: Modal document-safe replacement](https://github.com/amaldevice/graph-rag-summarizer/issues/101)
