@@ -1,7 +1,34 @@
 # PRD: GPU-capable Modal Ingest Run
 
-**Status:** ready for implementation
+**Status:** completed
 **Tracker:** [Implement: GPU-capable Modal Ingest Run](https://github.com/amaldevice/graph-rag-summarizer/issues/98)
+
+## Delivery Result
+
+Issues [#99](https://github.com/amaldevice/graph-rag-summarizer/issues/99),
+[#100](https://github.com/amaldevice/graph-rag-summarizer/issues/100), and
+[#101](https://github.com/amaldevice/graph-rag-summarizer/issues/101) are complete.
+
+- `modal_backend.py` provides a one-off `modal run` GPU Ingest entrypoint that
+  stages PDF bytes into a Modal Volume, forces the cloud Qdrant/R2 storage
+  pairing, injects credentials only through a named Modal Secret, and uses the
+  existing Ingest/persistent-graph lifecycle.
+- CUDA is an explicit embedding-runtime option; Linux `auto` selects it only
+  when Torch reports an available GPU.
+- Model-cache and run-artifact Volumes are committed before the remote function
+  returns. The completion envelope reports canonical `modal-volume://` output
+  locations and graph status; it never reports `/runs/...` worker paths.
+- `replace-document` retires obsolete document control proofs as well as stale
+  data points, preserving one current generation/attempt and one control point.
+- Provider failures are redacted and exhaust the run-scoped provider chain so
+  the graph stage falls back cleanly instead of retrying unavailable providers
+  for every chunk.
+
+Final authenticated Modal proof: an NVIDIA L4 worker processed 732 PDF chunks
+with CUDA; the fifth controlled replacement left 733 document records (732
+vectors plus one control), zero stale records, a readable R2 graph artifact,
+and a durable `modal-volume://` completion envelope. Local regression suite:
+369 passed.
 
 ## Problem Statement
 

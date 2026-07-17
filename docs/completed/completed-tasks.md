@@ -2,6 +2,19 @@
 
 ## 2026-07-17
 
+- **Implemented the GPU-capable Modal Ingest Run**
+  - Completed parent Issue #98 and delivery slices #99–#101 through PR #97.
+  - Added the one-off Modal L4/CUDA Ingest controller, strict cloud Qdrant/R2
+    boundary, named Secret credential injection, committed cache/run Volumes,
+    durable result envelope, provider-error redaction, bounded fallback, and
+    document-safe replacement cleanup.
+  - Authenticated proof: 732 source chunks on an NVIDIA L4; final replacement
+    retained 733 active document records, one control proof, zero stale records,
+    and a readable R2 graph artifact.
+  - Verification: final `uv run pytest -q` (**369 passed**), final remote Modal
+    smoke, Qdrant/R2 manifest proof, `git diff --check`, and independent final
+    code review approval.
+
 - **Added collection-scoped document-safe and legacy-vector launcher modes**
   - Published PRD Issue #87 and delivery slices #88–#90.
   - Added the collection-design wizard/CLI contract, immutable manifest pinning
