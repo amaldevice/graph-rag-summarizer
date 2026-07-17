@@ -268,6 +268,54 @@ def test_call_llm_raises_when_all_providers_fail(monkeypatch):
     assert len(router.failure_history) == 2
 
 
+def test_call_llm_redacts_provider_credentials_from_failure_diagnostics(monkeypatch, capsys):
+    secret = "modal-secret-value"
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "key-groq")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", secret)
+    monkeypatch.setattr(settings, "NVIDIA_NIM_API_KEY", "")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+    router = create_session(
+        preferred_provider="gemini",
+        fallback_chain=["gemini"],
+        enable_fallback=True,
+    )
+    monkeypatch.setattr(
+        router,
+        "_call_provider",
+        lambda provider, system_prompt, user_prompt: (_ for _ in ()).throw(
+            RuntimeError(f"403 Consumer 'api_key:{secret}' suspended")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="All LLM providers failed"):
+        router.call_llm("system", "prompt")
+
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert secret not in router.failure_history[0]["error"]
+    assert "api_key:[REDACTED]" in output
+
+
+def test_has_available_provider_stays_false_after_the_configured_provider_fails(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "key-groq")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_API_KEY", "")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+    router = create_session(preferred_provider="groq", fallback_chain=["groq"])
+    monkeypatch.setattr(
+        router,
+        "_call_provider",
+        lambda provider, system_prompt, user_prompt: (_ for _ in ()).throw(
+            RuntimeError("Provider unavailable")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="All LLM providers failed"):
+        router.call_llm("system", "prompt")
+
+    assert router.has_available_provider() is False
+
+
 # ------------------------------------------------------------------
 # Fallback disabled
 # ------------------------------------------------------------------

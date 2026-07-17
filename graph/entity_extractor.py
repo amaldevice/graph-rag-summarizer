@@ -16,6 +16,7 @@ from openai import OpenAI
 
 from config import settings
 from config.settings import SPACY_MODEL
+from summarizer.provider_router import redact_provider_error
 
 
 logger = logging.getLogger(__name__)
@@ -175,19 +176,24 @@ class EntityExtractor:
         return True
 
     def _has_available_relation_provider(self):
-        if self.groq_client is not None:
-            return True
-        if self.provider_router is None:
-            return False
+        if self.provider_router is not None:
+            has_available_provider = getattr(self.provider_router, "has_available_provider", None)
+            if callable(has_available_provider):
+                try:
+                    return bool(has_available_provider())
+                except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+                    logger.warning("Relation provider is unavailable; using spaCy-only fallback: %s", exc)
+                    return False
 
-        resolve_chain = getattr(self.provider_router, "resolve_chain", None)
-        if not callable(resolve_chain):
-            return True
-        try:
-            return bool(resolve_chain())
-        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
-            logger.warning("Relation provider is unavailable; using spaCy-only fallback: %s", exc)
-            return False
+            resolve_chain = getattr(self.provider_router, "resolve_chain", None)
+            if not callable(resolve_chain):
+                return True
+            try:
+                return bool(resolve_chain())
+            except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+                logger.warning("Relation provider is unavailable; using spaCy-only fallback: %s", exc)
+                return False
+        return self.groq_client is not None
 
     def _parse_relation_response(self, content, source, *, include_confidence=False):
         try:
@@ -334,7 +340,7 @@ Text:
                     time.sleep(1.5)
                     continue
 
-        print(f"[EntityExtractor] Groq relation extraction failed: {last_error}")
+        print(f"[EntityExtractor] Groq relation extraction failed: {redact_provider_error(last_error)}")
         return []
 
     def _call_provider_relations(self, prompt):

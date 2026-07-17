@@ -4,6 +4,7 @@
 # and sticky failover for summarization work.
 # ============================================================
 
+import re
 import time
 import warnings
 from typing import Optional
@@ -15,6 +16,24 @@ MAX_RETRIES = 2
 RETRY_BASE_DELAY = 1.0
 RETRY_MAX_DELAY = 8.0
 AUTH_ERROR_MARKERS = ("401", "403", "unauthorized", "invalid api key", "permission denied", "authentication")
+
+
+def redact_provider_error(error: Exception) -> str:
+    """Return a provider error that is safe to retain in logs and diagnostics."""
+    message = str(error)
+    for configured_secret in (
+        settings.GROQ_API_KEY,
+        settings.GEMINI_API_KEY,
+        settings.NVIDIA_NIM_API_KEY,
+        settings.OPENROUTER_API_KEY,
+    ):
+        if configured_secret:
+            message = message.replace(str(configured_secret), "[REDACTED]")
+    return re.sub(
+        r"(?i)\b(api[_-]?key|token|secret|password)(\s*[:=]\s*)([^\s,'\"}\]]+)",
+        r"\1\2[REDACTED]",
+        message,
+    )
 
 
 class ProviderRouter:
@@ -50,6 +69,10 @@ class ProviderRouter:
     @property
     def failure_history(self) -> list[dict]:
         return list(self._failure_history)
+
+    def has_available_provider(self) -> bool:
+        """Return whether this session has a configured provider not yet failed."""
+        return any(provider not in self._failed_providers for provider in self.resolve_chain())
 
     def resolve_chain(self) -> list[str]:
         """Build the resolved provider chain, skipping unavailable providers."""
@@ -277,11 +300,12 @@ class ProviderRouter:
             except Exception as e:
                 last_error = e
                 self._failed_providers.add(provider)
+                safe_error = redact_provider_error(e)
                 self._failure_history.append({
                     "provider": provider,
-                    "error": str(e),
+                    "error": safe_error,
                 })
-                print(f"  ⚠ Provider '{provider}' failed: {e}")
+                print(f"  ⚠ Provider '{provider}' failed: {safe_error}")
                 continue
 
         failed_summary = "; ".join(

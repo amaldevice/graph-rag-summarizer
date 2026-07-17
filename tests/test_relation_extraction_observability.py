@@ -40,6 +40,14 @@ class _UnavailableProvider:
         raise AssertionError("an unavailable provider must not be called")
 
 
+class _ExhaustedProvider(_UnavailableProvider):
+    def resolve_chain(self):
+        return ["fake"]
+
+    def has_available_provider(self):
+        return False
+
+
 class _MalformedLlmClient:
     def extract_relations(self, chunk_text, entities):
         del chunk_text, entities
@@ -119,6 +127,15 @@ def _extractor(monkeypatch, provider=None):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setattr(entity_extractor_module.spacy, "load", lambda _: object())
     return EntityExtractor(provider_router=provider)
+
+
+def test_exhausted_provider_uses_spacy_only_fallback_without_another_call(monkeypatch):
+    extractor = _extractor(monkeypatch, _ExhaustedProvider())
+
+    relations = extractor.extract_relations_llm(_TEXT, _ENTITIES)
+
+    assert relations[0]["source"] == "rule-based"
+    assert extractor.relation_extraction_mode == "spacy-only"
 
 
 def test_entity_extraction_preserves_tuple_map_and_records_spacy_positions(monkeypatch):
