@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -12,7 +13,8 @@ def get_project_root() -> Path:
 
 
 def get_embedding_cache_root(project_root: Path | None = None) -> Path:
-    cache_root = (project_root or get_project_root()) / ".cache" / "embedding"
+    configured_root = os.getenv("EMBEDDING_CACHE_ROOT", "").strip()
+    cache_root = Path(configured_root) if configured_root else (project_root or get_project_root()) / ".cache" / "embedding"
     cache_root.mkdir(parents=True, exist_ok=True)
     return cache_root
 
