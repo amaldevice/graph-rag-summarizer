@@ -618,6 +618,54 @@ def test_edit_defaults_reopen_query_only_fields(monkeypatch):
     assert result["json_output"] == "output/first.json"
 
 
+def test_edit_defaults_can_clear_optional_full_pipeline_pdf(monkeypatch):
+    from main import _config_to_args
+
+    config = {
+        "mode": "full-pipeline",
+        "profile": "local",
+        "collection": "first_collection",
+        "collection_mode": "document-safe",
+        "query": "first query",
+        "retrieval_limit": 10,
+        "pdf_path": "first.pdf",
+        "json_output": "",
+        "artifact_dir": "output/first-run",
+        "verbose": False,
+        "confirm_existing_collection": False,
+        "ingest_mode": "append",
+        "document_id": "",
+        "collection_operation_id": "",
+        "enable_graph_artifact": True,
+    }
+    original_args = SimpleNamespace(
+        profile=None,
+        collection=None,
+        collection_mode=None,
+        query=None,
+        retrieval_limit=None,
+        pdf=None,
+        json_output=None,
+        artifact_dir=None,
+        verbose=False,
+        confirm_existing_collection=False,
+        ingest_mode=None,
+        document_id=None,
+        collection_operation_id=None,
+    )
+    monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: [])
+    answers = iter(["", "", "", "", "", "", "-", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    result = run_interactive_wizard(
+        _config_to_args(config, original_args),
+        "local",
+        is_tty=True,
+    )
+
+    assert result["pdf_path"] == ""
+
+
 def test_edit_defaults_preserve_explicit_cli_fields():
     from main import _config_to_args
 

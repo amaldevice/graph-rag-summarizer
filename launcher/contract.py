@@ -563,9 +563,11 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
 
     if mode == "full-pipeline" and not pdf_path:
         pdf_path = _prompt_text(
-            "Optional PDF path for page-image enrichment (leave empty to skip)",
+            "Optional PDF path for page-image enrichment (leave empty to skip; - to clear)",
             default=defaults.get("pdf_path") or None,
         )
+        if pdf_path == "-":
+            pdf_path = ""
 
     if not getattr(cli_args, "verbose", False):
         verbose = _prompt_bool("Enable verbose logging?", defaults.get("verbose", False))
