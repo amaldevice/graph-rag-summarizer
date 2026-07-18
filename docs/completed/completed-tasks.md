@@ -1,5 +1,18 @@
 # Completed Tasks
 
+## 2026-07-18
+
+- **Restored interactive document identity and summary editing**
+  - Implemented Issues #85 and #86 through PR #102: pure interactive Ingest
+    can retain or override the filename-derived Document ID, while explicit CLI
+    fields remain authoritative.
+  - Summary `n` reopens session-derived inputs with current defaults for
+    Ingest, Query-Only, and Full-Pipeline; `-` clears an optional Full-Pipeline
+    PDF enrichment path.
+  - Verification: launcher suite (**58 passed**), complete suite (**375
+    passed**), `compileall`, launcher help smoke, diff check, and independent
+    standards/spec review approval.
+
 ## 2026-07-17
 
 - **Implemented the GPU-capable Modal Ingest Run**

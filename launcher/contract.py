@@ -388,6 +388,20 @@ def _prompt_text(prompt_text: str, default: str | None = None, required: bool = 
         return ""
 
 
+def _prompt_bool(prompt_text: str, default: bool = False) -> bool:
+    """Prompt for a boolean while preserving the current value as default."""
+    suffix = "[Y/n]" if default else "[y/N]"
+    while True:
+        raw = input(f"{prompt_text} {suffix}: ").strip().lower()
+        if not raw:
+            return default
+        if raw in ("y", "yes"):
+            return True
+        if raw in ("n", "no"):
+            return False
+        print("Please enter y or n.")
+
+
 def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: bool) -> dict:
     """Interactive wizard that fills in missing runtime inputs.
 
@@ -395,6 +409,8 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
     """
     if not is_tty:
         return _fail_fast_missing(cli_args, profile)
+
+    defaults = getattr(cli_args, "_wizard_defaults", {})
 
     if not getattr(cli_args, "profile", None):
         profile = _prompt_choice(
@@ -415,7 +431,7 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
             collection_mode = _prompt_choice(
                 "Select Collection Design:",
                 list(SUPPORTED_COLLECTION_MODES),
-                default=DEFAULT_COLLECTION_MODE,
+                default=defaults.get("collection_mode", DEFAULT_COLLECTION_MODE),
             )
         collection_mode = resolve_collection_mode(collection_mode)
     else:
@@ -436,19 +452,34 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
 
     if mode in ("query-only", "full-pipeline"):
         if not collection:
+            collection_default = defaults.get("collection", "")
             collections = discover_collections(profile)
             if collections:
-                collection = _prompt_choice("Select Collection Target:", collections)
+                if collection_default and collection_default not in collections:
+                    collections = [collection_default, *collections]
+                collection = _prompt_choice(
+                    "Select Collection Target:",
+                    collections,
+                    default=collection_default or None,
+                )
             else:
-                collection = _prompt_text("Collection Target name", required=True)
+                collection = _prompt_text(
+                    "Collection Target name",
+                    default=collection_default or None,
+                    required=True,
+                )
 
         if not query:
-            query = _prompt_text("Query text", required=True)
+            query = _prompt_text(
+                "Query text",
+                default=defaults.get("query") or None,
+                required=True,
+            )
 
         if retrieval_limit is None:
             raw = _prompt_text(
                 "Retrieval limit",
-                default=str(DEFAULT_RETRIEVAL_LIMIT),
+                default=str(defaults.get("retrieval_limit", DEFAULT_RETRIEVAL_LIMIT)),
             )
             try:
                 retrieval_limit = int(raw)
@@ -457,18 +488,30 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
 
     if mode == "ingest":
         if not pdf_path:
+            pdf_default = defaults.get("pdf_path", "")
             pdf_choices = discover_local_pdfs(Path.cwd())
             if pdf_choices:
+                if pdf_default and pdf_default not in pdf_choices:
+                    pdf_choices = [pdf_default, *pdf_choices]
                 pdf_choice = _prompt_choice(
                     "Select PDF source:",
                     pdf_choices + ["Enter path manually"],
+                    default=pdf_default or None,
                 )
                 if pdf_choice == "Enter path manually":
-                    pdf_path = _prompt_text("PDF file path", required=True)
+                    pdf_path = _prompt_text(
+                        "PDF file path",
+                        default=pdf_default or None,
+                        required=True,
+                    )
                 else:
                     pdf_path = pdf_choice
             else:
-                pdf_path = _prompt_text("PDF file path", required=True)
+                pdf_path = _prompt_text(
+                    "PDF file path",
+                    default=pdf_default or None,
+                    required=True,
+                )
 
         existing_collections = discover_collections(profile)
         if existing_collections:
@@ -477,7 +520,9 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
                 print(f"  - {name}")
 
         if not collection:
-            suggested = suggest_collection_from_pdf(pdf_path) if pdf_path else ""
+            suggested = defaults.get("collection") or (
+                suggest_collection_from_pdf(pdf_path) if pdf_path else ""
+            )
         else:
             suggested = collection
 
@@ -497,25 +542,35 @@ def run_interactive_wizard(cli_args: argparse.Namespace, profile: str, is_tty: b
                 default=ingest_mode,
             )
 
-        document_id = document_id or suggest_document_id_from_pdf(pdf_path)
+        if not document_id:
+            document_id = _prompt_text(
+                "Document ID",
+                default=defaults.get("document_id") or suggest_document_id_from_pdf(pdf_path),
+                required=True,
+            )
 
     if mode == "query-only" and not json_output:
         json_output = _prompt_text(
             "JSON output path",
-            default="output/query_only_results.json",
+            default=defaults.get("json_output") or "output/query_only_results.json",
         )
 
     if mode == "full-pipeline" and not artifact_dir:
         artifact_dir = _prompt_text(
             "Artifact output directory",
-            default=default_full_pipeline_artifact_dir(),
+            default=defaults.get("artifact_dir") or default_full_pipeline_artifact_dir(),
         )
 
     if mode == "full-pipeline" and not pdf_path:
-        pdf_path = _prompt_text("Optional PDF path for page-image enrichment (leave empty to skip)")
+        pdf_path = _prompt_text(
+            "Optional PDF path for page-image enrichment (leave empty to skip; - to clear)",
+            default=defaults.get("pdf_path") or None,
+        )
+        if pdf_path == "-":
+            pdf_path = ""
 
-    if not verbose:
-        verbose = input("Enable verbose logging? [y/N]: ").strip().lower() in ("y", "yes")
+    if not getattr(cli_args, "verbose", False):
+        verbose = _prompt_bool("Enable verbose logging?", defaults.get("verbose", False))
 
     return {
         "mode": mode,
