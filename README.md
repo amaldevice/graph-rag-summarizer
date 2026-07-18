@@ -49,7 +49,10 @@ Interactive ingest can:
 - scan the repository for local PDF files and let you pick one,
 - suggest a Collection Target from the PDF filename,
 - show existing Qdrant collections when discovery works,
-- derive a Document ID from the PDF filename unless `--document-id` overrides it.
+- prompt for a Document ID with the PDF-derived value as default; an explicit
+  `--document-id` remains fixed,
+- reopen editable wizard inputs with their current values when `n` is chosen
+  at the summary; explicit CLI flags remain fixed.
 
 ### Non-interactive (scripting)
 

@@ -34,24 +34,28 @@ def _apply_profile_session_overrides(profile: str) -> None:
         os.environ["STORAGE_BACKEND"] = "r2"
 
 
-def _config_to_args(config: dict, profile_locked: bool) -> SimpleNamespace:
+def _config_to_args(config: dict, original_args) -> SimpleNamespace:
+    """Reopen only non-CLI fields while retaining resolved values as defaults."""
     return SimpleNamespace(
         mode=config["mode"],
-        profile=config["profile"] if profile_locked else None,
-        collection=config.get("collection") or None,
-        collection_mode=config.get("collection_mode"),
-        query=config.get("query") or None,
-        retrieval_limit=config.get("retrieval_limit"),
-        pdf=config.get("pdf_path") or None,
+        profile=getattr(original_args, "profile", None),
+        collection=getattr(original_args, "collection", None),
+        collection_mode=getattr(original_args, "collection_mode", None),
+        query=getattr(original_args, "query", None),
+        retrieval_limit=getattr(original_args, "retrieval_limit", None),
+        pdf=getattr(original_args, "pdf", None),
         no_interactive=False,
-        json_output=config.get("json_output") or None,
-        artifact_dir=config.get("artifact_dir") or None,
-        verbose=config.get("verbose", False),
-        confirm_existing_collection=config.get("confirm_existing_collection", False),
-        ingest_mode=config.get("ingest_mode"),
-        document_id=config.get("document_id") or None,
-        collection_operation_id=config.get("collection_operation_id") or None,
+        json_output=getattr(original_args, "json_output", None),
+        artifact_dir=getattr(original_args, "artifact_dir", None),
+        verbose=bool(getattr(original_args, "verbose", False)),
+        confirm_existing_collection=bool(
+            getattr(original_args, "confirm_existing_collection", False)
+        ),
+        ingest_mode=getattr(original_args, "ingest_mode", None),
+        document_id=getattr(original_args, "document_id", None),
+        collection_operation_id=getattr(original_args, "collection_operation_id", None),
         enable_graph_artifact=config.get("enable_graph_artifact", ENABLE_PERSISTENT_GRAPH),
+        _wizard_defaults=config,
     )
 
 
@@ -88,7 +92,7 @@ def main():
 
         print("Returning to edit mode...")
         config = run_interactive_wizard(
-            _config_to_args(config, profile_locked=bool(args.profile)),
+            _config_to_args(config, args),
             config["profile"],
             is_tty=True,
         )

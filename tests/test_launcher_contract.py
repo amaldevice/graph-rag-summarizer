@@ -414,7 +414,7 @@ def test_run_interactive_wizard_uses_discovered_pdf_then_default_collection(monk
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: [])
 
-    answers = iter(["1", "", "", "n"])
+    answers = iter(["1", "", "", "", "n"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     args = SimpleNamespace(
@@ -435,10 +435,11 @@ def test_run_interactive_wizard_uses_discovered_pdf_then_default_collection(monk
 
     assert result["pdf_path"] == "paper one.pdf"
     assert result["collection"] == "paper_one"
+    assert result["document_id"] == "paper_one"
 
 
 def test_run_interactive_wizard_prompts_for_ingest_mode_when_cli_omits_it(monkeypatch):
-    answers = iter(["2"])
+    answers = iter(["2", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     args = SimpleNamespace(
@@ -462,8 +463,210 @@ def test_run_interactive_wizard_prompts_for_ingest_mode_when_cli_omits_it(monkey
     assert result["ingest_mode"] == "replace-document"
 
 
+def test_run_interactive_wizard_accepts_a_custom_document_id(monkeypatch):
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return "paper-recovery"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    args = SimpleNamespace(
+        mode="ingest",
+        profile="local",
+        collection="existing_collection",
+        query=None,
+        retrieval_limit=None,
+        pdf="paper.pdf",
+        no_interactive=False,
+        json_output=None,
+        artifact_dir=None,
+        verbose=True,
+        confirm_existing_collection=False,
+        ingest_mode="append",
+        document_id=None,
+    )
+
+    result = run_interactive_wizard(args, "local", is_tty=True)
+
+    assert result["document_id"] == "paper-recovery"
+    assert any("Document ID" in prompt for prompt in prompts)
+
+
+def test_run_interactive_wizard_keeps_explicit_document_id_locked(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("unexpected prompt"))
+    args = SimpleNamespace(
+        mode="ingest",
+        profile="local",
+        collection="existing_collection",
+        query=None,
+        retrieval_limit=None,
+        pdf="paper.pdf",
+        no_interactive=False,
+        json_output=None,
+        artifact_dir=None,
+        verbose=True,
+        confirm_existing_collection=False,
+        ingest_mode="append",
+        document_id="paper-cli",
+    )
+
+    result = run_interactive_wizard(args, "local", is_tty=True)
+
+    assert result["document_id"] == "paper-cli"
+
+
+def test_edit_defaults_reopen_ingest_mode_and_document_id(monkeypatch):
+    from main import _config_to_args
+
+    config = {
+        "mode": "ingest",
+        "profile": "local",
+        "collection": "first_collection",
+        "collection_mode": "document-safe",
+        "pdf_path": "first.pdf",
+        "ingest_mode": "append",
+        "document_id": "first_document",
+        "query": "",
+        "retrieval_limit": 10,
+        "json_output": "",
+        "artifact_dir": "",
+        "verbose": False,
+        "confirm_existing_collection": False,
+        "collection_operation_id": "",
+        "enable_graph_artifact": True,
+    }
+    original_args = SimpleNamespace(
+        profile=None,
+        collection=None,
+        collection_mode=None,
+        query=None,
+        retrieval_limit=None,
+        pdf=None,
+        json_output=None,
+        artifact_dir=None,
+        verbose=False,
+        confirm_existing_collection=False,
+        ingest_mode=None,
+        document_id=None,
+        collection_operation_id=None,
+    )
+    monkeypatch.setattr("launcher.contract.discover_local_pdfs", lambda *_: [])
+    answers = iter(["", "", "", "", "2", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    result = run_interactive_wizard(
+        _config_to_args(config, original_args),
+        "local",
+        is_tty=True,
+    )
+
+    assert result["collection"] == "first_collection"
+    assert result["pdf_path"] == "first.pdf"
+    assert result["ingest_mode"] == "replace-document"
+    assert result["document_id"] == "first_document"
+
+
+def test_edit_defaults_reopen_query_only_fields(monkeypatch):
+    from main import _config_to_args
+
+    config = {
+        "mode": "query-only",
+        "profile": "local",
+        "collection": "first_collection",
+        "collection_mode": "document-safe",
+        "query": "first query",
+        "retrieval_limit": 10,
+        "pdf_path": "",
+        "json_output": "output/first.json",
+        "artifact_dir": "",
+        "verbose": False,
+        "confirm_existing_collection": False,
+        "ingest_mode": "append",
+        "document_id": "",
+        "collection_operation_id": "",
+        "enable_graph_artifact": True,
+    }
+    original_args = SimpleNamespace(
+        profile=None,
+        collection=None,
+        collection_mode=None,
+        query=None,
+        retrieval_limit=None,
+        pdf=None,
+        json_output=None,
+        artifact_dir=None,
+        verbose=False,
+        confirm_existing_collection=False,
+        ingest_mode=None,
+        document_id=None,
+        collection_operation_id=None,
+    )
+    monkeypatch.setattr("launcher.contract.discover_collections", lambda profile: [])
+    answers = iter(["", "", "", "edited query", "12", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    result = run_interactive_wizard(
+        _config_to_args(config, original_args),
+        "local",
+        is_tty=True,
+    )
+
+    assert result["collection"] == "first_collection"
+    assert result["query"] == "edited query"
+    assert result["retrieval_limit"] == 12
+    assert result["json_output"] == "output/first.json"
+
+
+def test_edit_defaults_preserve_explicit_cli_fields():
+    from main import _config_to_args
+
+    config = {
+        "mode": "ingest",
+        "profile": "cloud",
+        "collection": "interactive_collection",
+        "collection_mode": "document-safe",
+        "pdf_path": "interactive.pdf",
+        "ingest_mode": "replace-document",
+        "document_id": "interactive_document",
+        "query": "",
+        "retrieval_limit": 10,
+        "json_output": "",
+        "artifact_dir": "",
+        "verbose": False,
+        "confirm_existing_collection": False,
+        "collection_operation_id": "",
+        "enable_graph_artifact": True,
+    }
+    original_args = SimpleNamespace(
+        profile="local",
+        collection="cli_collection",
+        collection_mode="legacy-vector",
+        query=None,
+        retrieval_limit=None,
+        pdf="cli.pdf",
+        json_output=None,
+        artifact_dir=None,
+        verbose=True,
+        confirm_existing_collection=False,
+        ingest_mode="append",
+        document_id="cli_document",
+        collection_operation_id=None,
+    )
+
+    edit_args = _config_to_args(config, original_args)
+
+    assert edit_args.profile == "local"
+    assert edit_args.collection == "cli_collection"
+    assert edit_args.collection_mode == "legacy-vector"
+    assert edit_args.pdf == "cli.pdf"
+    assert edit_args.ingest_mode == "append"
+    assert edit_args.document_id == "cli_document"
+    assert edit_args.verbose is True
+
+
 def test_run_interactive_wizard_selects_collection_design_after_launcher_mode(monkeypatch):
-    answers = iter(["2", "2"])
+    answers = iter(["2", "2", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     args = SimpleNamespace(
@@ -491,7 +694,7 @@ def test_run_interactive_wizard_selects_collection_design_after_launcher_mode(mo
 
 
 def test_run_interactive_wizard_preserves_explicit_ingest_mode(monkeypatch):
-    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("unexpected prompt"))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
 
     args = SimpleNamespace(
         mode="ingest",
@@ -521,6 +724,7 @@ def test_run_interactive_wizard_allows_existing_collection_for_append(monkeypatc
     answers = iter([
         "paper.pdf",
         "existing_collection",
+        "",
         "",
         "n",
     ])
