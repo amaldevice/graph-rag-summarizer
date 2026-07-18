@@ -937,13 +937,19 @@ def run_ingest(config: dict) -> None:
             f"Vector size: {len(vectors[0])}",
         ])
         uploaded_point_ids = qdrant.upsert_chunks(chunks, vectors) or []
+        control_id = None
         if graph_pipeline and graph_claim:
             control_id = qdrant.write_document_control_point(graph_claim, len(vectors[0]))
             qdrant.verify_document_control_point(control_id)
             graph_pipeline.manifests.mark_vectors_ready(graph_claim)
         if ingest_mode == "replace-document":
             if graph_claim:
-                qdrant.finalize_replace_document(document_id, uploaded_point_ids, graph_claim)
+                qdrant.finalize_replace_document(
+                    document_id,
+                    uploaded_point_ids,
+                    graph_claim,
+                    keep_control_ids={control_id},
+                )
             else:
                 qdrant.finalize_replace_document(document_id, uploaded_point_ids)
         elif ingest_mode == "replace-collection":

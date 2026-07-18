@@ -58,7 +58,7 @@ def test_resolver_falls_back_to_cpu_on_macos_when_mps_is_unavailable(tmp_path: P
     assert "fell back to CPU" in decision.fallback_reason
 
 
-def test_resolver_keeps_windows_and_linux_on_cpu_by_default(tmp_path: Path) -> None:
+def test_resolver_keeps_windows_and_linux_without_cuda_on_cpu_by_default(tmp_path: Path) -> None:
     for system_name in ("Windows", "Linux"):
         decision = resolve_embedding_runtime(
             model_name=DEFAULT_MODEL,
@@ -69,12 +69,52 @@ def test_resolver_keeps_windows_and_linux_on_cpu_by_default(tmp_path: Path) -> N
             project_root=tmp_path,
             system_name=system_name,
             mps_available=False,
+            cuda_available=False,
             supports_backend_parameter=True,
             onnx_support_available=True,
         )
 
         assert decision.resolved_device == "cpu"
         assert decision.fallback_reason is None
+
+
+def test_resolver_uses_cuda_for_linux_auto_when_available(tmp_path: Path) -> None:
+    decision = resolve_embedding_runtime(
+        model_name=DEFAULT_MODEL,
+        requested_backend="sentence-transformers",
+        requested_device="auto",
+        onnx_allowed_models=[DEFAULT_MODEL],
+        local_files_only=False,
+        project_root=tmp_path,
+        system_name="Linux",
+        mps_available=False,
+        cuda_available=True,
+        supports_backend_parameter=True,
+        onnx_support_available=True,
+    )
+
+    assert decision.resolved_device == "cuda"
+    assert decision.fallback_reason is None
+
+
+def test_resolver_downgrades_explicit_cuda_when_unavailable(tmp_path: Path) -> None:
+    decision = resolve_embedding_runtime(
+        model_name=DEFAULT_MODEL,
+        requested_backend="sentence-transformers",
+        requested_device="cuda",
+        onnx_allowed_models=[DEFAULT_MODEL],
+        local_files_only=False,
+        project_root=tmp_path,
+        system_name="Linux",
+        mps_available=False,
+        cuda_available=False,
+        supports_backend_parameter=True,
+        onnx_support_available=True,
+    )
+
+    assert decision.resolved_device == "cpu"
+    assert decision.fallback_reason is not None
+    assert "CUDA was requested" in decision.fallback_reason
 
 
 def test_resolver_downgrades_explicit_mps_request_outside_macos(tmp_path: Path) -> None:

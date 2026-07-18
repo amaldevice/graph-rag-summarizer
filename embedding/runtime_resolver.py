@@ -17,6 +17,7 @@ SENTENCE_TRANSFORMERS_BACKEND = "sentence-transformers"
 ONNX_BACKEND = "onnx"
 CPU_DEVICE = "cpu"
 MPS_DEVICE = "mps"
+CUDA_DEVICE = "cuda"
 AUTO_DEVICE = "auto"
 
 
@@ -52,8 +53,8 @@ def normalize_backend(value: str) -> str:
 
 def normalize_device(value: str) -> str:
     normalized = value.strip().lower()
-    if normalized not in {AUTO_DEVICE, CPU_DEVICE, MPS_DEVICE}:
-        raise ValueError("Unsupported EMBEDDING_DEVICE. Expected 'auto', 'cpu', or 'mps'.")
+    if normalized not in {AUTO_DEVICE, CPU_DEVICE, MPS_DEVICE, CUDA_DEVICE}:
+        raise ValueError("Unsupported EMBEDDING_DEVICE. Expected 'auto', 'cpu', 'mps', or 'cuda'.")
     return normalized
 
 
@@ -90,6 +91,16 @@ def is_mps_available() -> bool:
     return bool(mps_backend.is_available())
 
 
+def is_cuda_available() -> bool:
+    try:
+        import torch
+    except Exception:
+        return False
+
+    cuda = getattr(torch, "cuda", None)
+    return bool(cuda and hasattr(cuda, "is_available") and cuda.is_available())
+
+
 def _module_available(module_name: str) -> bool:
     try:
         return importlib.util.find_spec(module_name) is not None
@@ -107,6 +118,7 @@ def resolve_embedding_runtime(
     project_root: Path | None = None,
     system_name: str | None = None,
     mps_available: bool | None = None,
+    cuda_available: bool | None = None,
     supports_backend_parameter: bool | None = None,
     onnx_support_available: bool | None = None,
 ) -> EmbeddingRuntimeDecision:
@@ -127,6 +139,9 @@ def resolve_embedding_runtime(
     )
     can_use_mps = (
         is_mps_available() if mps_available is None and detected_platform == "macos" else bool(mps_available)
+    )
+    can_use_cuda = (
+        is_cuda_available() if cuda_available is None and detected_platform == "linux" else bool(cuda_available)
     )
 
     fallback_reasons: list[str] = []
@@ -170,6 +185,7 @@ def resolve_embedding_runtime(
         detected_platform=detected_platform,
         requested_device=device,
         mps_available=can_use_mps,
+        cuda_available=can_use_cuda,
     )
     if device_fallback_reason:
         fallback_reasons.append(device_fallback_reason)
@@ -192,6 +208,7 @@ def resolve_sentence_transformers_device(
     detected_platform: str,
     requested_device: str,
     mps_available: bool,
+    cuda_available: bool,
 ) -> tuple[str, str | None]:
     if requested_device == CPU_DEVICE:
         return CPU_DEVICE, None
@@ -203,9 +220,17 @@ def resolve_sentence_transformers_device(
             return CPU_DEVICE, "MPS was requested but is unavailable on this macOS host, so the runtime fell back to CPU."
         return MPS_DEVICE, None
 
+    if requested_device == CUDA_DEVICE:
+        if detected_platform != "linux" or not cuda_available:
+            return CPU_DEVICE, "CUDA was requested but is unavailable on this host, so the runtime fell back to CPU."
+        return CUDA_DEVICE, None
+
     if detected_platform == "macos":
         if mps_available:
             return MPS_DEVICE, None
         return CPU_DEVICE, "MPS is unavailable on this macOS host, so the runtime fell back to CPU."
+
+    if detected_platform == "linux" and cuda_available:
+        return CUDA_DEVICE, None
 
     return CPU_DEVICE, None

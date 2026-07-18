@@ -528,6 +528,12 @@ def _provider_is_available(provider: Any) -> bool:
     """Avoid an optional provider call when its shared fallback chain is empty."""
     if provider is None or not callable(getattr(provider, "call_llm", None)):
         return False
+    has_available_provider = getattr(provider, "has_available_provider", None)
+    if callable(has_available_provider):
+        try:
+            return bool(has_available_provider())
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            return False
     resolve_chain = getattr(provider, "resolve_chain", None)
     if not callable(resolve_chain):
         return True

@@ -40,6 +40,14 @@ class _UnavailableProvider:
         raise AssertionError("an unavailable provider must not be called")
 
 
+class _ExhaustedProvider(_UnavailableProvider):
+    def resolve_chain(self):
+        return ["fake"]
+
+    def has_available_provider(self):
+        return False
+
+
 class _MalformedLlmClient:
     def extract_relations(self, chunk_text, entities):
         del chunk_text, entities
@@ -52,6 +60,27 @@ class _FailingProvider:
     def call_llm(self, system_prompt, prompt):
         del system_prompt, prompt
         raise OSError("simulated transport failure")
+
+
+class _CredentialFailingProvider:
+    active_provider = "failing"
+
+    def has_available_provider(self):
+        return True
+
+    def call_llm(self, system_prompt, prompt):
+        del system_prompt, prompt
+        raise OSError("provider rejected token=super-secret")
+
+
+class _AvailabilityFailingProvider:
+    def has_available_provider(self):
+        raise RuntimeError("provider rejected token=availability-secret")
+
+
+class _ChainFailingProvider:
+    def resolve_chain(self):
+        raise RuntimeError("provider rejected token=chain-secret")
 
 
 class _GraphBuilder:
@@ -119,6 +148,45 @@ def _extractor(monkeypatch, provider=None):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setattr(entity_extractor_module.spacy, "load", lambda _: object())
     return EntityExtractor(provider_router=provider)
+
+
+def test_exhausted_provider_uses_spacy_only_fallback_without_another_call(monkeypatch):
+    extractor = _extractor(monkeypatch, _ExhaustedProvider())
+
+    relations = extractor.extract_relations_llm(_TEXT, _ENTITIES)
+
+    assert relations[0]["source"] == "rule-based"
+    assert extractor.relation_extraction_mode == "spacy-only"
+
+
+def test_provider_failure_log_redacts_credentials(monkeypatch, caplog):
+    extractor = _extractor(monkeypatch, _CredentialFailingProvider())
+
+    with caplog.at_level(logging.WARNING, logger="graph.entity_extractor"):
+        extractor.extract_relations_llm(_TEXT, _ENTITIES)
+
+    assert "super-secret" not in caplog.text
+    assert "token=[REDACTED]" in caplog.text
+
+
+def test_provider_availability_failure_log_redacts_credentials(monkeypatch, caplog):
+    extractor = _extractor(monkeypatch, _AvailabilityFailingProvider())
+
+    with caplog.at_level(logging.WARNING, logger="graph.entity_extractor"):
+        assert extractor._has_available_relation_provider() is False
+
+    assert "availability-secret" not in caplog.text
+    assert "token=[REDACTED]" in caplog.text
+
+
+def test_provider_chain_failure_log_redacts_credentials(monkeypatch, caplog):
+    extractor = _extractor(monkeypatch, _ChainFailingProvider())
+
+    with caplog.at_level(logging.WARNING, logger="graph.entity_extractor"):
+        assert extractor._has_available_relation_provider() is False
+
+    assert "chain-secret" not in caplog.text
+    assert "token=[REDACTED]" in caplog.text
 
 
 def test_entity_extraction_preserves_tuple_map_and_records_spacy_positions(monkeypatch):
